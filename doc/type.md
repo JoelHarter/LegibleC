@@ -48,7 +48,10 @@ Arrays aren't emitted yet, but their part in mangling is defined:
 
 - A **static** array type carries its size in the type — the test is whether
   `size` is defined on the type itself, so no particular package is required.
-  It's immutable (`S`) or mutable (`M`).
-- A **regular** `Array{T,N}` carries only its dimension count. Its size will
-  have to come from somewhere else once `staticarray` is enforced; for now it
-  mangles as `1D`, `2D`, … *(placeholder — to be decided)*.
+  Whether it's immutable or mutable makes no difference to the C.
+- A **regular** `Array{T,N}` carries only its dimension count. Under the
+  `staticarray` option it's a static array in every respect — same C, same
+  helpers, same names — with its size supplied in the `transpile` call
+  (`(f, Float64, 2, 3)`; see `array.md`). Internally it's represented by the
+  shaped stand-in `Shaped{T, size, N}` in `src/type.jl`, so that every rule
+  that asks an array for its size gets one.

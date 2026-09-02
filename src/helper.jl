@@ -18,15 +18,31 @@ function helper!(helpers::Dict{String, String}, op::Symbol, types, R::Type)
     return name
 end
 
-# Helper names always carry size and type: `add_2x2`, `mul_2x2_2`, `add_2x2F64_2x2F32`.
-# Arrays are described by dimensions, plus element type unless everything is Float64;
-# scalars always by type. Arguments with identical descriptions are written once.
-function helpername(op::Symbol, types)
-    alldouble = all(T -> (T <: AbstractArray ? eltype(T) : T) === Float64, types)
-    descs = [T <: AbstractArray ? dims(T) * (alldouble ? "" : abbrev(eltype(T))) : abbrev(T)
-             for T in types]
-    allequal(descs) && (descs = descs[1:1])
-    return string(op, "_", join(descs, "_"))
+"""
+    helpername(op, types; broadcast=false) -> String
+
+The C name of the helper for `op` on `types`. Names always carry size and type; the
+full rules, with examples, are in `doc/array.md`. In short: an array is described by
+its dimensions (`2x2`), a scalar by `s`; fundamental types appear only when not every
+input is `Float64`, and then on every input — appended to an array's dimensions,
+replacing a scalar's `s`. Identical descriptions are written once.
+
+A broadcast operation gets `E` (element-wise) if every input has the same size, with
+that size written once and the types, if needed, run together after it in input
+order; otherwise `B` (broadcast), with every input listed.
+"""
+function helpername(op::Symbol, types; broadcast::Bool=false)
+    fundamental(T) = T <: AbstractArray ? eltype(T) : T
+    alldouble = all(T -> fundamental(T) === Float64, types)
+    sizes = [T <: AbstractArray ? dims(T) : "s" for T in types]
+    typs = [abbrev(fundamental(T)) for T in types]
+    if broadcast && allequal(sizes)
+        ts = alldouble ? "" : allequal(typs) ? typs[1] : join(typs)
+        return string(op, "E_", sizes[1], ts)
+    end
+    descs = [alldouble ? sz : (T <: AbstractArray ? sz * t : t) for (T, sz, t) in zip(types, sizes, typs)]
+    !broadcast && allequal(descs) && (descs = descs[1:1])
+    return string(op, broadcast ? "B_" : "_", join(descs, "_"))
 end
 
 # The C definition of one helper.
@@ -101,5 +117,15 @@ function multiply(types, R::Type)
                 "        }",
                 "    }"]
     end
+    throw(ArgumentError("mul: unsupported operand shapes $(dims(a)) and $(dims(b))"))
+end
+
+# The shape of the result of `op` on `types`, by the same rules the helper bodies use.
+function resultshape(op::Symbol, types)
+    arrays = [T for T in types if T <: AbstractArray]
+    op == :mul && length(arrays) == 2 || return shape(arrays[1])
+    a, b = types
+    ndims(a) == 2 && ndims(b) == 1 && return (shape(a)[1],)
+    ndims(a) == 2 && ndims(b) == 2 && return (shape(a)[1], shape(b)[2])
     throw(ArgumentError("mul: unsupported operand shapes $(dims(a)) and $(dims(b))"))
 end

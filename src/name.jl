@@ -91,35 +91,29 @@ keeps the plain name. Several get per-argument descriptions appended, escalating
 only as far as needed for the names to differ:
 
 1. array dimensions — `f_3`, `f_2x3`, `f_4x3x4`; scalars contribute nothing
-2. the array class in front — `S` static, `M` mutable, nothing for a regular
-   array — but only if the classes differ somewhere in the group
-3. the type abbreviation after — `f_S4x4F32`, `f_I64_I64` — except that a function
+2. the type abbreviation after — `f_4x4F32`, `f_I64_I64` — except that a function
    whose arguments are all `F64` leaves the abbreviations off
 
 See `doc/naming.md` and `doc/type.md`.
 """
-function mangled(name::AbstractString, instances)
-    length(instances) == 1 && return [name]
-    sigs = [collect(mi.specTypes.parameters[2:end]) for mi in instances]
-    arrays = [T for sig in sigs for T in sig if T <: AbstractArray]
-    classvaries = length(unique(class.(arrays))) > 1
-    for level in 1:3
-        names = [join([name; filter(!isempty, [describe(T, level, classvaries, alldouble(sig)) for T in sig])], "_")
+function mangled(name::AbstractString, sigs)
+    length(sigs) == 1 && return [name]
+    for level in 1:2
+        names = [join([name; filter(!isempty, [describe(T, level, alldouble(sig)) for T in sig])], "_")
                  for sig in sigs]
         allunique(names) && return names
     end
-    throw(ArgumentError("cannot tell apart instances of $name: $(join(sigs, ", "))"))
+    throw(ArgumentError("two different methods of $name would have the same C signature: $(join(sigs, ", "))"))
 end
 
 # The mangled description of one argument type at a given level.
-function describe(T::Type, level, classvaries, alldouble)
+function describe(T::Type, level, alldouble)
     if T <: AbstractArray
         d = dims(T)
-        level >= 2 && classvaries && (d = class(T) * d)
-        level >= 3 && !alldouble && (d *= abbrev(eltype(T)))
+        level >= 2 && !alldouble && (d *= abbrev(eltype(T)))
         return d
     end
-    return level >= 3 && !alldouble ? abbrev(T) : ""
+    return level >= 2 && !alldouble ? abbrev(T) : ""
 end
 
 # Are all of a signature's types Float64, counting an array by its element type?

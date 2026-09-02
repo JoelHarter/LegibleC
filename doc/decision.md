@@ -191,6 +191,13 @@ Julia wants one, it names the variable, and the name comes through.
 
 ## 2026-09-03 — Mangling escalates: dimensions, then class, then type
 
+> **Revised 2026-09-03.** The class level (`S`/`M`/none) was dropped: C
+> doesn't distinguish static from mutable, and under `staticarray` every
+> array is the same thing in C, so the letter never told a reader anything.
+> Instances of one method differing only in class are the same C function
+> and are emitted once; only two different methods landing on one C
+> signature is an error. Escalation is now dimensions, then type.
+
 **Context.** Same-named instances were told apart by appending the full Julia
 type names (`fun1_Float64_Float64_Float64`). Correct, but long, and it
 doesn't say the thing a reader most wants to know about an array argument —
@@ -209,9 +216,9 @@ type are added only when they actually disambiguate, so names carry no dead
 weight. `Float64` as the unmarked default matches how the code will mostly
 be written: `poly` and `poly_I64_I64`, not `poly_F64_F64` and `poly_I64_I64`.
 
-**Open.** A regular `Array{T,N}` has no size in its type. It mangles as `1D`,
-`2D` for now; where its fixed size comes from under `staticarray` is
-undecided, and the mangling will follow that decision.
+**Resolved 2026-09-03.** A regular `Array{T,N}` gets its size from the
+`transpile` call: a type followed by integers, `(f, Float64, 2, 3)`. See the
+entry below.
 
 ---
 
@@ -250,3 +257,83 @@ would let arrays be returned by value and assigned with `=`, at the cost of
 `.a` on every access and a hidden copy on return. Flat `double *` parameters
 with explicit strides would hide the shape from the compiler. Both rejected
 for readability and speed respectively.
+
+---
+
+## 2026-09-03 — Array sizes come from the `transpile` call: a type, then integers
+
+**Context.** Under `staticarray` a regular array is to be a static array in
+every respect, but `Matrix{Float64}` carries no size. Something outside the
+type has to say it.
+
+**Options considered.** Static types at the call, matched to `Matrix` methods
+by erasing the size; a separate `(Matrix{Float64}, 2, 3)` form naming both
+the Julia type and the size; supporting only untyped functions specialized
+with static types; deferring.
+
+**Decision.** In a tuple target, a type followed by integers is an array of
+that element type and those dimensions — `(f, Float64, 3, Float64, 2, 3)`.
+Nothing says "array"; the integers do. For each such array the static type is
+tried first; if the function has no method for it, a regular `Array` of the
+same size is used and the transpiler carries the size itself through the
+body, by the same rules the helpers use. Same C either way.
+
+**Why.** Under the option there is exactly one kind of array as far as the
+output is concerned, so the input shouldn't have to name a kind either — just
+element type and size, which is all the C needs. Trying static first means a
+function that *can* be inferred with full sizes is; the regular path exists
+for methods that insist on `::Matrix`.
+
+**Mechanics worth knowing.** The regular path uses an internal shaped
+stand-in (`Shaped{T,size,N}`) wherever a type is asked for its size, so
+`declare`, helper naming, and function mangling are unchanged. Sizes of
+locals are known only once something is stored in them, so declarations are
+emitted after the body is walked. Static-vs-regular is decided for the whole
+signature, not per argument.
+
+---
+
+## 2026-09-03 — The Julia source rides along as comments
+
+**Decision.** Comments directly above a definition (up to a blank line or a
+line of code), every comment inside the body, and — under the `source`
+option, on by default — every line of code, prefixed `file:line:`, are
+emitted as `//` comments placed just ahead of the C each line produces. Lines
+that are only brackets or `end` give up their trailing comment but not their
+code. Full rules in `comment.md`.
+
+**Why.** The C is meant to be read. A reader with the Julia line next to the
+C it became can check the translation, find their way back to the source, and
+keep the author's own explanations — which the emitter can't reproduce and
+shouldn't drop. Making the code lines optional acknowledges that some
+readers will want the comments without the doubling.
+
+**Mechanics that shaped it.** The typed IR the emitter walks has no line
+table; the lowered IR does, and its statements match one for one, so lines
+come from there by index. A definition's extent is found by parsing from the
+signature's line. "Where the work happens" means the first statement the
+line produced; comments on lines that produce nothing ride with the next line
+that does. Continuation lines of a multi-line expression land after that
+expression's C — a known imprecision, accepted over parsing every statement.
+
+---
+
+## 2026-09-03 — Doxygen blocks: the docstring's words, plus what C can't say
+
+**Decision.** Every C function gets a `/** … */` block: the Julia docstring's
+text verbatim (if there is one), then a generated tail — the Julia method it
+came from (name, argument types, file:line), `@param[in]` for each input, and
+`@param[out] result` marking the trailing parameter that carries an array
+return value. No parameter descriptions, no `@return`, no `@brief`. Other
+attached comments stay `//`.
+
+**Why.** Doxygen is the de facto standard for documenting C and hand-written
+libraries use it, so the block makes the output look like a library, not
+like generated code. Doxygen takes the signature from the C declaration, so
+the signature is always the C one; what the declaration *can't* say is
+exactly where C and Julia diverge — that a `void` function's last parameter
+is really its return value, and that `poly_I64_I64` is Julia's `poly` at
+`(Int64, Int64)`. Those are facts the transpiler has, so it states them.
+Parameter meanings it doesn't have, so it doesn't invent them — `@param a a`
+is the line that gives generated code away. Keeping plain comments as `//`
+stops section headers from being mistaken for documentation.

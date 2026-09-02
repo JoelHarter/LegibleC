@@ -40,15 +40,21 @@ end
 # is required.
 shape(T::Type) = hasmethod(size, (Type{T},)) ? size(T) : nothing
 
-# The array class letter: S for a static (immutable) array, M for a mutable one, and
-# nothing at all for a regular array.
-class(T::Type) = shape(T) === nothing ? "" : ismutabletype(T) ? "M" : "S"
+# A regular `Array{T,N}` whose size the transpiler was told. Stands in for the real
+# type everywhere a size is needed, so that regular and static arrays go through the
+# same code and come out as the same C. Never instantiated.
+struct Shaped{T, S, N} <: AbstractArray{T, N} end
+Base.size(::Type{Shaped{T, S, N}}) where {T, S, N} = S
+shaped(T::Type, s) = Shaped{T, Tuple(s), length(s)}
+
 
 # The dimensions of an array type as they appear in a mangled name: `3`, `2x3`, `4x3x4`.
-# A regular array's size isn't in its type, so it gets its dimension count: `1D`, `2D`.
+# Under `staticarray` a regular array is treated exactly like a static one, so it needs
+# a size too; until there's a way to supply one, it's an error rather than a guess.
 function dims(T::Type)
     s = shape(T)
-    return s === nothing ? "$(ndims(T))D" : join(s, "x")
+    s === nothing && throw(ArgumentError("arrays without a size in their type are not yet supported (got $T)"))
+    return join(s, "x")
 end
 
 # A C declaration of `name` with type `T`: `double x`, `const double a[2][2]`.

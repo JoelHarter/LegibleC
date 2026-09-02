@@ -9,6 +9,7 @@
 include("name.jl")
 include("type.jl")
 include("helper.jl")
+include("source.jl")
 
 # Per-function state for naming intermediate values.
 mutable struct Scope
@@ -23,9 +24,20 @@ mutable struct Scope
     counter::Int
     expr::Dict{Int, String}             # SSA id -> the C expression that stands for it
     helpers::Dict{String, String}       # shared across the whole output; see helper.jl
+    # Sizes the IR doesn't know: a regular array's type has none, so the transpiler
+    # tracks a shaped stand-in for each SSA value and slot that holds one.
+    shapes::Dict{Int, Type}             # SSA id -> shaped type
+    slotshapes::Dict{Int, Type}         # slot id -> shaped type
+    rettype::Type                       # the (shaped) type actually returned
+    # Source annotations (see source.jl): the file, each statement's line, how far
+    # into the file the comments have been emitted, and whether code lines are copied.
+    src::Union{Source, Nothing}
+    stmtline::Vector{Int}
+    cursor::Int
+    copycode::Bool
 end
 
-function Scope(ci::Core.CodeInfo, limit::Integer, staticarray::Bool, helpers)
+function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, helpers, copycode::Bool)
     names = ["#self#"; identifiers(string.(ci.slotnames[2:end]))]
     result = "result"
     while result in names
@@ -36,40 +48,66 @@ function Scope(ci::Core.CodeInfo, limit::Integer, staticarray::Bool, helpers)
         m = match(r"^temp(\d+)(_.*)?$", s)
         m === nothing || push!(blocked, parse(Int, m[1]))
     end
-    return Scope(ci, names, result, result, false, staticarray, limit, blocked, 0, Dict{Int, String}(), helpers)
+    slotshapes = Dict{Int, Type}(i + 1 => T for (i, T) in enumerate(sig) if isarray(T))
+    src = Source(mi.def)
+    stmtline = src === nothing ? zeros(Int, length(ci.code)) : statementlines(mi, length(ci.code))
+    return Scope(ci, names, result, result, false, staticarray, limit, blocked, 0, Dict{Int, String}(), helpers,
+                 Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode)
 end
 
 """
-    cfunction(name, mi, helpers; templimit=40, staticarray=true) -> (prototype, definition)
+    cfunction(name, mi, sig, helpers; templimit=40, staticarray=true, source=true) -> (prototype, definition)
 
-C source for the concrete MethodInstance `mi`, named `name` in C. Any array helpers it
-needs are added to `helpers`.
+C source for the concrete MethodInstance `mi`, named `name` in C, with argument types
+`sig` — the instance's own types, except that a regular array is given as a shaped
+stand-in carrying the size the IR doesn't know. Any array helpers it needs are added
+to `helpers`.
 """
-function cfunction(name::AbstractString, mi::Core.MethodInstance, helpers::Dict{String, String};
-                   templimit::Integer=40, staticarray::Bool=true)
+function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, helpers::Dict{String, String};
+                   templimit::Integer=40, staticarray::Bool=true, source::Bool=true)
     ci, rettype = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
-    sc = Scope(ci, templimit, staticarray, helpers)
+    sc = Scope(ci, mi, sig, templimit, staticarray, helpers, source)
+    sc.resultparam = isarray(rettype)
 
-    params = [declare(widen(ci.slottypes[i]), sc.names[i]; constant=isarray(widen(ci.slottypes[i]))) for i in 2:ci.nargs]
-    if isarray(rettype)
+    body = String[]
+    for (i, st) in enumerate(ci.code)
+        annotate!(body, sc, sc.stmtline[i])
+        statement!(body, sc, i, st)
+    end
+    sc.src === nothing || annotate!(body, sc, sc.src.last)   # whatever follows the last statement
+
+    # Declarations come after the walk: a regular array's size is only known once
+    # something has been stored in it.
+    lines = [declare(slottype(sc, i), sc.names[i]) * ";" for i in ci.nargs+1:length(ci.slotnames)]
+    append!(lines, body)
+
+    params = [declare(slottype(sc, i), sc.names[i]; constant=isarray(slottype(sc, i))) for i in 2:ci.nargs]
+    if sc.resultparam
         # C can't return an array; it comes out through a trailing parameter, which
         # takes the result's name.
-        push!(params, declare(rettype, sc.resultname))
-        sc.resultparam = true
+        push!(params, declare(sc.rettype, sc.resultname))
         signature = "void $name($(join(params, ", ")))"
     else
         signature = "$(ctype(rettype)) $name($(isempty(params) ? "void" : join(params, ", ")))"
     end
-
-    lines = String[]
-    for i in ci.nargs+1:length(ci.slotnames)      # locals, declared up front
-        push!(lines, declare(widen(ci.slottypes[i]), sc.names[i]) * ";")
-    end
-    for (i, st) in enumerate(ci.code)
-        statement!(lines, sc, i, st)
-    end
-    return signature * ";", signature * " {\n" * join("    " .* lines, "\n") * "\n}\n"
+    comments, doc = sc.src === nothing ? (String[], String[]) : leading(sc.src)
+    origin = "$(mi.def.name)($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
+             (sc.src === nothing ? "" : ", $(sc.src.name):$(sc.src.first)")
+    block = doxygen(doc, origin, sc.names[2:ci.nargs], sc.resultparam ? sc.resultname : nothing)
+    return signature * ";", join([comments; block; signature * " {"; "    " .* lines; "}"], "\n") * "\n"
 end
+
+# Carry the source's comments (and, if asked, code) forward through line `line`, so
+# they sit just ahead of the C for the statement on that line.
+function annotate!(lines, sc::Scope, line)
+    sc.src === nothing && return
+    line > sc.cursor || return
+    append!(lines, body(sc.src, sc.cursor + 1, line; code=sc.copycode))
+    sc.cursor = line
+end
+
+# The type of a slot, shaped if it holds an array.
+slottype(sc::Scope, i) = get(sc.slotshapes, i, widen(sc.ci.slottypes[i]))
 
 # Emit the C for one IR statement, appending to `lines`.
 function statement!(lines, sc::Scope, i, st)
@@ -83,6 +121,7 @@ function statement!(lines, sc::Scope, i, st)
         if sc.resultparam
             # An array result is written into the out parameter; if it isn't there
             # already, copy it. No `return` needed from a void function.
+            sc.rettype = valuetype(sc, st.val)
             v == sc.resultname || push!(lines, "$(copyhelper(sc, st.val))($v, $(sc.resultname));")
         else
             push!(lines, "return $v;")
@@ -92,12 +131,10 @@ function statement!(lines, sc::Scope, i, st)
             # A calculation whose only use is to be returned is the function's result.
             if onlyreturned(ci, i)
                 dest = result!(sc, i)
-                sc.resultparam || push!(lines, declare(T, dest) * ";")
+                arraycall!(lines, sc, i, st, dest; declaration=!sc.resultparam)
             else
-                dest = temp!(sc, i, parts(sc, st))
-                push!(lines, declare(T, dest) * ";")
+                arraycall!(lines, sc, i, st, temp!(sc, i, parts(sc, st)); declaration=true)
             end
-            arraycall!(lines, sc, i, st, dest)
         else
             code = call(sc, i, st)
             name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
@@ -120,9 +157,10 @@ function statement!(lines, sc::Scope, i, st)
             rhs isa Core.SSAValue && (sc.expr[rhs.id] = x)
         else
             t = temp!(sc, i, contribution(sc, slot))
-            push!(lines, isarray(T) ? "$(declare(T, t));" : "$(ctype(T)) $t = $x;")
+            push!(lines, isarray(T) ? "$(declare(valuetype(sc, slot), t));" : "$(ctype(T)) $t = $x;")
             isarray(T) && push!(lines, "$(copyhelper(sc, slot))($x, $t);")
         end
+        isarray(T) && (sc.shapes[i] = valuetype(sc, slot))
     elseif st isa Core.SlotNumber
         # `%i = x`: a read of a variable. Same rule as above.
         x = sc.names[st.id]
@@ -130,11 +168,13 @@ function statement!(lines, sc::Scope, i, st)
             sc.expr[i] = x
         else
             t = temp!(sc, i, contribution(sc, st))
-            push!(lines, isarray(T) ? "$(declare(T, t));" : "$(ctype(T)) $t = $x;")
+            push!(lines, isarray(T) ? "$(declare(valuetype(sc, st), t));" : "$(ctype(T)) $t = $x;")
             isarray(T) && push!(lines, "$(copyhelper(sc, st))($x, $t);")
         end
+        isarray(T) && (sc.shapes[i] = valuetype(sc, st))
     elseif st isa Core.SSAValue || st isa Number
         sc.expr[i] = value(sc, st)                 # pure copy; no temp needed
+        isarray(T) && (sc.shapes[i] = valuetype(sc, st))
     else
         throw(ArgumentError("unsupported statement: $st"))
     end
@@ -144,23 +184,25 @@ end
 # also an operand, otherwise through a temp so the operation can't read what it's
 # overwriting.
 function store!(lines, sc::Scope, i, x, rhs)
+    slot = sc.ci.code[i].args[1].id
     if rhs isa Expr
         if x in (value(sc, a) for a in rhs.args[2:end])
             t = temp!(sc, nothing, parts(sc, rhs))
-            push!(lines, declare(widen(sc.ci.ssavaluetypes[i]), t) * ";")
-            arraycall!(lines, sc, i, rhs, t)
+            arraycall!(lines, sc, i, rhs, t; declaration=true)
             push!(lines, "$(copyhelper(sc, Core.SSAValue(i)))($t, $x);")
         else
             arraycall!(lines, sc, i, rhs, x)
         end
+        sc.slotshapes[slot] = sc.shapes[i]
     else
         push!(lines, "$(copyhelper(sc, rhs))($(value(sc, rhs)), $x);")
+        sc.slotshapes[slot] = valuetype(sc, rhs)
     end
 end
 
 # Emit the helper call for an array operation, writing into `dest`. An n-ary `+` or `*`
 # (Julia parses `A + B + C` as one call) is chained through temps.
-function arraycall!(lines, sc::Scope, i, ex::Expr, dest)
+function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false)
     f = callee(sc.ci, ex.args[1])
     args = ex.args[2:end]
     op = f === Base.:+ ? :add :
@@ -168,26 +210,33 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest)
          f === Base.:* ? :mul :
          f === Base.copy ? :copy :
          throw(ArgumentError("unsupported array operation: $f"))
-    R = widen(sc.ci.ssavaluetypes[i])
+    # The result's element type comes from Julia's promotion; its size from the IR if
+    # the type carries one, otherwise from the operation's own rule.
+    E = eltype(widen(sc.ci.ssavaluetypes[i]))
+    result(types) = (R = widen(sc.ci.ssavaluetypes[i]); shape(R) === nothing ? shaped(E, resultshape(op, types)) : R)
     acc = args[1]
     accname = value(sc, acc)
-    acctype = valuetype(sc.ci, acc)
+    acctype = valuetype(sc, acc)
+    R = acctype
     for (n, a) in enumerate(args[2:end])
         last = n == length(args) - 1
+        types = (acctype, valuetype(sc, a))
+        R = result(types)
         out = last ? dest : temp!(sc, nothing, unique([contribution(sc, acc); contribution(sc, a)]))
-        last || push!(lines, declare(R, out) * ";")
-        name = helper!(sc.helpers, op, (acctype, valuetype(sc.ci, a)), R)
-        push!(lines, "$name($accname, $(value(sc, a)), $out);")
+        (last ? declaration : true) && push!(lines, declare(R, out) * ";")
+        push!(lines, "$(helper!(sc.helpers, op, types, R))($accname, $(value(sc, a)), $out);")
         accname, acctype = out, R
     end
     if length(args) == 1
-        name = helper!(sc.helpers, op, (acctype,), R)
-        push!(lines, "$name($accname, $dest);")
+        R = result((acctype,))
+        declaration && push!(lines, declare(R, dest) * ";")
+        push!(lines, "$(helper!(sc.helpers, op, (acctype,), R))($accname, $dest);")
     end
+    sc.shapes[i] = R
 end
 
 # The copy helper for the array value `x`.
-copyhelper(sc::Scope, x) = (T = valuetype(sc.ci, x); helper!(sc.helpers, :copy, (T,), T))
+copyhelper(sc::Scope, x) = (T = valuetype(sc, x); helper!(sc.helpers, :copy, (T,), T))
 
 isarray(T) = T <: AbstractArray
 
@@ -278,7 +327,7 @@ function call(sc::Scope, i, ex::Expr)
     if length(args) == 1
         return "$op($(args[1]))"                    # parenthesised so `- -3` can't become `--3`
     end
-    if f === Base.:/ && all(a -> valuetype(ci, a) <: Integer, ex.args[2:end])
+    if f === Base.:/ && all(a -> valuetype(sc, a) <: Integer, ex.args[2:end])
         # Julia `/` always produces a float. C promotes an integer operand to the
         # other operand's floating type on its own, so only integer-by-integer needs
         # help. Literals get `.0`; anything else gets a cast to the result type.
@@ -298,10 +347,11 @@ function value(sc::Scope, x)
     throw(ArgumentError("unsupported value: $(repr(x))"))
 end
 
-# The inferred type of a value.
-function valuetype(ci, x)
-    x isa Core.SSAValue   && return widen(ci.ssavaluetypes[x.id])
-    x isa Core.SlotNumber && return widen(ci.slottypes[x.id])
+# The type of a value: what inference says, except that an array whose size the IR
+# doesn't know is given as the shaped stand-in the transpiler tracks for it.
+function valuetype(sc::Scope, x)
+    x isa Core.SSAValue   && return get(sc.shapes, x.id, widen(sc.ci.ssavaluetypes[x.id]))
+    x isa Core.SlotNumber && return get(sc.slotshapes, x.id, widen(sc.ci.slottypes[x.id]))
     return typeof(x)
 end
 

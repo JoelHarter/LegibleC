@@ -46,20 +46,22 @@ for the names to differ, and applied uniformly to the whole group:
    and so on. Scalars contribute nothing at this level, so two scalar-only
    instances fall straight through.
    `g_3`, `g_2x3`
-2. **Array class,** in front of the dimensions: `S` for a static (immutable)
-   array, `M` for a mutable one, nothing for a regular array. Added only if
-   the classes actually differ somewhere in the group; if every array is
-   static, the `S` stays off.
-   `g_S3`, `g_M3`
-3. **Type abbreviation,** after — from the table in `type.md`, an array
+2. **Type abbreviation,** after — from the table in `type.md`, an array
    described by its element type. A function whose arguments are all
    `Float64` leaves the abbreviations off entirely.
    `poly`, `poly_I64_I64`, `poly_F32_F32`
    `fun4_2x2_2x2`, `fun4_2x2F32_2x2F32`
    `h_3`, `h_3F64_I64`
 
-A regular array's size isn't in its type, so for now it's described by its
-dimension count: `1D`, `2D`. See `type.md`.
+There is no static/mutable distinction in the name: C has none, and under
+`staticarray` every array is the same thing in C. Asking for the same method
+at `SMatrix{2,2}` and at `MMatrix{2,2}` yields one C function, emitted once.
+The only error is two *different* Julia methods landing on the same C
+signature — C can't hold both bodies.
+
+A regular array is described exactly like a static one under the
+`staticarray` option — it needs a size from somewhere other than its type.
+See `type.md`.
 
 Implementation: `mangled` in `src/name.jl`.
 

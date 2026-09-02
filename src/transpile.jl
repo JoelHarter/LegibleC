@@ -1,4 +1,6 @@
 
+using StaticArrays
+
 include("c.jl")
 
 """
@@ -10,6 +12,11 @@ Transpile one or more targets to a single C file and return its path. Each
 - a `Function` — must have exactly one method with all-concrete argument types
 - a `Core.MethodInstance` — must be a concrete specialization
 - a tuple `(f, T...)` — the arguments to [`concretemethod`](@ref), which resolves it
+
+In the tuple form a type followed by integers is an array of that element type and
+those dimensions: `(f, Float64, 3, Float64, 2, 3)` is a 3-vector and a 2×3 matrix.
+Each array is a static array if the function accepts one, otherwise a regular
+`Array` of that size — the C is the same either way.
 
 Every target is resolved to a concrete `MethodInstance` before anything is written;
 a target that can't be resolved throws an `ArgumentError`.
@@ -23,40 +30,50 @@ Options:
 - `staticarray`: treat every Julia array as fixed-size, and refuse anything a
   fixed-size array can't do (growing, resizing, …). Turning it off asks for
   dynamic arrays, which are not yet supported.
+- `source`: copy each line of the Julia body into the C as a comment, prefixed
+  `file:line:`, where that line's work happens. Comments are carried over
+  regardless; this controls the code. See `doc/comment.md`.
 
 Each function keeps its Julia name in C. If the same function is transpiled at more
 than one signature in a single call, those get the argument types appended
 (`fun1_Float64_Float64`) so the names don't collide.
 """
-function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, Vararg{DataType}}}...;
+function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, Vararg{Union{DataType, Integer}}}}...;
                    outfile::AbstractString="juliatranspiled", outpath::AbstractString=pwd(),
                    templimit::Integer=40,
                    # On by default only until dynamic arrays are supported; then it flips
                    # to off, and static becomes something you opt into.
-                   staticarray::Bool=true)
+                   staticarray::Bool=true,
+                   source::Bool=true)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
-    instances = Core.MethodInstance[]
+    # Each instance is paired with its signature: the instance's own argument types,
+    # except that a regular array is given as a shaped stand-in carrying its size.
+    instances = Tuple{Core.MethodInstance, Vector{Type}}[]
     for t in target
         if t isa Function
             mi, _ = concretemethod(t)
+            sig = argtypes(mi)
         elseif t isa Tuple
-            mi, _ = concretemethod(t...)
+            mi, sig = resolve(t[1], t[2:end])
         else
             # A MethodInstance is not necessarily concrete: inference also creates them
             # for abstract signatures (e.g. f(::Real, ::Real)), so check its specTypes
             # the same way concretemethod checks a method's signature.
             mi = t
-            sig = mi.specTypes
-            sig isa DataType && all(isconcretetype, sig.parameters[2:end]) ||
+            st = mi.specTypes
+            st isa DataType && all(isconcretetype, st.parameters[2:end]) ||
                 throw(ArgumentError("$mi is not a concrete specialization"))
+            sig = argtypes(mi)
         end
-        push!(instances, mi)
+        push!(instances, (mi, sig))
     end
-    unique!(instances)
+    # Two instances that are the same method at signatures C can't tell apart — a
+    # static and a mutable array of the same size, say — are one C function.
+    unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
     names = cnames(instances)
     helpers = Dict{String, String}()
-    functions = [cfunction(n, mi, helpers; templimit, staticarray) for (n, mi) in zip(names, instances)]
+    functions = [cfunction(n, mi, sig, helpers; templimit, staticarray, source) for (n, (mi, sig)) in zip(names, instances)]
     path = joinpath(outpath, endswith(outfile, ".c") ? outfile : outfile * ".c")
     open(path, "w") do io
         println(io, "#include <stdint.h>")
@@ -72,13 +89,41 @@ end
 # C names for the instances: each Julia name made C-valid, instances that share a name
 # told apart by `mangled`, and the results kept clear of reserved words.
 function cnames(instances)
-    base = [identifier(string(mi.def.name)) for mi in instances]
+    base = [identifier(string(mi.def.name)) for (mi, _) in instances]
     names = similar(base)
     for b in unique(base)
         group = findall(==(b), base)
-        names[group] = mangled(b, instances[group])
+        names[group] = mangled(b, [sig for (_, sig) in instances[group]])
     end
     return identifiers(names)
+end
+
+argtypes(mi::Core.MethodInstance) = collect(Type, mi.specTypes.parameters[2:end])
+
+# A signature as C sees it: every array reduced to element type and size.
+csignature(sig) = [isarray(T) ? shaped(eltype(T), shape(T)) : T for T in sig]
+
+# Resolve a tuple target's specification — types, each optionally followed by the
+# integer dimensions of an array — to a MethodInstance and a signature.
+function resolve(f::Function, spec)
+    isempty(spec) && return (concretemethod(f)[1], argtypes(concretemethod(f)[1]))
+    spec[1] isa Integer && throw(ArgumentError("in $((f, spec...)), a dimension must follow a type"))
+    # Group into (element type, dimensions) pairs.
+    groups = Tuple{DataType, Vector{Int}}[]
+    for x in spec
+        x isa DataType ? push!(groups, (x, Int[])) : push!(groups[end][2], x)
+    end
+    all(isempty(d) for (_, d) in groups) && (mi = concretemethod(f, spec...)[1]; return (mi, argtypes(mi)))
+    # Arrays are static if the function takes them that way, else regular arrays of
+    # the same size, which the transpiler treats identically.
+    static  = [isempty(d) ? T : SArray{Tuple{d...}, T, length(d), prod(d)} for (T, d) in groups]
+    regular = [isempty(d) ? T : Array{T, length(d)} for (T, d) in groups]
+    shapedsig = [isempty(d) ? T : shaped(T, d) for (T, d) in groups]
+    mi = Base.method_instance(f, Tuple(static))
+    mi === nothing || return (mi, static)
+    mi = Base.method_instance(f, Tuple(regular))
+    mi === nothing && throw(ArgumentError("$f has no method accepting $(Tuple(static)) or $(Tuple(regular))"))
+    return (mi, shapedsig)
 end
 
 """
@@ -92,7 +137,7 @@ question of which types belong to which function.
 At least one type is required; with none, a bare `transpile(f)` is handled by the
 method above (and would otherwise be ambiguous between the two).
 """
-transpile(f::Function, T1::DataType, T::DataType...; kw...) = transpile((f, T1, T...); kw...)
+transpile(f::Function, T1::DataType, T::Union{DataType, Integer}...; kw...) = transpile((f, T1, T...); kw...)
 
 """
     concretemethod(f, T...) -> (MethodInstance, return type)
