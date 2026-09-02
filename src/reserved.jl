@@ -28,6 +28,10 @@ const reserved = Set([
     # <stdbool.h> — bool/true/false are keywords above
     # <stddef.h>
     "size_t", "ptrdiff_t", "NULL", "offsetof",
+    # <stdlib.h>
+    "abs", "labs", "llabs", "malloc", "calloc", "realloc", "free", "exit", "abort", "atexit",
+    "rand", "srand", "qsort", "bsearch", "atoi", "atol", "atof", "strtol", "strtod", "getenv", "system",
+    "EXIT_SUCCESS", "EXIT_FAILURE", "RAND_MAX",
     # <math.h>
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
     "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",

@@ -48,14 +48,48 @@ Base.size(::Type{Shaped{T, S, N}}) where {T, S, N} = S
 shaped(T::Type, s) = Shaped{T, Tuple(s), length(s)}
 
 
-# The dimensions of an array type as they appear in a mangled name: `3`, `2x3`, `4x3x4`.
-# Under `staticarray` a regular array is treated exactly like a static one, so it needs
-# a size too; until there's a way to supply one, it's an error rather than a guess.
+# A row vector: the transpose of a vector. Stored in C exactly like the vector it came
+# from — `double r[3]` — but every helper treats it as 1×N, and it's named `r3`.
+struct Row{T, N} <: AbstractArray{T, 1} end
+Base.size(::Type{Row{T, N}}) where {T, N} = (N,)
+isrow(T::Type) = T <: Row
+
+# Julia's lazy `Adjoint`/`Transpose` wrappers, as the transpiler sees them: a wrapped
+# vector is a `Row`; a wrapped matrix is the transposed shape. Everything else passes.
+function normalize(T::Type)
+    T === Union{} && return T
+    T <: LinearAlgebra.Adjoint || T <: LinearAlgebra.Transpose || return T
+    P = T.parameters[2]
+    s = shape(P)
+    s === nothing && return T
+    length(s) == 1 && return Row{eltype(T), s[1]}
+    P <: Row && return shaped(eltype(T), s)
+    return shaped(eltype(T), reverse(s))
+end
+
+# The dimensions of an array type as they appear in a mangled name: `3`, `2x3`, `4x3x4`;
+# `r3` for a row vector. Under `staticarray` a regular array is treated exactly like a
+# static one, so it needs a size too; until there's a way to supply one, it's an error
+# rather than a guess.
 function dims(T::Type)
     s = shape(T)
     s === nothing && throw(ArgumentError("arrays without a size in their type are not yet supported (got $T)"))
-    return join(s, "x")
+    return (isrow(T) ? "r" : "") * join(s, "x")
 end
+
+# An array's *logical* shape, the one the mathematics sees: a vector is N×1, a row
+# vector is 1×N, anything else is its own shape. A scalar is 1×1.
+function bshape(T::Type)
+    T <: AbstractArray || return (1, 1)
+    isrow(T) && return (1, shape(T)[1])
+    s = shape(T)
+    return length(s) == 1 ? (s[1], 1) : s
+end
+
+# Which logical dimensions an array type stores, in storage order. A row vector stores
+# only its column dimension; everything else stores every dimension in order. With
+# `bshape`, this is all a helper needs to index any array the same way.
+stored(T::Type) = isrow(T) ? [2] : collect(1:ndims(T))
 
 # A C declaration of `name` with type `T`: `double x`, `const double a[2][2]`.
 function declare(T::Type, name::AbstractString; constant::Bool=false)

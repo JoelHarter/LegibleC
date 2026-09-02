@@ -1,5 +1,6 @@
 
 using StaticArrays
+using LinearAlgebra
 
 include("c.jl")
 
@@ -73,11 +74,13 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
 
     names = cnames(instances)
     helpers = Dict{String, String}()
-    functions = [cfunction(n, mi, sig, helpers; templimit, staticarray, source) for (n, (mi, sig)) in zip(names, instances)]
+    headers = Set(["stdint.h", "stdbool.h"])
+    functions = [cfunction(n, mi, sig, helpers, headers; templimit, staticarray, source) for (n, (mi, sig)) in zip(names, instances)]
     path = joinpath(outpath, endswith(outfile, ".c") ? outfile : outfile * ".c")
     open(path, "w") do io
-        println(io, "#include <stdint.h>")
-        println(io, "#include <stdbool.h>")
+        for h in ("stdint.h", "stdbool.h", "stdlib.h", "math.h")
+            h in headers && println(io, "#include <", h, ">")
+        end
         println(io)
         for (prototype, _) in functions; println(io, prototype); end
         for name in sort!(collect(keys(helpers))); println(io); print(io, helpers[name]); end
@@ -98,7 +101,7 @@ function cnames(instances)
     return identifiers(names)
 end
 
-argtypes(mi::Core.MethodInstance) = collect(Type, mi.specTypes.parameters[2:end])
+argtypes(mi::Core.MethodInstance) = Type[normalize(T) for T in mi.specTypes.parameters[2:end]]
 
 # A signature as C sees it: every array reduced to element type and size.
 csignature(sig) = [isarray(T) ? shaped(eltype(T), shape(T)) : T for T in sig]

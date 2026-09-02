@@ -337,3 +337,88 @@ is really its return value, and that `poly_I64_I64` is Julia's `poly` at
 Parameter meanings it doesn't have, so it doesn't invent them — `@param a a`
 is the line that gives generated code away. Keeping plain comments as `//`
 stops section headers from being mistaken for documentation.
+
+---
+
+## 2026-09-03 — Control flow is recovered from Julia's gotos, never emitted as gotos
+
+**Context.** Julia lowers every `if`, `while`, `for`, `&&`, `||`, and `?:`
+into `goto`s before the transpiler sees the function. C has `goto`, so the
+literal translation exists — and would fail the README's readability
+principle completely.
+
+**Decision.** Recognise the goto patterns Julia's lowering produces and emit
+the constructs they came from: `if`/`else if`/`else`, `while`, `for` over
+integer ranges, `break`/`continue`, `&&`/`||` in conditions. A pattern the
+recogniser doesn't know is an error, not a `goto`. Full table in `flow.md`.
+
+**Why this is feasible.** Julia's lowering is regular: the same source shape
+always produces the same jump shape, and the result is structured (jumps go
+forward within a construct or back to a loop header). So a small set of
+patterns covers the language's everyday control flow, and the textual
+copy-elimination check in `copy.md` stays sound.
+
+**Conditions inline.** A `while` whose test was a temp computed once would be
+wrong, so the calls feeding a condition or a loop bound are rendered inline as
+expressions — the first, deliberate crack in the "one temp per value" scheme,
+limited to where correctness demands it. C precedence and parenthesisation are
+handled explicitly.
+
+**Loop variables stay 1-based.** `for (int64_t i = 1; i <= n; i++)` with
+`v[i - 1]` is correct and matches the Julia; rewriting to the C idiom when the
+variable is only an index is a later readability pass.
+
+**`for` only over ranges, with a literal step.** That is the loop C can
+express directly. Iterating a collection by element, or a runtime step, needs
+a different shape and isn't attempted yet.
+
+---
+
+## 2026-09-03 — Row vectors are free; broadcasts are un-fused; block construction is a helper
+
+**Context.** Adding `[A B; C D]`, broadcasting, `v'`, `dot`, `cross`, and
+`transpose`.
+
+**Decisions.**
+
+- *A row vector is the same C storage as its column, remembered as a row.*
+  `v'` emits nothing; the value is tagged `Row{T,N}` internally, named `r3`,
+  and every helper that gets one treats it as 1×N (`mul_r3_3x2`,
+  `mulB_3_r3`). The alternative — a real 1×N C array `double r[1][3]` — would
+  cost a copy at every transpose and read worse. Since the C is identical
+  either way, the tag is the cheaper truth.
+- *Broadcast chains are un-fused.* Julia turns `exp.(v) .+ 2.0` into one loop;
+  here it's `expE_3` then `addB_3_s` through a temp. One helper per
+  operation keeps the naming scheme (one name, one operation, its input
+  sizes) intact and the helpers reusable. The cost is an extra pass over
+  small arrays; fusing is a later optimization if it ever matters.
+- *Block construction is a helper that lists every input.* `[A B; C D]` is
+  `hvcat2x2_2x2_2x2_2x2_2x2`: the block count matters, so identical
+  descriptions aren't collapsed the way they are for `add_2x2`. All-scalar
+  literals skip the helper and assign element by element, which is what a
+  person writes.
+- *`cross` is unmangled.* Always 3-vectors, so a size would say nothing.
+- *Scalar-returning helpers* (`dot_3`, `mul_r3_3`) return their value rather
+  than taking an out-parameter — a scalar is what C returns naturally.
+
+---
+
+## 2026-09-03 — Helper generators are written once, for the general case
+
+**Context.** The README's third principle — generalize whatever can be —
+arrived after the linear-algebra helpers, which had grown separate bodies for
+matrix×vector, matrix×matrix, row×matrix, column×row, and separate access
+code for vectors, rows, and matrices in broadcasting and block placement.
+
+**Decision.** One primitive: an operand's logical shape (`bshape`) plus the
+logical dimensions it stores (`stored`), from which `access` produces any
+operand's C subscript. On top of it, one `contraction` for every `*`
+(including the scalar-returning ones), one broadcast loop, one block-placement
+loop. Loops of extent 1 are not emitted; their index is `0`.
+
+**Why.** Five hand-written multiply bodies were five places to get a sign or
+an index wrong and five things to read; one contraction is one. The generated
+C is unchanged in every case that existed before except matrix×vector, which
+now zeroes and accumulates into `out[i]` like the others instead of through a
+local `sum` — the same i-k-j order the earlier decision chose, with no
+separate zeroing pass. All 23 numeric checks still agree with Julia.

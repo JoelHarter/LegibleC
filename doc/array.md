@@ -58,25 +58,52 @@ output into their last parameter:
 ```c
 static void mul_2x2_2(const double a[2][2], const double b[2], double out[2]) {
     for (int i = 0; i < 2; i++) {
-        double sum = 0.0;
+        out[i] = 0.0;
         for (int k = 0; k < 2; k++) {
-            sum += a[i][k] * b[k];
+            out[i] += a[i][k] * b[k];
         }
-        out[i] = sum;
     }
 }
 ```
 
-Helper bodies are written for C's memory layout, not Julia's: matrix–matrix
-multiplication runs its inner loop along a row of the output and a row of `b`,
-both contiguous in row-major storage. That's the speed-first principle from
-the README; the loops are still plain enough to read.
+Loop indices are `i`, `j`, `k` for up to three nested loops. Past three, the
+names are `i1`, `i2`, `i3`, `i4`, … for *all* of them — not `i, j, k, l` —
+so the pattern is obvious at a glance.
+
+Helper bodies are written for C's memory layout, not Julia's: multiplication
+runs its inner loop along a row of the output and a row of `b`, both
+contiguous in row-major storage. That's the speed-first principle from the
+README; the loops are still plain enough to read.
+
+**One generator per operation, for every shape.** Following the README's
+third principle, no helper body is written for one particular kind of array.
+Each operand has a *logical* shape (a vector is N×1, a row vector 1×N, a
+scalar 1×1, anything else its own shape) and a list of which of those
+dimensions it actually stores (a row stores only its column dimension). From
+those two facts, one `access` function produces the right C subscript for
+any operand, and:
+
+- every `*` of two arrays — matrix×matrix, matrix×vector, row×matrix,
+  column×row, row×column, `dot` — is the single contraction
+  `out(i,j) = Σ_k a(i,k) b(k,j)`, emitting only the loops with something to
+  loop over (that's why `mul_2x2_2` above has no `j` loop, and `mul_r3_3`
+  is just a sum);
+- every broadcast is one loop over the result's logical shape, with each
+  operand's extent-1 dimensions indexed by `0` — Julia's stretching rule
+  falls out of the subscript;
+- every block in `[A B; C D]` is placed by one loop over its logical shape
+  with offsets added.
+
+Implementation: `access`, `nest`, `contraction` in `src/helper.jl`.
 
 ### Naming
 
 A helper's name always carries the size and type of its inputs, whether or
 not that distinguishes it from anything. The name is the operation, a
-separator, then one description per input.
+separator, then one description per input. Three exceptions, each for a
+reason: `cross` has no size (it's always 3-vectors); the `cat` helpers list
+every input without collapsing (the count is the point); `fill_<dims>` names
+its output (its only input is a scalar).
 
 **Describing one input**
 
@@ -85,6 +112,7 @@ separator, then one description per input.
 | 3-vector | `3` | `3F32` |
 | 2×2 matrix | `2x2` | `2x2F32` |
 | 4×3×4 array | `4x3x4` | `4x3x4I32` |
+| row vector of 3 | `r3` | `r3F32` |
 | scalar | `s` | `F32` — the type *replaces* `s` |
 
 No `S`/`M` class letters: the C doesn't distinguish static from mutable.
@@ -144,6 +172,13 @@ for what was written.
 Implementation: `helpername` in `src/helper.jl`. Broadcast operations
 themselves aren't emitted yet; the naming is ready for them.
 
+**Elements.** `v[i]` and `A[i, j]` read as `v[i - 1]` and `A[i - 1][j - 1]` —
+Julia's indices are 1-based, C's are 0-based. `v[i] = x` writes the same way;
+a parameter written through `setindex!` is declared without `const`.
+`zeros`, `ones`, and `fill` with literal dimensions become a `fill_<dims>`
+helper (named by what it makes, the one helper whose name describes its
+output rather than its inputs). See `flow.md`.
+
 **Operations so far** — the meaning follows Julia's definition of each:
 
 | Julia | helper | applies to |
@@ -154,9 +189,56 @@ themselves aren't emitted yet; the naming is ready for them.
 | `s * A`, `A * s` | `mul` | scalar and any array |
 | `A * v` | `mul` | matrix × vector |
 | `A * B` | `mul` | matrix × matrix, inner dimensions equal |
+| `v' * A` | `mul_r3_3x2` | row × matrix → row |
+| `v' * w` | `mul_r3_3` | row × column → a scalar, returned |
+| `v * w'` | `mul_3_r3` | column × row → outer product |
+| `dot(v, w)` | `dot_3` | returns the scalar |
+| `cross(v, w)` | `cross` | 3-vectors only, so never size-mangled |
+| `transpose(A)`, `A'` | `transpose_2x3` | a matrix; a vector's transpose is free |
 
 Shape mismatches are errors at transpile time, as they'd be at run time in
 Julia. `A + B + C` (one call in Julia) is chained through a temp.
+
+### Row vectors
+
+`v'` (or `transpose(v)`) on a vector is a **row vector**: 1×N. In C it's the
+same storage as the vector it came from — `double r[3]` — so taking the
+transpose costs nothing; the transpiler just remembers that the value is a
+row, and every helper that receives one treats it as 1×N. In names it's `r3`.
+Transposing a row gives back the column, again for free. A user function
+whose Julia argument or result is an `Adjoint`/`Transpose` of a vector takes
+or returns a plain `double r[N]`.
+
+### Broadcasting
+
+`A .+ B`, `v .* M`, `exp.(v)`, `v .* w'` and so on become helpers named with
+`E` (element-wise, all inputs the same size) or `B` (broadcast) — the naming
+rules are under *Naming* below. The rules are Julia's: dimensions line up from
+the left, and a size of 1 (or a missing dimension) stretches to match, so a
+vector is N×1, a row vector 1×N, and `v .* w'` is an outer product. Julia
+fuses a chain like `exp.(v) .+ 2.0` into one loop; here each level is its own
+helper, chained through a temp (`expE_3`, then `addB_3_s`) — the same result,
+one more pass over the data. Broadcast functions supported: `+ - * / ^`,
+unary `-`, and the `math.h` functions listed in `flow.md`.
+
+### Block construction and literals
+
+`[A B; C D]`, `[u; v]`, `[u v]` become `hvcat2x2_…`, `vcat_…`, `hcat_…`
+helpers that copy each block into place. Every input is listed in the name —
+`hvcat2x2_2x2_2x2_2x2_2x2`, `vcat_3_3` — because the number of blocks matters
+and identical descriptions can't be collapsed. A scalar among the blocks is a
+1×1 block. The result's shape is worked out from the blocks' shapes.
+
+A literal with no arrays in it — `[1.0 2.0; 3.0 4.0]`, `[1.0, 2.0, 3.0]`,
+`SVector(1.0, 2.0, 3.0)`, `@SMatrix […]`, `SA[…]` — is assigned element by
+element, no helper:
+
+```c
+result[0][0] = 1.0;
+result[0][1] = 2.0;
+result[1][0] = 3.0;
+result[1][1] = 4.0;
+```
 
 ## Assignment and aliasing
 

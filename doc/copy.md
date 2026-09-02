@@ -65,12 +65,14 @@ All of this is straight-line only — see below.
   once. Always safe for SSA values; the work is precedence and
   parenthesization, and deciding when an expression has grown long enough
   that a named temp is *more* readable, not less.
-- **Control flow.** The `stable` check walks statements linearly and assumes
-  each executes once, in order. With branches and loops, "between the copy
-  and the use" becomes a question about paths, and the IR introduces phi
-  nodes (a value that is one thing or another depending on which branch ran).
-  The current check is not valid there and must be replaced by a proper
-  dataflow analysis before any of the above is applied to non-linear code.
+- **Control flow** turned out not to be a problem for the rule. The `stable`
+  check walks statements textually, and that is sound for Julia's lowering
+  because it is *structured*: every statement executed between a value's
+  definition and a use of it lies between them in the statement list too
+  (jumps only skip forward within a construct or return to a loop's header,
+  and a value defined inside one iteration is never used in the next — that
+  goes through a variable). The unoptimized IR has no phi nodes; branches
+  meet through variables, which the check already accounts for.
 - **Multiple returns.** Related: `result` is currently claimed once per
   function; with several return paths it needs to be declared once and
   assigned on each path.
