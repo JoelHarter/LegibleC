@@ -25,24 +25,28 @@ prototypes, the helpers it needs, and the functions.
 | `f(x, y) = …`, `function f(x, y) … end` | yes; the name is kept in C |
 | argument types: the scalars below, static arrays, `Array{T,N}` with a size given in the call | yes |
 | the same function at several signatures | yes; each gets the types appended to its name (`poly_I64_I64`) |
-| default arguments, keyword arguments | not yet |
+| default arguments, keyword arguments | untested (the IR should already show the filled-in call) |
 | returning a scalar | `return x;` |
 | returning an array | through a trailing `out` parameter |
-| returning nothing, tuples, multiple values | not yet |
-| calling another user function | not yet |
+| `return nothing`, a `Nothing` result | `void` |
+| tuples, multiple return values | yes, as a generated struct (`struct.md`) |
+| calling another user function | yes; brought in on demand if not listed, recursion included (`call.md`) |
+| `ccall`, `@ccall` | yes: the call itself, with a header or a prototype (`call.md`) |
 | docstrings and comments | carried into the C (see `comment.md`) |
 
 ## Scalar types
 
 `Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`. See `type.md`
-for the C spelling of each. Not yet: complex, `Char`, strings, `Int128`,
-`Float16`, `Rational`, `BigInt`.
+for the C spelling of each. `struct` (immutable by value, mutable through a
+pointer, parametric at concrete types) and `Tuple` — see `struct.md`. Not
+yet: complex, `Char`, strings, `Int128`, `Float16`, `Rational`, `BigInt`,
+`@enum`, `Union{T, Nothing}`.
 
 ## Scalar expressions
 
 | Julia | works |
 |---|---|
-| `+ - * / ÷ %`, `mod` (integers) | yes |
+| `+ - * / \ ÷ %`, `mod` (integers) | yes |
 | `x^2`, `x^3`, `x^n` with float `x` | yes (`x^n` on integers beyond 3: not yet) |
 | `< <= > >= == !=` | yes |
 | `! & \| xor << >> ~` | yes |
@@ -85,14 +89,18 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `A + B`, `A - B`, `-A`, `s * A`, `A * s` | yes |
 | `A * B`, `A * v`, `v' * A`, `v' * w`, `v * w'`, `A * B'`, `A' * B` | yes |
 | `dot(v, w)`, `cross(v, w)`, `det(A)` | yes |
+| `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm` | yes |
+| `A[i, :]`, `A[:, j]`, `v[2:4]` (a literal range) | yes |
+| `A \ b`, `A \ B`, `B / A`, `A / s`, `inv(A)`, `cholesky(A) \ b`, `inv(cholesky(A))`, `lu(A) \ b` | yes; 1–3 written out, LU with partial pivoting beyond |
 | `v'`, `A'`, `transpose(…)` | yes, free (0–2 dimensions, as in Julia) |
 | broadcasting: `.+ .- .* ./ .^`, unary `.-`, `f.(A)` for the `math.h` functions above, any shapes Julia allows | yes |
 | `zeros`, `ones`, `fill`, `zero(A)`, `one(A)`, `SMatrix{n,n}(I)` | yes |
 | `[1.0 2.0; 3.0 4.0]`, `[1.0, 2.0]`, `SVector(…)`, `@SMatrix […]`, `SA[…]` | yes |
 | `[A B; C D]`, `[u; v]`, `[u v]`, with scalars among the blocks | yes |
 | `B = A`, `B = A'`, `A = A * A` | yes (copies, and a temp when the destination is an operand) |
-| slicing (`v[2:3]`, `A[i, :]`), `sum`, `prod`, `maximum`, `norm`, `any`, `all` | not yet |
+| `A[1:2, :]`, `A[i, 2:3]`, a range in a variable, N-D slices | not yet |
 | `.==`, `.<`, `ifelse.` | not yet |
+| runtime-sized `Array` arguments (`staticarray=false`) | not yet — see `map.md` §3.4 for the VLA design |
 | a multiple of the identity (`2I`) | not yet |
 
 ## Comments

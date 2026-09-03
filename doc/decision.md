@@ -612,3 +612,98 @@ would be the wrong choice for large matrices, but a large *static* matrix
 is rare, and the recursion through generated helpers reads exactly like the
 textbook. This is the pattern for the more involved algorithms to come:
 sizes 1–3 hardcoded, a general form beyond, both as helpers.
+
+---
+
+## 2026-09-04 — `restrict` on every output array
+
+**Decision.** Every output array — a helper's `out`, a user function's
+trailing `out` — is declared `double out[restrict 3]`. The Doxygen line on
+the user function says the caller must not overlap it with an input.
+
+**Why.** A Julia result is always a fresh array, so `out` provably never
+aliases an input; the transpiler already routes a result that is also an
+operand through a temp, and now that promise is written down where the C
+compiler can use it to keep loads in registers across the stores and to
+vectorize. It's the README's first principle for free. The array-parameter
+spelling (`out[restrict 3]`) is legal C99 and keeps the size visible, which
+`double *restrict out` would lose.
+
+---
+
+## 2026-09-04 — Calls are calls; callees come in on demand; `ccall` passes through
+
+**Decision.** A call to a user function is a C call. The callee is resolved
+at the call's argument types and transpiled if it wasn't asked for, with
+its Julia name unless that's taken. A `ccall` becomes the symbol called
+directly, with the standard header when the name is one of a known
+header's and a prototype from the `ccall`'s types otherwise. A `Ptr`
+argument is `const` when the Julia value is an immutable static array.
+
+**Why.** Real programs are more than one function; and Julia that already
+calls C is the easiest possible thing to turn into C — the call *is* the
+C. Bringing callees in on demand means the user lists entry points, not
+every function, and recursion needs nothing special since every function
+has a prototype. The `const` rule is Julia's own: an immutable static
+array can't be written through a pointer, a mutable one can.
+
+---
+
+## 2026-09-04 — Structs by value, mutable structs by pointer, tuples as structs
+
+**Decision.** An immutable `struct` is a C struct passed and returned by
+value; a `mutable struct` is always a pointer; a parametric struct is one C
+struct per concrete instantiation, named like a function at several
+signatures; a tuple is a struct `Tuple_F64_I64` with fields `a`, `b`, …
+Creating a mutable struct inside transpiled code is refused. A trailing `!`
+on a function name is dropped.
+
+**Why.** Each of these is what the Julia semantics say: an immutable struct
+*is* a value, a mutable one *is* a reference, and C has exactly one honest
+spelling for each. Making a mutable struct would need an allocation and an
+answer to who frees it — the design in `map.md` §3.1 — and refusing it now
+keeps everything on the stack, which is where this project lives. Tuple
+fields can't have meaningful names, and the letters are already the
+convention for anonymous inputs. `bump!` → `bump` because `bumpU21` is what
+the general Unicode rule would produce, and nobody would write that.
+
+---
+
+## 2026-09-04 — Solvers: sizes 1–3 written out, pivoted LU from 4, all on the stack
+
+**Decision.** `A \ b` and `inv(A)` at sizes 1–3 are Cramer's rule and the
+adjugate over the determinant, written out exactly as StaticArrays writes
+them. From 4 on: LU with partial pivoting, with the pivot step its own
+helper (`pivot_NxN`), the decomposition another (`lu_NxN`), and the solve
+and inverse built on those. `cholesky(A) \ b` and `inv(cholesky(A))` are
+Cholesky, written out for 1–3. `B / A` is the same solve with `A` read
+transposed, one row at a time, and `\` and `/` on scalars and
+array-over-scalar are the plain division they are in Julia. A singular or
+non-positive-definite matrix prints Julia's exception and `abort`s. Every
+work array is a stack array of the static size; nothing is allocated.
+
+**Why.** This is the user's rule for every involved algorithm, and it is
+also what makes the code both fastest and most readable at the sizes that
+dominate: the written-out forms have no loops, no branches, and no pivot
+search, and they are what a person writes for a 3×3. Beyond that, an
+unguarded algorithm would fail on perfectly ordinary matrices, so the
+deterministic guard is partial pivoting, factored out so that every
+elimination — the coming QR and LDLT included — shares one definition of
+"choose the pivot". `abort` on singularity is the error mapping `map.md`
+§3.8 proposes: an uncaught exception ends a Julia program the same way.
+LDLT is deferred because Julia offers no `ldlt` for static matrices to hang
+it on; it needs a reference implementation first.
+
+---
+
+## 2026-09-04 — Runtime-sized arrays stay open
+
+**Decision.** `staticarray=false` still refuses. The VLA design in
+`map.md` §3.4 stands, unbuilt.
+
+**Why.** Sizes are in every helper's name, loops, and result type. Runtime
+sizes mean helpers that take sizes as parameters and, harder, result sizes
+derived symbolically from input sizes (`A * B'` is `m×m`). That's a second
+helper layer, not an extension of this one, and it deserves its own
+session rather than the tail of one that added six features. Nothing done
+here makes it harder.

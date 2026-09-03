@@ -30,7 +30,11 @@ include("reserved.jl")
 Collisions are not handled here; see [`identifiers`](@ref).
 """
 function identifier(name::AbstractString)
-    s = join(piece(c) for c in Unicode.normalize(String(name), :NFKD))
+    # Julia's trailing `!` marks a function that mutates its argument; C has no such
+    # mark, so it's dropped: `bump!` -> `bump`.
+    name = String(name)
+    endswith(name, "!") && (name = name[1:end-1])
+    s = join(piece(c) for c in Unicode.normalize(name, :NFKD))
     # C keeps every file-scope name that starts with `_` (and `_X…`, `__…` anywhere) for
     # itself, so leading underscores move to the end: `_x` -> `x_`, `__Foo` -> `Foo__`.
     m = match(r"^_+", s)
@@ -117,6 +121,7 @@ end
 
 # The mangled description of one argument type at a given level.
 function describe(T::Type, level, alldouble)
+    (isstruct(T) || istuple(T)) && return structname(T)
     if T <: AbstractArray
         d = dims(T)
         level >= 2 && !alldouble && (d *= abbrev(eltype(T)))

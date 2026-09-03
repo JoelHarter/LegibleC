@@ -202,6 +202,14 @@ output rather than its inputs). See `flow.md`.
 | `A * B'`, `A' * B` | `mul_2x3_T2x3`, `mul_T3x2_3x2` | the transpose costs nothing, see below |
 | `dot(v, w)` | `dot_3_3` | returns the scalar |
 | `det(A)` | `det_3x3` | returns the scalar; sizes 1–3 written out, cofactor expansion from 4 (`det_5x5` → `det_4x4` → `det_3x3`) |
+| `sum(A)`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm(v)` | `sum_3`, `maximum_2x2`, `norm_3` | one loop each, returning the scalar; `maximum`/`minimum` compare, so a NaN is passed over where Julia would return it |
+| `A[i, :]`, `A[:, j]`, `v[2:4]` | `row_2x3(A, i - 1, out)`, `col_2x3`, `slice_5_3(v, 1, out)` | a copy, as in Julia; the position is a 0-based parameter |
+| `A \ b`, `A \ B` | `solve_3x3_3`, `solve_3x3_3x2` | see *Solving* below |
+| `inv(A)` | `inv_3x3` | see *Solving* below |
+| `cholesky(A) \ b`, `inv(cholesky(A))` | `solveLLT_3x3_3`, `invLLT_3x3` | Cholesky, `llt_3x3` inside |
+| `lu(A) \ b` | `solve_4x4_4` | the same as `A \ b` |
+| `B / A`, `v' / A` | `rsolve_2x3_3x3` | each row against `Aᵀ`, through `solve_T3x3_3` |
+| `A / s`, `s \ A` | `div_2x2_s` | elementwise |
 | `cross(v, w)` | `cross_3_3` | 3-vectors only |
 | `transpose(A)`, `A'` | nothing | free for anything: same storage, axes read the other way |
 | `zeros(3, 4)`, `zeros(T)`, `zero(A)` | `zero_3x4` | one `memset`; `zero_2x2I64` when not `Float64` |
@@ -238,6 +246,31 @@ addition`). Known functions get their English name — `exponential`,
 `square root`, `hyperbolic tangent` — and anything else is called by its
 Julia name. Implementation: `src/prose.jl`.
 
+### Solving
+
+`A \ b` and `inv(A)` follow one rule for every algorithm: **sizes 1–3 are
+written out in full**, the way StaticArrays writes them — Cramer's rule
+straight from the determinant for a solve, the adjugate over the
+determinant for an inverse — and **from 4 on it's a deterministic algorithm
+that guards against singularity**: LU with partial pivoting. The pivot is
+its own helper, `pivot_4x4(LU, p, k)`, which swaps the largest remaining
+entry of column `k` into place in the work array and the permutation;
+`lu_4x4(A, LU, p)` calls it once per column; `solve_4x4_4` and `inv_4x4`
+call `lu_4x4` and then substitute (the inverse once per identity column).
+`cholesky(A) \ b` and `inv(cholesky(A))` go through `llt_3x3(A, L)`, written
+out for 1–3 and a loop beyond, then two triangular solves. A matrix
+right-hand side is solved column by column through the vector solve.
+
+Everything lives on the stack in arrays of the static size — `double
+LU[4][4]; int p[4];` — with no allocation anywhere. A singular matrix in the
+LU path, or a non-positive-definite one in the Cholesky path, is Julia's
+`SingularException` / `PosDefException`; the C prints that to `stderr` and
+`abort`s, which is what an uncaught exception does in Julia. Sizes 1–3 don't
+check: they divide by the determinant, as StaticArrays does.
+
+Not yet: LDLT (Julia has no `ldlt` for static matrices to hang it on),
+`cholesky(A).L`, `cholesky(A) \ B` with a matrix `B`, QR, eigenvalues.
+
 ### Parameters
 
 A helper's inputs are named by marching up the alphabet, `a`, `b`, `c`, …,
@@ -249,8 +282,13 @@ const double D[2][2], double out[4][4])`. The output is always `out`. Should
 a helper ever have more than 26 inputs, the names continue `aa`, `ab`, … like
 spreadsheet columns. Loop indices are `i`, `j`, `k`, then `i1`, `i2`, … past
 three; one that would collide with an input (the ninth input is `i`) gets
-`_` appended: `i_`. Implementation: `inputs` and `indices` in
-`src/helper.jl`.
+`_` appended: `i_`. Every output array is declared `restrict` —
+`double out[restrict 3]` — because a Julia result is always a fresh array, so
+`out` never overlaps an input; saying so lets the compiler keep loads in
+registers across the stores, and it's a promise the transpiler keeps
+internally (a result that is also an operand goes through a temp). A C
+caller must keep it too: the Doxygen line on every `out` says so.
+Implementation: `inputs` and `indices` in `src/helper.jl`.
 
 ### Transposes
 

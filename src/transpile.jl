@@ -73,30 +73,57 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
     unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
     names = cnames(instances)
-    helpers = Dict{String, String}()
-    headers = Set(["stdint.h", "stdbool.h"])
-    functions = [cfunction(n, mi, sig, helpers, headers; templimit, staticarray, source) for (n, (mi, sig)) in zip(names, instances)]
+    prog = Program()
+    union!(prog.names, names)
+    for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
+    generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source, blocked)
+    functions = [generate(n, mi, sig) for (n, (mi, sig)) in zip(names, instances)]
+    # A call to a function that wasn't asked for brings it in, and it may call others.
+    while !isempty(prog.pending)
+        mi, sig, n = popfirst!(prog.pending)
+        push!(instances, (mi, sig))
+        push!(names, n)
+        push!(functions, generate(n, mi, sig))
+    end
     # The helpers' names are known only now. A function that shares one is an error,
     # since its name is the C interface; a variable that shares one is renamed with `_`
     # by generating that function again with the helper names blocked.
     for n in names
-        haskey(helpers, n) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
+        haskey(prog.helpers, n) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
     end
     for (k, (n, (mi, sig))) in enumerate(zip(names, instances))
-        any(v -> haskey(helpers, v), functions[k][3]) || continue
-        functions[k] = cfunction(n, mi, sig, helpers, headers; templimit, staticarray, source, blocked=keys(helpers))
+        any(v -> haskey(prog.helpers, v), functions[k][3]) || continue
+        functions[k] = generate(n, mi, sig; blocked=keys(prog.helpers))
     end
     path = joinpath(outpath, endswith(outfile, ".c") ? outfile : outfile * ".c")
     open(path, "w") do io
-        for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "math.h")
-            h in headers && println(io, "#include <", h, ">")
+        for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "stdio.h", "math.h")
+            h in prog.headers && println(io, "#include <", h, ">")
         end
         println(io)
+        for (_, definition) in prog.structs; print(io, definition); println(io); end
+        for name in sort!(collect(keys(prog.foreign))); println(io, prog.foreign[name]); end
+        isempty(prog.foreign) || println(io)
         for (prototype, _, _) in functions; println(io, prototype); end
-        for name in sort!(collect(keys(helpers))); println(io); print(io, helpers[name]); end
+        for name in helperorder(prog.helpers); println(io); print(io, prog.helpers[name]); end
         for (_, definition, _) in functions; println(io); print(io, definition); end
     end
     return path
+end
+
+# The helpers in the order they can be defined: alphabetical, except that one that calls
+# another comes after it (`det_4x4` after `det_3x3`, `solve_4x4_4` after `lu_4x4` after
+# `pivot_4x4`), so no prototypes are needed.
+function helperorder(helpers)
+    order = String[]
+    remaining = sort!(collect(keys(helpers)))
+    while !isempty(remaining)
+        ready = filter(n -> all(m -> m == n || m in order || !occursin(m * "(", helpers[n]), remaining), remaining)
+        isempty(ready) && throw(ArgumentError("helpers call each other in a cycle: $(join(remaining, ", "))"))
+        append!(order, ready)
+        filter!(!in(ready), remaining)
+    end
+    return order
 end
 
 # C names for the instances: each Julia name made C-valid, instances that share a name

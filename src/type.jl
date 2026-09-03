@@ -22,6 +22,9 @@ function ctype(T::Type)
     for (julia, c, _) in scalars
         T === julia && return c
     end
+    T === Nothing && return "void"
+    isstruct(T) && return structname(T) * (ismutabletype(T) ? " *" : "")
+    istuple(T) && return structname(T)
     T <: Complex && throw(ArgumentError("complex numbers are not yet supported (got $T)"))
     T <: AbstractArray && throw(ArgumentError("arrays are not yet supported (got $T)"))
     throw(ArgumentError("no C type for $T"))
@@ -34,6 +37,42 @@ function abbrev(T::Type)
     end
     throw(ArgumentError("no abbreviation for $T"))
 end
+
+# ---- structs and tuples ------------------------------------------------------------
+
+# A user's struct: a type with fields that isn't a scalar, an array, a tuple, or one of
+# Julia's own. An immutable one is a C struct passed and returned by value, which is
+# Julia's semantics exactly; a `mutable struct` is a reference in Julia — two variables
+# can hold the same one — so in C it's always handled through a pointer.
+isstruct(T::Type) = T isa DataType && isstructtype(T) && !(T <: AbstractArray) && !(T <: Tuple) && !(T <: Function) &&
+                    !(T <: Type) && !(nameof(Base.moduleroot(T.name.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays))
+
+# A concrete tuple type — `Tuple{Float64, Int64}`, a multiple return value — which is a
+# generated C struct with fields named like helper inputs: `a`, `b`, `c`, …
+istuple(T::Type) = T isa DataType && T <: Tuple && isconcretetype(T)
+
+# The C name of a struct or tuple type: the Julia name, with type parameters appended
+# the way a function's argument types are (`Point_F32`, `Body_3`); a tuple is
+# `Tuple_` and its element types (`Tuple_F64_I64`, `Tuple_3_2x2`).
+function structname(T::Type)
+    istuple(T) && return "Tuple_" * join((typeword(P) for P in T.parameters), "_")
+    base = identifier(string(nameof(T)))
+    isempty(T.parameters) && return base
+    return base * "_" * join((p isa Type ? typeword(p) : string(p) for p in T.parameters), "_")
+end
+
+# One type as it appears inside a struct's name.
+typeword(T) = T <: AbstractArray ? dims(T) * (eltype(T) === Float64 ? "" : abbrev(eltype(T))) :
+              isstruct(T) || istuple(T) ? structname(T) : abbrev(T)
+
+# The C names of a struct's fields, in order; a tuple's are letters.
+fieldcnames(T::Type) = istuple(T) ? inputs(collect(T.parameters)) : identifiers(string.(fieldnames(T)))
+
+# The C name of field `f` (a symbol or a 1-based position) of `T`.
+fieldcname(T::Type, f) = fieldcnames(T)[f isa Integer ? f : findfirst(==(f), fieldnames(T))]
+
+# `.` for a struct held by value, `->` for a mutable one held through a pointer.
+arrow(T::Type) = isstruct(T) && ismutabletype(T) ? "->" : "."
 
 # The fixed size an array type carries, or nothing if it doesn't (a regular Array).
 # Static array types define `size` on the type itself; that's the test, so no package
@@ -109,10 +148,14 @@ end
 # The extents of `T` along every axis up to its last, for looping over its elements.
 extents(T::Type) = Tuple(extent(T, d) for d in 1:(isempty(axis(T)) ? 0 : maximum(axis(T))))
 
-# A C declaration of `name` with type `T`: `double x`, `const double a[2][2]`.
-function declare(T::Type, name::AbstractString; constant::Bool=false)
-    T <: AbstractArray || return ctype(T) * " " * name
+# A C declaration of `name` with type `T`: `double x`, `const double a[2][2]`. With
+# `restrict`, an output array is declared `double out[restrict 2][2]`: a Julia result is
+# always a fresh array, so `out` never overlaps an input, and saying so lets the
+# compiler keep loads in registers across the stores.
+function declare(T::Type, name::AbstractString; constant::Bool=false, restrict::Bool=false)
+    T <: AbstractArray || return (c = ctype(T); endswith(c, "*") ? c * name : c * " " * name)
     s = shape(T)
     s === nothing && throw(ArgumentError("arrays without a size in their type are not yet supported (got $T)"))
-    return (constant ? "const " : "") * ctype(eltype(T)) * " " * name * join("[$n]" for n in s)
+    first = (restrict ? "[restrict " : "[") * string(s[1]) * "]"
+    return (constant ? "const " : "") * ctype(eltype(T)) * " " * name * first * join("[$n]" for n in s[2:end])
 end

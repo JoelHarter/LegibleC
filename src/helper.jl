@@ -53,7 +53,7 @@ end
 function helpercode(name::AbstractString, op::Symbol, types, R::Type)
     names = inputs(types)
     params = [declare(T, n; constant=true) for (T, n) in zip(types, names)]
-    push!(params, declare(R, "out"))
+    push!(params, declare(R, "out"; restrict=true))
     aligned = all(T -> !(T <: AbstractArray) || axis(T) == axis(R), types)
     sub(T, var, idx) = aligned ? (T <: AbstractArray ? var * brackets(idx) : var) : access(T, var, idx)
     walk(line) = elementwise(aligned ? shape(R) : extents(R), idx -> "$(sub(R, "out", idx)) = $(line(idx));"; taken=names)
@@ -69,6 +69,12 @@ function helpercode(name::AbstractString, op::Symbol, types, R::Type)
         # A scalar times an array: elementwise, whichever side the scalar is on.
         a, b = types
         walk(idx -> "$(sub(a, names[1], idx)) * $(sub(b, names[2], idx))")
+    elseif op == :div
+        # An array over a scalar: elementwise. Julia's `/` is always floating, so two
+        # integers get a cast, as in the scalar case.
+        a, b = types
+        cast = eltype(a) <: Integer && b <: Integer ? "($(ctype(eltype(R))))" : ""
+        walk(idx -> "$cast$(sub(a, names[1], idx)) / $(sub(b, names[2], idx))")
     elseif op == :mul
         contraction(types..., names..., R, eltype(R))
     else
@@ -230,7 +236,7 @@ function fillhelper!(helpers::Dict{String, String}, R::Type)
     name = "fill_" * outname(R)
     if !haskey(helpers, name)
         body = elementwise(shape(R), idx -> "out$(brackets(idx)) = a;")
-        helpers[name] = definition("void", name, ["$(ctype(eltype(R))) a", declare(R, "out")], body; doc="$(describe(R)) fill")
+        helpers[name] = definition("void", name, ["$(ctype(eltype(R))) a", declare(R, "out"; restrict=true)], body; doc="$(describe(R)) fill")
     end
     return name
 end
@@ -288,6 +294,359 @@ function dethelper!(helpers::Dict{String, String}, T::Type, E::Type)
     return name
 end
 
+# A reduction of every element of `T` to one value of type `E`: `sum_3`, `maximum_2x2`,
+# `norm_3`. One loop in storage order; `maximum`/`minimum` compare, so a NaN is passed
+# over where Julia would return it.
+function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Type)
+    name = helpername(op, (T,))
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    idx, pairs = loopindices(shape(T))
+    a = A * brackets(idx)
+    first = A * brackets(["0" for _ in shape(T)])
+    zero = E <: AbstractFloat ? (ctype(E) == "float" ? "0.0f" : "0.0") : "0"
+    one = E <: AbstractFloat ? (ctype(E) == "float" ? "1.0f" : "1.0") : "1"
+    body = op == :sum     ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a;"]); "return sum;"] :
+           op == :prod    ? ["$(ctype(E)) product = $one;"; nest(pairs, ["product *= $a;"]); "return product;"] :
+           op == :maximum ? ["$(ctype(E)) max = $first;"; nest(pairs, ["if ($a > max) {", "    max = $a;", "}"]); "return max;"] :
+           op == :minimum ? ["$(ctype(E)) min = $first;"; nest(pairs, ["if ($a < min) {", "    min = $a;", "}"]); "return min;"] :
+           op == :any     ? [nest(pairs, ["if ($a) {", "    return true;", "}"]); "return false;"] :
+           op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
+           op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a * $a;"]); "return $(ctype(E) == "float" ? "sqrtf" : "sqrt")(sum);"] :
+           throw(ArgumentError("unsupported reduction: $op"))
+    helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc=prose(op, (T,)))
+    return name
+end
+
+# A slice of an array into a smaller one: a row or a column of a matrix, or a run of a
+# vector. The position is a parameter, 0-based, so one helper serves every position.
+function slicehelper!(helpers::Dict{String, String}, kind::Symbol, T::Type, R::Type)
+    m = kind == :row ? "row" : kind == :col ? "col" : "slice"
+    name = m * "_" * dims(T) * (kind == :slice ? "_" * dims(R) : "")
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    body, param, doc = if kind == :row
+        nest([("j", shape(R)[1])], ["out[j] = $(access(T, A, ["i", "j"]));"]), "int i", "row of a $(describe(T))"
+    elseif kind == :col
+        nest([("i", shape(R)[1])], ["out[i] = $(access(T, A, ["i", "j"]));"]), "int j", "column of a $(describe(T))"
+    else
+        nest([("i", shape(R)[1])], ["out[i] = $(A)[from + i];"]), "int from", "$(shape(R)[1])-element slice of a $(describe(T))"
+    end
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), param, declare(R, "out"; restrict=true)], body; doc)
+    return name
+end
+
+# ---- solving and inverting ---------------------------------------------------------
+#
+# The rule for every algorithm here: sizes 1–3 are written out in full, the way
+# StaticArrays writes them (Cramer's rule straight from the determinant, the adjugate
+# for the inverse); from 4 on it's a deterministic algorithm that guards against
+# singularity — LU with partial pivoting, the pivot chosen by `pivot_NxN`. Everything
+# lives on the stack in arrays of the static size: no allocation anywhere.
+
+# The literal one and zero of `E`.
+onezero(E::Type) = E <: AbstractFloat ? (ctype(E) == "float" ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
+
+# Partial pivoting for column `k` of the LU work array: the row at or below `k` with the
+# largest magnitude in that column is swapped into row `k`, in both `LU` and the
+# permutation `p`. Shared by `lu_NxN` and anything else that eliminates.
+function pivothelper!(helpers::Dict{String, String}, T::Type)
+    n = shape(T)[1]
+    E = eltype(T)
+    name = "pivot_" * dims(T)
+    haskey(helpers, name) && return name
+    fabs = ctype(E) == "float" ? "fabsf" : "fabs"
+    body = ["int best = k;",
+            "for (int i = k + 1; i < $n; i++) {",
+            "    if ($fabs(LU[i][k]) > $fabs(LU[best][k])) {",
+            "        best = i;",
+            "    }",
+            "}",
+            "if (best != k) {",
+            "    for (int j = 0; j < $n; j++) {",
+            "        $(ctype(E)) t = LU[k][j];",
+            "        LU[k][j] = LU[best][j];",
+            "        LU[best][j] = t;",
+            "    }",
+            "    int t = p[k];",
+            "    p[k] = p[best];",
+            "    p[best] = t;",
+            "}"]
+    helpers[name] = definition("void", name, ["$(ctype(E)) LU[$n][$n]", "int p[$n]", "int k"], body; doc="partial pivot of a $(describe(T)) at column k")
+    return name
+end
+
+# LU decomposition with partial pivoting of `A` into `LU` (L below the diagonal with a
+# unit diagonal, U on and above it) and the row permutation `p`. A zero pivot is a
+# singular matrix, which Julia reports as `SingularException`; the C prints that and
+# stops.
+function luhelper!(helpers::Dict{String, String}, T::Type)
+    n = shape(T)[1]
+    E = eltype(T)
+    name = "lu_" * dims(T)
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    _, zero = onezero(E)
+    body = ["for (int i = 0; i < $n; i++) {",
+            "    for (int j = 0; j < $n; j++) {",
+            "        LU[i][j] = $(access(T, A, ["i", "j"]));",
+            "    }",
+            "    p[i] = i;",
+            "}",
+            "for (int k = 0; k < $n; k++) {",
+            "    $(pivothelper!(helpers, T))(LU, p, k);",
+            "    if (LU[k][k] == $zero) {",
+            "        fprintf(stderr, \"SingularException(%d)\\n\", k + 1);",
+            "        abort();",
+            "    }",
+            "    for (int i = k + 1; i < $n; i++) {",
+            "        LU[i][k] /= LU[k][k];",
+            "        for (int j = k + 1; j < $n; j++) {",
+            "            LU[i][j] -= LU[i][k] * LU[k][j];",
+            "        }",
+            "    }",
+            "}"]
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), "$(ctype(E)) LU[restrict $n][$n]", "int p[restrict $n]"], body;
+                               doc="LU decomposition of a $(describe(T)) with partial pivoting")
+    return name
+end
+
+# The lines solving `A x = b` from an existing LU: forward substitution with the
+# permuted right-hand side (`b` given as an expression in `i`), then back substitution,
+# into `x`.
+function lusolve(n, x, b)
+    ["for (int i = 0; i < $n; i++) {",
+     "    $x[i] = $b;",
+     "    for (int k = 0; k < i; k++) {",
+     "        $x[i] -= LU[i][k] * $x[k];",
+     "    }",
+     "}",
+     "for (int i = $(n - 1); i >= 0; i--) {",
+     "    for (int k = i + 1; k < $n; k++) {",
+     "        $x[i] -= LU[i][k] * $x[k];",
+     "    }",
+     "    $x[i] /= LU[i][i];",
+     "}"]
+end
+
+# `A \ b` for a square `A` and a vector `b`: `solve_3x3_3`. Sizes 1–3 by Cramer's rule,
+# written out exactly as StaticArrays writes them; from 4 on through `lu_NxN`.
+function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
+    n = shape(T)[1]
+    ndims(T) == 2 && allequal(shape(T)) && extent(B, 1) == n || throw(ArgumentError("\\: a $(describe(T)) can't be solved against a $(describe(B))"))
+    E = eltype(R)
+    name = helpername(:solve, (T, B))
+    haskey(helpers, name) && return name
+    A, b = inputs((T, B))
+    if ndims(B) == 2
+        # A matrix right-hand side: one column at a time through the vector solve.
+        m = extent(B, 2)
+        V = shaped(eltype(B), (n,))
+        body = ["$(ctype(eltype(B))) column[$n];", "$(ctype(E)) x[$n];",
+                "for (int j = 0; j < $m; j++) {",
+                "    for (int i = 0; i < $n; i++) {",
+                "        column[i] = $(access(B, b, ["i", "j"]));",
+                "    }",
+                "    $(solvehelper!(helpers, T, V, shaped(E, (n,))))($A, column, x);",
+                "    for (int i = 0; i < $n; i++) {",
+                "        out[i][j] = x[i];",
+                "    }",
+                "}"]
+        helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
+                                   doc="$(describe(T)) \\ $(describe(B)) solve, column by column")
+        return name
+    end
+    a(i, j) = access(T, A, [string(i), string(j)])
+    bb(i) = access(B, b, [string(i), "0"])
+    body = if n == 1
+        ["out[0] = $(bb(0)) / $(a(0, 0));"]
+    elseif n == 2
+        ["$(ctype(E)) d = $(dethelper!(helpers, T, E))($A);",
+         "out[0] = ($(a(1, 1)) * $(bb(0)) - $(a(0, 1)) * $(bb(1))) / d;",
+         "out[1] = ($(a(0, 0)) * $(bb(1)) - $(a(1, 0)) * $(bb(0))) / d;"]
+    elseif n == 3
+        ["$(ctype(E)) d = $(dethelper!(helpers, T, E))($A);",
+         "out[0] = (($(a(1, 1)) * $(a(2, 2)) - $(a(1, 2)) * $(a(2, 1))) * $(bb(0))",
+         "        + ($(a(0, 2)) * $(a(2, 1)) - $(a(0, 1)) * $(a(2, 2))) * $(bb(1))",
+         "        + ($(a(0, 1)) * $(a(1, 2)) - $(a(0, 2)) * $(a(1, 1))) * $(bb(2))) / d;",
+         "out[1] = (($(a(1, 2)) * $(a(2, 0)) - $(a(1, 0)) * $(a(2, 2))) * $(bb(0))",
+         "        + ($(a(0, 0)) * $(a(2, 2)) - $(a(0, 2)) * $(a(2, 0))) * $(bb(1))",
+         "        + ($(a(0, 2)) * $(a(1, 0)) - $(a(0, 0)) * $(a(1, 2))) * $(bb(2))) / d;",
+         "out[2] = (($(a(1, 0)) * $(a(2, 1)) - $(a(1, 1)) * $(a(2, 0))) * $(bb(0))",
+         "        + ($(a(0, 1)) * $(a(2, 0)) - $(a(0, 0)) * $(a(2, 1))) * $(bb(1))",
+         "        + ($(a(0, 0)) * $(a(1, 1)) - $(a(0, 1)) * $(a(1, 0))) * $(bb(2))) / d;"]
+    else
+        vcat(["$(ctype(E)) LU[$n][$n];", "int p[$n];", "$(luhelper!(helpers, T))($A, LU, p);"], lusolve(n, "out", access(B, b, ["p[i]", "0"])))
+    end
+    doc = n <= 3 ? "$(describe(T)) \\ $(describe(B)) solve by Cramer's rule" : "$(describe(T)) \\ $(describe(B)) solve by LU with partial pivoting"
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc)
+    return name
+end
+
+# `B / A`: `rsolve_2x3_3x3`. Each row of `B` is a right-hand side of `Aᵀ x = rowᵀ`, so
+# the work is the vector solve with `A` read transposed — the same helper as `\`,
+# `solve_T3x3_3`, which costs nothing to read the other way round.
+function rsolvehelper!(helpers::Dict{String, String}, B::Type, A::Type, R::Type)
+    n = shape(A)[1]
+    ndims(A) == 2 && allequal(shape(A)) && extent(B, 2) == n || throw(ArgumentError("/: a $(describe(B)) can't be divided by a $(describe(A))"))
+    m = extent(B, 1)
+    E = eltype(R)
+    name = helpername(:rsolve, (B, A))
+    haskey(helpers, name) && return name
+    Bn, An = inputs((B, A))
+    inner = solvehelper!(helpers, transposed(A), shaped(eltype(B), (n,)), shaped(E, (n,)))
+    i = m > 1 ? "i" : "0"
+    body = vcat(["$(ctype(eltype(B))) row[$n];", "$(ctype(E)) x[$n];"],
+                nest(live([("i", m)]), vcat(nest([("j", n)], ["row[j] = $(access(B, Bn, [i, "j"]));"]),
+                                            ["$inner($An, row, x);"],
+                                            nest([("j", n)], ["$(access(R, "out", [i, "j"])) = x[j];"]))))
+    helpers[name] = definition("void", name, [declare(B, Bn; constant=true), declare(A, An; constant=true), declare(R, "out"; restrict=true)], body;
+                               doc="$(describe(B)) / $(describe(A)) solve, row by row through the transpose")
+    return name
+end
+
+# `inv(A)`: `inv_3x3`. Sizes 1–3 by the adjugate over the determinant, written out;
+# from 4 on, `lu_NxN` and one solve per column of the identity.
+function invhelper!(helpers::Dict{String, String}, T::Type, R::Type)
+    n = shape(T)[1]
+    ndims(T) == 2 && allequal(shape(T)) || throw(ArgumentError("inv needs a square matrix, got a $(describe(T))"))
+    E = eltype(R)
+    name = helpername(:inv, (T,))
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    a(i, j) = access(T, A, [string(i), string(j)])
+    one, zero = onezero(E)
+    body = if n == 1
+        ["out[0][0] = $one / $(a(0, 0));"]
+    elseif n == 2
+        ["$(ctype(E)) d = $(dethelper!(helpers, T, E))($A);",
+         "out[0][0] = $(a(1, 1)) / d;", "out[0][1] = -$(a(0, 1)) / d;",
+         "out[1][0] = -$(a(1, 0)) / d;", "out[1][1] = $(a(0, 0)) / d;"]
+    elseif n == 3
+        cof(i, j) = (i1, i2, j1, j2) = ((i + 1) % 3, (i + 2) % 3, (j + 1) % 3, (j + 2) % 3)
+        lines = ["$(ctype(E)) d = $(dethelper!(helpers, T, E))($A);"]
+        for i in 0:2, j in 0:2
+            # out[i][j] is the cofactor of a(j, i) over the determinant.
+            r1, r2, c1, c2 = (j + 1) % 3, (j + 2) % 3, (i + 1) % 3, (i + 2) % 3
+            push!(lines, "out[$i][$j] = ($(a(r1, c1)) * $(a(r2, c2)) - $(a(r1, c2)) * $(a(r2, c1))) / d;")
+        end
+        lines
+    else
+        vcat(["$(ctype(E)) LU[$n][$n];", "int p[$n];", "$(ctype(E)) x[$n];", "$(luhelper!(helpers, T))($A, LU, p);",
+              "for (int j = 0; j < $n; j++) {"],
+             "    " .* lusolve(n, "x", "p[i] == j ? $one : $zero"),
+             ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
+    end
+    doc = n <= 3 ? "$(describe(T)) inverse by the adjugate" : "$(describe(T)) inverse by LU with partial pivoting"
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc)
+    return name
+end
+
+# The Cholesky factor `L` (lower, `A = L Lᵀ`) of a symmetric positive-definite `A`:
+# `llt_3x3`. Written out for sizes 1–3, a loop beyond. A non-positive pivot is Julia's
+# `PosDefException`; the C prints that and stops.
+function llthelper!(helpers::Dict{String, String}, T::Type)
+    n = shape(T)[1]
+    ndims(T) == 2 && allequal(shape(T)) || throw(ArgumentError("cholesky needs a square matrix, got a $(describe(T))"))
+    E = eltype(T)
+    name = "llt_" * dims(T)
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    sqrt = ctype(E) == "float" ? "sqrtf" : "sqrt"
+    _, zero = onezero(E)
+    body = String[]
+    if n <= 3
+        # Written out: each entry of L from the ones already known.
+        for j in 0:n-1, i in j:n-1
+            s = access(T, A, [string(i), string(j)]) * join(" - L[$i][$k] * L[$j][$k]" for k in 0:j-1)
+            if i == j
+                push!(body, "L[$j][$j] = $s;")
+                push!(body, "if (L[$j][$j] <= $zero) {", "    fprintf(stderr, \"PosDefException(%d)\\n\", $(j + 1));", "    abort();", "}")
+                push!(body, "L[$j][$j] = $sqrt(L[$j][$j]);")
+            else
+                push!(body, "L[$i][$j] = $(j == 0 ? s : "($s)") / L[$j][$j];")
+            end
+        end
+        for i in 0:n-1, j in i+1:n-1
+            push!(body, "L[$i][$j] = $zero;")
+        end
+    else
+        body = ["for (int j = 0; j < $n; j++) {",
+                "    $(ctype(E)) s = $(access(T, A, ["j", "j"]));",
+                "    for (int k = 0; k < j; k++) {",
+                "        s -= L[j][k] * L[j][k];",
+                "    }",
+                "    if (s <= $zero) {",
+                "        fprintf(stderr, \"PosDefException(%d)\\n\", j + 1);",
+                "        abort();",
+                "    }",
+                "    L[j][j] = $sqrt(s);",
+                "    for (int i = j + 1; i < $n; i++) {",
+                "        s = $(access(T, A, ["i", "j"]));",
+                "        for (int k = 0; k < j; k++) {",
+                "            s -= L[i][k] * L[j][k];",
+                "        }",
+                "        L[i][j] = s / L[j][j];",
+                "    }",
+                "    for (int i = 0; i < j; i++) {",
+                "        L[i][j] = $zero;",
+                "    }",
+                "}"]
+    end
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), "$(ctype(E)) L[restrict $n][$n]"], body;
+                               doc="Cholesky factor of a $(describe(T)), A = L Lᵀ")
+    return name
+end
+
+# The lines solving `L Lᵀ x = b` from a Cholesky factor: forward with L, back with Lᵀ.
+function lltsolve(n, x, b)
+    ["for (int i = 0; i < $n; i++) {",
+     "    $x[i] = $b;",
+     "    for (int k = 0; k < i; k++) {",
+     "        $x[i] -= L[i][k] * $x[k];",
+     "    }",
+     "    $x[i] /= L[i][i];",
+     "}",
+     "for (int i = $(n - 1); i >= 0; i--) {",
+     "    for (int k = i + 1; k < $n; k++) {",
+     "        $x[i] -= L[k][i] * $x[k];",
+     "    }",
+     "    $x[i] /= L[i][i];",
+     "}"]
+end
+
+# `cholesky(A) \ b`: `solveLLT_3x3_3`. The factor, then two triangular solves.
+function solveLLThelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
+    n = shape(T)[1]
+    ndims(B) == 1 || throw(ArgumentError("cholesky(A) \\ B with a matrix B is not supported yet"))
+    extent(B, 1) == n || throw(ArgumentError("\\: a $(describe(T)) can't be solved against a $(describe(B))"))
+    E = eltype(R)
+    name = helpername(:solveLLT, (T, B))
+    haskey(helpers, name) && return name
+    A, b = inputs((T, B))
+    body = vcat(["$(ctype(E)) L[$n][$n];", "$(llthelper!(helpers, T))($A, L);"], lltsolve(n, "out", access(B, b, ["i", "0"])))
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
+                               doc="$(describe(T)) \\ $(describe(B)) solve by Cholesky")
+    return name
+end
+
+# `inv(cholesky(A))`: `invLLT_3x3`. The factor, then one solve per column of the identity.
+function invLLThelper!(helpers::Dict{String, String}, T::Type, R::Type)
+    n = shape(T)[1]
+    E = eltype(R)
+    name = helpername(:invLLT, (T,))
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    one, zero = onezero(E)
+    body = vcat(["$(ctype(E)) L[$n][$n];", "$(ctype(E)) x[$n];", "$(llthelper!(helpers, T))($A, L);",
+                 "for (int j = 0; j < $n; j++) {"],
+                "    " .* lltsolve(n, "x", "i == j ? $one : $zero"),
+                ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body;
+                               doc="$(describe(T)) inverse by Cholesky")
+    return name
+end
+
 # The output's description for a helper named by what it makes: `3x4`, `2x2I64` — the
 # type appears by the same rule as for inputs, only when it isn't Float64.
 outname(R::Type) = dims(R) * (eltype(R) === Float64 ? "" : abbrev(eltype(R)))
@@ -301,7 +660,7 @@ function crosshelper!(helpers::Dict{String, String}, types, R::Type)
     name = helpername(:cross, types)
     if !haskey(helpers, name)
         (a, b), (an, bn) = types, inputs(types)
-        helpers[name] = definition("void", name, [declare(a, an; constant=true), declare(b, bn; constant=true), declare(R, "out")],
+        helpers[name] = definition("void", name, [declare(a, an; constant=true), declare(b, bn; constant=true), declare(R, "out"; restrict=true)],
                                    ["out[0] = $an[1] * $bn[2] - $an[2] * $bn[1];", "out[1] = $an[2] * $bn[0] - $an[0] * $bn[2];",
                                     "out[2] = $an[0] * $bn[1] - $an[1] * $bn[0];"]; doc=prose(:cross, types, R))
     end
@@ -325,7 +684,7 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
                join(accesses, " " * Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[cfn] * " ")
         body = nest(pairs, ["$(access(R, "out", idx)) = $expr;"])
         params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
-        push!(params, declare(R, "out"))
+        push!(params, declare(R, "out"; restrict=true))
         helpers[name] = definition("void", name, params, body; doc=prose(op, types, R; pointwise=true))
     end
     return name
@@ -375,7 +734,7 @@ function cathelper!(helpers::Dict{String, String}, kind::Symbol, rows, types, R:
             r0 += height
         end
         params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
-        push!(params, declare(R, "out"))
+        push!(params, declare(R, "out"; restrict=true))
         helpers[name] = definition("void", name, params, lines; doc=blockprose(kind, rows, types))
     end
     return name

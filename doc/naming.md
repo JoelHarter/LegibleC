@@ -29,6 +29,10 @@ check vec dddot prime dprime tprime` — repeated marks follow LaTeX (`ddot`,
 `dddot`). Nothing is needed for names that would start with a digit: Julia
 already forbids a leading digit, subscript, or superscript.
 
+A trailing `!` — Julia's mark for a function that mutates its argument — is
+dropped: `bump!` becomes `bump`. C has no such mark, and `bumpU21` would be
+the alternative.
+
 **Collisions.** After conversion, a name that is reserved, or that matches any
 other name already in the same scope, gets `_` appended, repeatedly, until
 it's unique: a variable `long` becomes `long_`; with both `omega` and `ω` in

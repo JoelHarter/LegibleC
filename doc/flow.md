@@ -49,6 +49,7 @@ variable is an error. A range step must be a literal.
 | Julia | C | note |
 |---|---|---|
 | `+ - * /` | `+ - * /` | integer `/` casts to floating; see `array.md` |
+| `a \ b` | `b / a` | |
 | `÷`, `%` | `/`, `%` | both truncate toward zero in both languages |
 | `mod(a, b)` | `((a % b) + b) % b` | integers only |
 | `x^2`, `x^3` | `x * x`, `x * x * x` | |

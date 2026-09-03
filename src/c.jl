@@ -13,6 +13,19 @@ include("prose.jl")
 include("helper.jl")
 include("source.jl")
 
+# State shared by every function in one output file.
+mutable struct Program
+    helpers::Dict{String, String}                                  # see helper.jl
+    headers::Set{String}                                           # standard headers the output needs
+    calls::Dict{Core.MethodInstance, String}                       # every transpiled instance -> its C name
+    pending::Vector{Tuple{Core.MethodInstance, Vector{Type}, String}}   # found through a call, not generated yet
+    names::Set{String}                                             # C function names taken so far
+    foreign::Dict{String, String}                                  # a `ccall`ed symbol -> its prototype
+    structs::Vector{Pair{Type, String}}                            # struct typedefs, dependencies first
+end
+Program() = Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
+                    Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[])
+
 # Per-function state.
 mutable struct Scope
     ci::Core.CodeInfo
@@ -47,9 +60,10 @@ mutable struct Scope
     loops::Vector{Tuple{Int, Int}}      # enclosing loops: (break target, continue target)
     fors::Dict{Int, Any}
     whiles::Dict{Int, Any}
+    prog::Program
 end
 
-function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, helpers, headers, copycode::Bool, blocked)
+function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, prog::Program, copycode::Bool, blocked)
     names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])]; blocked)]
     hidden = Set{Int}(i for (i, s) in enumerate(ci.slotnames) if i > 1 && isempty(string(s)))
     result = "result"
@@ -64,9 +78,9 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
     slotshapes = Dict{Int, Type}(i + 1 => T for (i, T) in enumerate(sig) if isarray(T))
     src = Source(mi.def)
     stmtline = src === nothing ? zeros(Int, length(ci.code)) : statementlines(mi, length(ci.code))
-    return Scope(ci, names, result, result, false, staticarray, limit, blocked, 0, Dict{Int, String}(), helpers, headers,
+    return Scope(ci, names, result, result, false, staticarray, limit, blocked, 0, Dict{Int, String}(), prog.helpers, prog.headers,
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
-                 0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}())
+                 0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog)
 end
 
 include("flow.jl")
@@ -79,12 +93,15 @@ C source for the concrete MethodInstance `mi`, named `name` in C, with argument 
 stand-in carrying the size the IR doesn't know. Any array helpers it needs are added
 to `helpers`, and any standard headers to `headers`.
 """
-function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, helpers::Dict{String, String}, headers::Set{String};
+function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Program;
                    templimit::Integer=40, staticarray::Bool=true, source::Bool=true, blocked=())
     ci, rettype = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
-    sc = Scope(ci, mi, sig, templimit, staticarray, helpers, headers, source, blocked)
+    sc = Scope(ci, mi, sig, templimit, staticarray, prog, source, blocked)
     sc.resultparam = isarray(rettype)
     sc.rettype = widen(rettype)
+    for T in [sig; sc.rettype]
+        structdef!(prog, T)
+    end
     if sc.resultparam
         # An array comes out through a parameter, and an output parameter is `out` —
         # `result` is kept for a returned scalar (see naming.md).
@@ -105,10 +122,10 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, helpers::
     if sc.resultparam
         # C can't return an array; it comes out through a trailing parameter, which
         # takes the result's name.
-        push!(params, declare(sc.rettype, sc.resultname))
+        push!(params, declare(sc.rettype, sc.resultname; restrict=true))
         signature = "void $name($(join(params, ", ")))"
     else
-        signature = "$(ctype(rettype)) $name($(isempty(params) ? "void" : join(params, ", ")))"
+        signature = "$(declare(sc.rettype, name))($(isempty(params) ? "void" : join(params, ", ")))"
     end
     comments, doc = sc.src === nothing ? (String[], String[]) : leading(sc.src)
     origin = "$(mi.def.name)($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
@@ -138,7 +155,23 @@ function analyze!(sc::Scope)
     for (i, st) in enumerate(code)
         st isa Expr && st.head === :call || continue
         f = callee_or_nothing(ci, st.args[1])
-        (f === Base.broadcasted || f === Core.tuple) && push!(sc.skipped, i)
+        f === Base.broadcasted && push!(sc.skipped, i)
+        # A tuple that only feeds a constructor or block construction is compile-time;
+        # one that's a value in its own right becomes a struct.
+        f === Core.tuple && consumed(ci, i) && push!(sc.skipped, i)
+        # The `cconvert`/`unsafe_convert` pair a `ccall` wraps each argument in: no C.
+        (f === Base.cconvert || f === Base.unsafe_convert) && push!(sc.skipped, i)
+        # A factorization only ever feeds `\` or `inv`; the solver helper does both steps.
+        (f === LinearAlgebra.cholesky || f === LinearAlgebra.lu) && push!(sc.skipped, i)
+    end
+    # The iterator state of `x, y = t` — `getfield(indexed_iterate(...), 2)`, usually
+    # assigned to a hidden slot — has no C.
+    for (i, st) in enumerate(code)
+        ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+        ex isa Expr && ex.head === :call && callee_or_nothing(ci, ex.args[1]) === Core.getfield || continue
+        ex.args[3] == 2 && ex.args[2] isa Core.SSAValue && iscall(code[ex.args[2].id], Base.indexed_iterate) || continue
+        push!(sc.skipped, i)
+        st isa Expr && st.head === :(=) && push!(sc.hidden, st.args[1].id)
     end
     for st in code
         st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.setindex! &&
@@ -190,6 +223,10 @@ function statement!(lines, sc::Scope, i, st)
     T = widen(ci.ssavaluetypes[i])
     T === Union{} && return                       # unreachable
     if st isa Core.ReturnNode
+        if valuetype(sc, st.val) === Nothing
+            i == length(ci.code) || emit!(lines, sc, "return;")
+            return
+        end
         v = value(sc, st.val)
         if sc.resultparam
             # An array result is written into the out parameter; if it isn't there
@@ -203,9 +240,48 @@ function statement!(lines, sc::Scope, i, st)
         else
             emit!(lines, sc, "return $v;")
         end
+    elseif st isa Expr && st.head === :foreigncall
+        code = foreign!(sc, st)
+        if T === Nothing
+            emit!(lines, sc, code * ";")
+        else
+            name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, foreignargs(sc, st)))
+            emit!(lines, sc, "$(ctype(T)) $name = $code;")
+        end
+    elseif st isa Expr && st.head === :call && (T === Nothing || T === Any) && userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end]) !== nothing
+        # A call for its effect, or whose result goes unused (Julia then types it `Any`
+        # and the callee's own return type says what C needs).
+        mi, _, name = userinstance!(sc, callee(ci, st.args[1]), st.args[2:end])
+        R = returntype(mi)
+        if isarray(R)
+            t = temp!(sc, i, parts(sc, st))
+            emit!(lines, sc, declare(R, t) * ";")
+            emit!(lines, sc, "$name($(callargs(sc, st.args[2:end])), $t);")
+        else
+            emit!(lines, sc, "$name($(callargs(sc, st.args[2:end])));")
+        end
+    elseif st isa Expr && st.head === :call && (callee_or_nothing(ci, st.args[1]) === Core.tuple || (callee_or_nothing(ci, st.args[1]) isa Type && isstruct(T)))
+        # A tuple or struct value: `(Point){x, y}`, or field by field when a field is an array.
+        dest = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
+        compound!(lines, sc, i, T, st.args[2:end], dest; declared=false)
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.indexed_iterate
+        # `x, y = t`: the k-th field, as the value; the iterator state is compile-time.
+        t, k = st.args[2], st.args[3]
+        sc.expr[i] = fieldaccess(sc, t, k)
+        isarray(T) && (sc.shapes[i] = widen(ci.ssavaluetypes[i]).parameters[1])
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.getproperty, Core.getfield, Base.getindex) && !isarray(valuetype(sc, st.args[2])) && (isstruct(valuetype(sc, st.args[2])) || istuple(valuetype(sc, st.args[2])) || isindexediterate(sc, st.args[2]))
+        # A field read is just a name: no temp.
+        sc.expr[i] = isindexediterate(sc, st.args[2]) ? value(sc, st.args[2]) : fieldaccess(sc, st.args[2], st.args[3])
+        isarray(T) && (sc.shapes[i] = T)
     elseif st isa Expr && st.head === :call
         f = callee_or_nothing(ci, st.args[1])
-        if f === Base.setindex!
+        if f === Base.setproperty! || f === Base.setfield!
+            S = valuetype(sc, st.args[2])
+            F = fieldtype(S, literal(sc, st.args[3]))
+            target = fieldaccess(sc, st.args[2], st.args[3])
+            isarray(F) ? emit!(lines, sc, "$(copyhelper(sc, st.args[4], F))($(value(sc, st.args[4])), $target);") :
+                         emit!(lines, sc, "$target = $(value(sc, st.args[4]));")
+        elseif f === Base.setindex!
             emit!(lines, sc, "$(index(sc, st.args[2], st.args[4:end])) = $(value(sc, st.args[3]));")
         elseif f in (Base.zeros, Base.ones, Base.fill) || (f in (Base.zero, Base.one) && isarray(T)) || isconstruction(f) || f === Base.materialize
             dest = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
@@ -216,6 +292,9 @@ function statement!(lines, sc::Scope, i, st)
             sc.expr[i] = value(sc, st.args[2])
             sc.shapes[i] = transposed(valuetype(sc, st.args[2]))
         elseif f === Colon() || f === Base.OneTo || f === Base.eachindex || f === Base.axes
+            # A literal range that only indexes (`v[2:3]`) is compile-time; any other
+            # range outside a `for` has no C.
+            ci.ssavaluetypes[i] isa Core.Const && all(st -> iscall(st, Base.getindex), (st for st in ci.code if uses(st, i))) && return
             throw(ArgumentError("ranges are only supported as the range of a for loop (statement $i)"))
         elseif isarray(T)
             # A calculation whose only use is to be returned is the function's result.
@@ -239,6 +318,8 @@ function statement!(lines, sc::Scope, i, st)
         x = sc.names[slot.id]
         if isarray(T)
             store!(lines, sc, i, x, rhs)
+        elseif rhs isa Expr && rhs.head === :call && (callee_or_nothing(ci, rhs.args[1]) === Core.tuple || (callee_or_nothing(ci, rhs.args[1]) isa Type && isstruct(T)))
+            compound!(lines, sc, i, T, rhs.args[2:end], x; declared=true)
         else
             emit!(lines, sc, "$x = $(rhs isa Expr ? first(render(sc, i, rhs)) : value(sc, rhs));")
         end
@@ -284,8 +365,13 @@ function store!(lines, sc::Scope, i, x, rhs)
     slot = sc.ci.code[i].args[1].id
     if rhs isa Expr
         f = callee_or_nothing(sc.ci, rhs.args[1])
-        if f in (Base.zeros, Base.ones, Base.fill, Base.zero, Base.one) || isconstruction(f) || f === Base.materialize
-            construct!(lines, sc, i, rhs, x)
+        making = f in (Base.zeros, Base.ones, Base.fill, Base.zero, Base.one) || isconstruction(f) || f === Base.materialize
+        if f in (Core.getfield, Base.getproperty, Base.getindex) && (isindexediterate(sc, rhs.args[2]) || isstruct(valuetype(sc, rhs.args[2])) || istuple(valuetype(sc, rhs.args[2])))
+            # An array field of a struct or tuple, copied out: `copy_3(t.a, p);`.
+            T = slottype(sc, slot)
+            src = isindexediterate(sc, rhs.args[2]) ? value(sc, rhs.args[2]) : fieldaccess(sc, rhs.args[2], rhs.args[3])
+            emit!(lines, sc, "$(helper!(sc.helpers, :copy, (T,), T))($src, $x);")
+            sc.shapes[i] = T
         elseif (f === Base.adjoint || f === Base.transpose) && isarray(valuetype(sc, rhs.args[2]))
             # `B = A'`: a copy into whatever Julia says `B` is. A lazy `Adjoint` (a
             # vector's) is the same storage, known to be transposed; an eager one
@@ -295,10 +381,13 @@ function store!(lines, sc::Scope, i, x, rhs)
             shape(R) === nothing && (R = A)
             emit!(lines, sc, "$(copyhelper(sc, rhs.args[2], R; from=A))($(value(sc, rhs.args[2])), $x);")
             sc.shapes[i] = R
-        elseif x in (value(sc, a) for a in rhs.args[2:end])
+        elseif any(a -> mentions(sc, x, a), rhs.args[2:end])
+            # `x` is also an operand: through a temp, so nothing reads what it's writing.
             t = temp!(sc, nothing, parts(sc, rhs))
-            arraycall!(lines, sc, i, rhs, t; declaration=true)
+            making ? construct!(lines, sc, i, rhs, t; declaration=true) : arraycall!(lines, sc, i, rhs, t; declaration=true)
             emit!(lines, sc, "$(copyhelper(sc, Core.SSAValue(i)))($t, $x);")
+        elseif making
+            construct!(lines, sc, i, rhs, x)
         else
             arraycall!(lines, sc, i, rhs, x)
         end
@@ -354,6 +443,7 @@ end
 
 # The compile-time value of `x`, or `nothing` if it has none.
 function literal(sc::Scope, x)
+    x isa QuoteNode && return x.value
     x isa Core.SSAValue && return (t = sc.ci.ssavaluetypes[x.id]; t isa Core.Const ? t.val : nothing)
     x isa GlobalRef && return getfield(x.mod, x.name)
     return x
@@ -495,9 +585,22 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         sc.shapes[i] = R
         return
     end
+    f === Base.getindex && return slice!(lines, sc, i, args, dest; declaration)
+    # `s \ A` is `A / s`; `A / s` is elementwise; anything else with `\` or `/` is a solve.
+    f === Base.:\ && valuetype(sc, args[1]) <: Number && (args = [args[2], args[1]]; f = Base.:/)
+    (f === Base.:\ || f === Base.inv || (f === Base.:/ && isarray(valuetype(sc, args[2])))) && return solve!(lines, sc, i, f, args, dest; declaration)
+    name = usercall!(sc, f, args)
+    if name !== nothing
+        R = widen(sc.ci.ssavaluetypes[i])
+        declaration && emit!(lines, sc, declare(R, dest) * ";")
+        emit!(lines, sc, "$name($(callargs(sc, args)), $dest);")
+        sc.shapes[i] = R
+        return
+    end
     op = f === Base.:+ ? :add :
          f === Base.:- ? (length(args) == 1 ? :neg : :sub) :
          f === Base.:* ? :mul :
+         f === Base.:/ ? :div :
          f === Base.copy ? :copy :
          throw(ArgumentError("unsupported array operation: $f"))
     # The result's element type comes from Julia's promotion; its size from the IR if
@@ -522,6 +625,82 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         emit!(lines, sc, "$(helper!(sc.helpers, op, (acctype,), R))($accname, $dest);")
     end
     sc.shapes[i] = R
+end
+
+# `A \ b`, `inv(A)`, and the same through `cholesky(A)` or `lu(A)`: one helper each,
+# with the factorization inside it. Sizes 1–3 are written out; from 4 on it's LU with
+# partial pivoting or Cholesky, which can fail on a singular or non-positive-definite
+# matrix — that prints Julia's exception and stops, so the output needs `stdio.h` and
+# `stdlib.h`.
+function solve!(lines, sc::Scope, i, f, args, dest; declaration::Bool=false)
+    ci = sc.ci
+    x = args[1]
+    method = :lu
+    if x isa Core.SSAValue && ci.code[x.id] isa Expr && ci.code[x.id].head === :call
+        g = callee_or_nothing(ci, ci.code[x.id].args[1])
+        if g === LinearAlgebra.cholesky || g === LinearAlgebra.lu
+            method = g === LinearAlgebra.cholesky ? :llt : :lu
+            x = ci.code[x.id].args[2]
+        end
+    end
+    if f === Base.:/
+        # `B / A`: every row of `B` against `Aᵀ`.
+        B, A = valuetype(sc, args[1]), valuetype(sc, args[2])
+        R = widen(ci.ssavaluetypes[i])
+        shape(A)[1] >= 4 && union!(sc.headers, ("stdio.h", "stdlib.h", "math.h"))
+        declaration && emit!(lines, sc, declare(R, dest) * ";")
+        emit!(lines, sc, "$(rsolvehelper!(sc.helpers, B, A, R))($(value(sc, args[1])), $(value(sc, args[2])), $dest);")
+        sc.shapes[i] = R
+        return
+    end
+    T = valuetype(sc, x)
+    R = widen(ci.ssavaluetypes[i])
+    n = shape(T)[1]
+    (n >= 4 || method == :llt) && union!(sc.headers, ("stdio.h", "stdlib.h", "math.h"))
+    if f === Base.inv
+        name = method == :llt ? invLLThelper!(sc.helpers, T, R) : invhelper!(sc.helpers, T, R)
+        declaration && emit!(lines, sc, declare(R, dest) * ";")
+        emit!(lines, sc, "$name($(value(sc, x)), $dest);")
+    else
+        B = valuetype(sc, args[2])
+        name = method == :llt ? solveLLThelper!(sc.helpers, T, B, R) : solvehelper!(sc.helpers, T, B, R)
+        declaration && emit!(lines, sc, declare(R, dest) * ";")
+        emit!(lines, sc, "$name($(value(sc, x)), $(value(sc, args[2])), $dest);")
+    end
+    sc.shapes[i] = R
+end
+
+# `A[i, :]`, `A[:, j]`, `v[2:3]`: a row, a column, or a run, copied into `dest` — a
+# copy in Julia too. The position is passed 0-based; a literal range's start is known.
+function slice!(lines, sc::Scope, i, args, dest; declaration::Bool=false)
+    A, idx = args[1], args[2:end]
+    T = valuetype(sc, A)
+    iscolon(k) = literal(sc, k) isa Colon
+    isrange(k) = literal(sc, k) isa AbstractUnitRange
+    R = widen(sc.ci.ssavaluetypes[i])
+    if ndims(T) == 2 && length(idx) == 2 && (iscolon(idx[1]) ⊻ iscolon(idx[2])) && !any(isrange, idx)
+        kind = iscolon(idx[2]) ? :row : :col
+        n = kind == :row ? extent(T, 2) : extent(T, 1)
+        R = shape(R) === nothing ? shaped(eltype(T), (n,)) : R
+        pos = zerobased(sc, idx[kind == :row ? 1 : 2])
+    elseif ndims(T) == 1 && length(idx) == 1 && isrange(idx[1])
+        r = literal(sc, idx[1])
+        kind = :slice
+        R = shape(R) === nothing ? shaped(eltype(T), (length(r),)) : R
+        pos = string(first(r) - 1)
+    else
+        throw(ArgumentError("only a row, a column, or a literal range of a vector can be sliced (statement $i)"))
+    end
+    declaration && emit!(lines, sc, declare(R, dest) * ";")
+    emit!(lines, sc, "$(slicehelper!(sc.helpers, kind, T, R))($(value(sc, A)), $pos, $dest);")
+    sc.shapes[i] = R
+end
+
+# A Julia index as a 0-based C expression.
+function zerobased(sc::Scope, k)
+    k isa Integer && return string(k - 1)
+    text, p = expression(sc, k)
+    return (p < ADD ? "($text)" : text) * " - 1"
 end
 
 # The copy helper for the array value `x`.
@@ -596,7 +775,7 @@ function contribution(sc::Scope, x)
     x isa Core.SSAValue || x isa Core.SlotNumber || return String[]
     x isa Core.SSAValue && !(x.id in sc.inlined) && !haskey(sc.expr, x.id) && return String[]   # a constant load
     x isa Core.SSAValue && x.id in sc.inlined && return unique(reduce(vcat, (contribution(sc, a) for a in sc.ci.code[x.id].args[2:end]); init=String[]))
-    name = replace(value(sc, x), r"^temp\d+_?" => "")
+    name = replace(value(sc, x), r"^temp\d+_?" => "", "->" => "_", "." => "_")   # a field read contributes its path: p.x -> p_x
     return filter(!isempty, split(name, "_"))
 end
 
@@ -638,6 +817,12 @@ function render(sc::Scope, i, ex::Expr)
     fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$name(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
     floating = T <: AbstractFloat
 
+    # A reduction: a helper that returns the scalar.
+    if f in (Base.sum, Base.prod, Base.maximum, Base.minimum, Base.any, Base.all, LinearAlgebra.norm) && n == 1 && isarray(valuetype(sc, args[1]))
+        op = f === LinearAlgebra.norm ? :norm : Symbol(nameof(f))
+        op == :norm && push!(sc.headers, "math.h")
+        return "$(reducehelper!(sc.helpers, op, valuetype(sc, args[1]), T))($(value(sc, args[1])))", PRIMARY
+    end
     # The determinant: a helper that returns the scalar.
     if f === LinearAlgebra.det && n == 1 && isarray(valuetype(sc, args[1]))
         return "$(dethelper!(sc.helpers, valuetype(sc, args[1]), T))($(value(sc, args[1])))", PRIMARY
@@ -665,6 +850,11 @@ function render(sc::Scope, i, ex::Expr)
         end
         return op("/", MUL)
     end
+    if f === Base.:\ && n == 2
+        args = reverse(args)          # a \ b is b / a
+        f = Base.:/
+        return render(sc, i, Expr(:call, f, args...))
+    end
     f === Base.div && return op("/", MUL)
     f === Base.rem && return floating ? fn("fmod") : op("%", MUL)
     if f === Base.mod
@@ -686,6 +876,17 @@ function render(sc::Scope, i, ex::Expr)
     if f === Base.:^
         floating || throw(ArgumentError("integer ^ with a non-literal exponent is not supported (statement $i)"))
         return fn("pow")
+    end
+
+    # Structs and tuples: field reads, and `==` field by field.
+    if f in (Base.getproperty, Core.getfield, Base.getindex) && n == 2 && !isarray(valuetype(sc, args[1])) && (isstruct(valuetype(sc, args[1])) || istuple(valuetype(sc, args[1])))
+        return (isindexediterate(sc, args[1]) ? value(sc, args[1]) : fieldaccess(sc, args[1], args[2])), PRIMARY
+    end
+    if f === Base.:(==) && n == 2 && (isstruct(valuetype(sc, args[1])) || istuple(valuetype(sc, args[1])))
+        S = valuetype(sc, args[1])
+        a, b = value(sc, args[1]), value(sc, args[2])
+        names = fieldcnames(S)
+        return join(("$a$(arrow(S))$c == $b$(arrow(S))$c" for c in names), " && "), LAND
     end
 
     # Comparison and logic.
@@ -735,6 +936,7 @@ function render(sc::Scope, i, ex::Expr)
     end
 
     # Conversions: a call to a type.
+    f isa Type && isstruct(T) && return compound(sc, T, args), PRIMARY
     f isa Type && n == 1 && return "($(ctype(T)))" * operand(sc, args[1], UNARY), UNARY
 
     # Arrays, as scalars: an element, or a size.
@@ -742,7 +944,215 @@ function render(sc::Scope, i, ex::Expr)
     f === Base.length && return string(prod(shape(valuetype(sc, args[1])))), PRIMARY
     f === Base.size && n == 2 && return string(shape(valuetype(sc, args[1]))[args[2]]), PRIMARY
 
+    # One of the user's own functions.
+    name = usercall!(sc, f, args)
+    name === nothing || return "$name($(callargs(sc, args)))", PRIMARY
+
     throw(ArgumentError("unsupported call: $f (statement $i)"))
+end
+
+# ---- structs and tuples -------------------------------------------------------------
+
+# The typedef for a struct or tuple type, added to the program once, after the types
+# of its fields. Anything that isn't a struct or tuple is ignored.
+function structdef!(prog::Program, T::Type)
+    (isstruct(T) || istuple(T)) || return
+    any(p -> p.first === T, prog.structs) && return
+    fields = istuple(T) ? collect(T.parameters) : [fieldtype(T, k) for k in 1:fieldcount(T)]
+    for F in fields
+        structdef!(prog, F)
+    end
+    lines = ["    " * declare(F, c) * ";" for (F, c) in zip(fields, fieldcnames(T))]
+    push!(prog.structs, T => "typedef struct {\n" * join(lines, "\n") * "\n} $(structname(T));\n")
+end
+
+# `p.x`, `c->n`, `t.a`: field `f` (a symbol, or a 1-based position) of the struct or
+# tuple value `x`.
+function fieldaccess(sc::Scope, x, f)
+    S = valuetype(sc, x)
+    f = literal(sc, f)
+    f isa QuoteNode && (f = f.value)
+    return value(sc, x) * arrow(S) * fieldcname(S, f)
+end
+
+# Is `x` the result of `indexed_iterate` — a field read in disguise?
+isindexediterate(sc::Scope, x) = x isa Core.SSAValue && iscall(sc.ci.code[x.id], Base.indexed_iterate)
+
+# A struct or tuple of type `T` from its field values, as one expression:
+# `(Point){x, y}`. Only when no field is an array (C can't initialize an array member
+# from another array).
+function compound(sc::Scope, T::Type, args)
+    isstruct(T) && ismutabletype(T) && throw(ArgumentError("creating a mutable struct ($T) inside transpiled code is not supported; the C caller owns those"))
+    structdef!(sc.prog, T)
+    any(a -> isarray(valuetype(sc, a)), args) && throw(ArgumentError("a $T holding an array can't be built in an expression"))
+    return "($(ctype(T))){$(join((value(sc, a) for a in args), ", "))}"
+end
+
+# Build a struct or tuple of type `T` in `dest` (already declared if `declared`): one
+# compound literal when every field is a scalar, otherwise field by field with arrays
+# copied in.
+function compound!(lines, sc::Scope, i, T::Type, args, dest; declared::Bool)
+    isstruct(T) && ismutabletype(T) && throw(ArgumentError("creating a mutable struct ($T) inside transpiled code is not supported; the C caller owns those"))
+    structdef!(sc.prog, T)
+    if !any(a -> isarray(valuetype(sc, a)), args)
+        emit!(lines, sc, (declared ? "" : "$(ctype(T)) ") * "$dest = $(compound(sc, T, args));")
+        return
+    end
+    declared || emit!(lines, sc, "$(ctype(T)) $dest;")
+    fields = istuple(T) ? collect(T.parameters) : [fieldtype(T, k) for k in 1:fieldcount(T)]
+    for (F, c, a) in zip(fields, fieldcnames(T), args)
+        isarray(F) ? emit!(lines, sc, "$(copyhelper(sc, a, F))($(value(sc, a)), $dest.$c);") :
+                     emit!(lines, sc, "$dest.$c = $(value(sc, a));")
+    end
+end
+
+# Is the tuple made at statement `i` used only by constructors and block
+# constructions (or by nothing), so that it never needs to exist in C?
+function consumed(ci, i)
+    for st in ci.code
+        uses(st, i) || continue
+        st isa Expr && st.head === :call || return false
+        f = callee_or_nothing(ci, st.args[1])
+        (f !== nothing && (isconstruction(f) || f === Base.materialize)) || return false
+    end
+    return true
+end
+
+# ---- calls to other functions -------------------------------------------------------
+
+# A call to one of the user's own functions, at these arguments: its C name, after
+# registering the callee's concrete instance to be transpiled if it isn't already. A
+# function is the user's if it isn't from Julia itself or the packages the transpiler
+# understands. Nothing for anything else.
+usercall!(sc::Scope, f, args) = (r = userinstance!(sc, f, args); r === nothing ? nothing : r[3])
+
+# The instance, signature, and C name behind a call to a user function, or nothing.
+function userinstance!(sc::Scope, f, args)
+    f isa Function || return nothing
+    spec = Any[]
+    for a in args
+        T = valuetype(sc, a)
+        T <: Shaped && (push!(spec, eltype(T)); append!(spec, shape(T)); continue)
+        push!(spec, juliatype(T))
+    end
+    nameof(Base.moduleroot(parentmodule(f))) in (:Core, :Base, :LinearAlgebra, :StaticArrays) && return nothing
+    mi, sig = try
+        any(x -> x isa Integer, spec) ? resolve(f, spec) : (m = Base.method_instance(f, Tuple(spec)); m === nothing ? (nothing, nothing) : (m, argtypes(m)))
+    catch e
+        e isa ArgumentError ? (nothing, nothing) : rethrow()
+    end
+    mi === nothing && return nothing
+    nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays) && return nothing
+    haskey(sc.prog.calls, mi) && return (mi, sig, sc.prog.calls[mi])
+    base = identifier(string(mi.def.name))
+    taken = union(sc.prog.names, keys(sc.prog.helpers), reserved)
+    name = base in taken ? free(join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_"), taken) : free(base, reserved)
+    push!(sc.prog.names, name)
+    sc.prog.calls[mi] = name
+    push!(sc.prog.pending, (mi, sig, name))
+    return (mi, sig, name)
+end
+
+# What an instance returns, as the transpiler sees types.
+returntype(mi::Core.MethodInstance) = normalize(only(Base.code_typed_by_type(mi.specTypes; optimize=false))[2])
+
+# The Julia type behind a value the transpiler tracks: a row is an `Adjoint` of a
+# static vector; an eagerly transposed matrix is the matrix Julia would have made.
+function juliatype(T::Type)
+    T <: Transposed || return T
+    E, S = eltype(T), shape(T)
+    ndims(T) == 1 && return LinearAlgebra.Adjoint{E, SVector{S[1], E}}
+    return SMatrix{S[2], S[1], E, S[1] * S[2]}
+end
+
+# The C arguments of a call: values by name or literal. An eagerly transposed matrix
+# would have to be materialized first, since the callee expects Julia's real matrix;
+# until that's done, store it in a variable before the call.
+function callargs(sc::Scope, args)
+    for a in args
+        T = valuetype(sc, a)
+        istransposed(T) && ndims(T) == 2 && throw(ArgumentError("passing a transposed matrix straight to a function is not supported yet; store it first (B = A')"))
+    end
+    return join((value(sc, a) for a in args), ", ")
+end
+
+# Does the IR value `a` refer to the C variable `x`, looking through the broadcast and
+# tuple nodes a construction is built from?
+function mentions(sc::Scope, x, a)
+    if a isa Core.SSAValue && sc.ci.code[a.id] isa Expr && sc.ci.code[a.id].head === :call
+        f = callee_or_nothing(sc.ci, sc.ci.code[a.id].args[1])
+        (f === Base.broadcasted || f === Core.tuple) && return any(b -> mentions(sc, x, b), sc.ci.code[a.id].args[2:end])
+    end
+    v = try value(sc, a) catch; return false end
+    return v == x
+end
+
+# ---- ccall ---------------------------------------------------------------------------
+
+# The C for a `ccall`: the symbol called with its arguments, plus a prototype for it
+# (or the header it comes from) so the output stands alone. Julia that calls C becomes C
+# that calls C.
+function foreign!(sc::Scope, st::Expr)
+    sym = st.args[1]
+    sym isa QuoteNode && (sym = sym.value)
+    sym isa Tuple && (sym = sym[1])
+    sym isa Symbol || throw(ArgumentError("ccall to a computed function pointer is not supported"))
+    name = string(sym)
+    R, AT = st.args[2], collect(st.args[3])
+    args = foreignargs(sc, st)
+    cargs = String[]
+    ptypes = String[]
+    for (T, a) in zip(AT, args)
+        if T <: Ptr
+            # A pointer into an array. An immutable static array is passed as Julia
+            # passes it, read-only; a mutable one may be written through, which
+            # costs our own parameter its `const`.
+            V = valuetype(sc, a)
+            readonly = isarray(V) && !(V <: Shaped) && !ismutabletype(V)
+            readonly || (a isa Core.SlotNumber && push!(sc.mutated, a.id))
+            push!(ptypes, (readonly ? "const " : "") * ctype(T.parameters[1]) * " *")
+            push!(cargs, isarray(V) ? (ndims(V) == 1 ? value(sc, a) : "&" * value(sc, a) * "[0]"^(ndims(V))) : "&" * value(sc, a))
+        elseif T <: Ref
+            push!(ptypes, ctype(T.parameters[1]) * " *")
+            push!(cargs, "&" * value(sc, a))
+        else
+            push!(ptypes, ctype(T))
+            push!(cargs, value(sc, a))
+        end
+    end
+    header = foreignheader(name)
+    if header === nothing
+        proto = "$(ctype(R)) $name($(isempty(ptypes) ? "void" : join(ptypes, ", ")));"
+        # Two calls that disagree on `const` for a pointer: the prototype takes the
+        # weaker promise.
+        old = get(sc.prog.foreign, name, proto)
+        sc.prog.foreign[name] = old == proto ? proto : replace(proto, "const " => "")
+    else
+        push!(sc.headers, header)
+    end
+    return "$name($(join(cargs, ", ")))"
+end
+
+# The values a `ccall` passes, with Julia's `cconvert`/`unsafe_convert` wrapping undone.
+function foreignargs(sc::Scope, st::Expr)
+    n = length(st.args[3])
+    function unwrap(a)
+        a isa Core.SSAValue || return a
+        x = sc.ci.code[a.id]
+        x isa Expr && x.head === :call && callee_or_nothing(sc.ci, x.args[1]) in (Base.cconvert, Base.unsafe_convert) && return unwrap(x.args[3])
+        return a
+    end
+    return [unwrap(a) for a in st.args[6:5+n]]
+end
+
+# The standard header a `ccall`ed name comes from, if it's one we know; then the output
+# includes the header instead of guessing a prototype.
+function foreignheader(name::AbstractString)
+    (name in mathfunction || name in mathfunction .* "f" || name in mathfunction .* "l") && return "math.h"
+    name in ("memset", "memcpy", "memmove", "memcmp", "strlen", "strcmp", "strcpy", "strncpy", "strcat", "strchr", "strstr") && return "string.h"
+    name in ("malloc", "calloc", "realloc", "free", "abs", "labs", "llabs", "atoi", "atol", "atof", "strtod", "strtol", "rand", "srand", "exit", "abort", "qsort") && return "stdlib.h"
+    name in ("printf", "puts", "putchar", "fflush", "getchar") && return "stdio.h"
+    return nothing
 end
 
 # `A[i]`, `A[i, j]`: Julia's 1-based indices become 0-based.

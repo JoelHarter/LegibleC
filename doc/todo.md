@@ -15,20 +15,14 @@ docs. Nothing here is started unless its box is checked.
     ✅ One-line `///` Doxygen comment on each generated helper — done 2026-09-03, `src/prose.jl`
     ⬜ `Δt` → `Deltat`: decide whether Greek-then-letter gets a separator
 
-⬜ Language coverage (`flow.md`)
-    ⬜ Slicing: `v[2:3]`, `A[i, :]`, `A[:, j]`
-    ⬜ Reductions: `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all`
+⬜ Language coverage (`flow.md`; the wider catalogue of what could map, both ways, is `map.md`)
+    ✅ Slicing: `v[2:3]`, `A[i, :]`, `A[:, j]` — done 2026-09-04; still open: `A[1:2, :]`, `A[i, 2:3]`, a range held in a variable, N-D
+    ✅ Reductions: `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all` — done 2026-09-04; `maximum`/`minimum` skip a NaN where Julia returns it
     ⬜ `for` over the elements of an array (`for x in v`), and ranges with a non-literal step
     ⬜ `while` whose header can't be inlined — the `while (true) { …; if (!c) break; }` fallback is written but untested
     ⬜ Integer `^` beyond 2 and 3 (a `power` helper), `mod` on floats, `Float32` math (`sqrtf` and friends)
-    ⬜ Tuples as values, multiple return values
-    ⬜ Structs → C structs (the naming rule already covers type and field names). Investigated 2026-09-04; the IR is plain and needs:
-        ⬜ A `typedef struct { double x; double y; } Point;` emitted once per Julia struct that appears in any signature or body, fields by the naming rule, array fields as C arrays (`double pos[3]`)
-        ⬜ `Base.getproperty(p, :x)` → `p.x` (the IR passes the field as a literal symbol)
-        ⬜ `Point(x, y)` (the constructor call, callee is the type) → `(Point){x, y}`
-        ⬜ `Base.setproperty!(c, :n, v)` → `c->n = v;` — only on `mutable struct`, which is a reference in Julia and so a pointer `Counter *c` in C; an immutable struct is passed and returned by value
-        ⬜ Decide how a mutable struct is returned (`bump!(c) = (c.n += 1; c)` returns the same object: the pointer)
-        ⬜ Nested structs and structs holding structs, parametric structs at a concrete instantiation
+    ✅ Tuples as values, multiple return values — done 2026-09-04, `struct.md`
+    ✅ Structs → C structs — done 2026-09-04, `struct.md`: by value, mutable through a pointer, parametric, nested
     ⬜ Strings and printing (`println` → `printf`)
     ⬜ `try`/`catch`, comprehensions, closures — decide which of these have any C meaning at all
     ⬜ Anonymous functions bound to a name: `f = x -> …` currently emits `U2329`; use the binding name
@@ -36,12 +30,18 @@ docs. Nothing here is started unless its box is checked.
     ⬜ Fuse a broadcast chain into one loop when the extra passes ever matter
 
 ⬜ Arrays (`array.md`, `type.md`)
-    ⬜ Regular arrays as *regular* arrays: `staticarray=false`, dynamic sizes, allocation — the option exists and refuses
+    ⬜ Regular arrays as *regular* arrays: `staticarray=false`, runtime sizes — the option exists and refuses. Design in `map.md` §3.4: VLA parameters `void f(size_t m, size_t n, const double A[m][n])`, helpers taking the sizes as leading parameters, and a result's size derived symbolically from the inputs'. That last part makes it a redesign of the helper layer rather than an addition, which is why it's still open
+    ⬜ Growing vectors (`push!`, `pop!`) — heap storage with an ownership rule (`map.md` §3.4)
     ⬜ Per-argument static/regular mixing in one signature (currently all-or-nothing)
     ⬜ A boundary helper for the row-major ↔ column-major layout swap when raw memory crosses Julia ↔ C
     ⬜ Complex numbers (`C64`/`C32`, `complex.h` — its names are not yet reserved), pointers (`Ptr{T}` ↔ `T*`), `char32_t`
     ⬜ `mul` of two vectors where Julia would allow it (a 1×n matrix), and matrix × row
-    ⬜ `inv(A)` for sizes 1–3 by the adjugate (the cofactors `det` already expands), LU beyond; `A \ b`
+    ✅ `inv(A)`, `A \ b`, `B / A`, Cholesky — done 2026-09-04, `array.md` *Solving*
+    ⬜ LDLT: Julia has no `ldlt` for static matrices, so there's no syntax to hang it on; either a reference implementation shipped with the transpiler or `bunchkaufman`
+    ⬜ `cholesky(A).L` / `.U` (the `U` is the transposed tag of `L`, free), `cholesky(A) \ B` with a matrix `B`, `B / cholesky(A)`, QR, `eigen` for symmetric 3×3 in closed form
+    ⬜ `sizeof`, `@kwdef` constructors, `Union{T, Nothing}` fields, structs holding mutable structs, creating a mutable struct inside transpiled code (needs allocation and an ownership rule)
+    ⬜ Passing an eagerly transposed matrix straight to a user function (`g(A')`): materialize into a temp at the call
+    ⬜ `Cstring`, function-pointer targets, and pointer results in `ccall`
     ⬜ In-place zeroing and filling: `fill!(A, 0)`, `A .= 0`, `A .= x` on a mutable array → the same `zero_`/`fill_` helper called on the existing variable (there's no separate C: "make a zero array" is a declaration plus `zero_3x4(A)`, "wipe this one" is just `zero_3x4(A)`)
     ⬜ Hardcode sizes 1–3 wherever a general algorithm would be slower or read worse than the written-out form (as `det` does), and say so in each helper's comment
     ⬜ `SMatrix{3,3}(2I)` — a multiple of the identity; only `I` itself is accepted

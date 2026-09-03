@@ -102,7 +102,7 @@ function doxygen(doc, julia::AbstractString, params, result)
     for p in params
         push!(lines, " * @param[in]  " * p)
     end
-    result === nothing || push!(lines, " * @param[out] " * result * "  The value the Julia function returns.")
+    result === nothing || push!(lines, " * @param[out] " * result * "  The value the Julia function returns. Must not overlap an input.")
     push!(lines, " */")
     return lines
 end
