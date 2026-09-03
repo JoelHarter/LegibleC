@@ -37,6 +37,7 @@ docs. Nothing here is started unless its box is checked.
     ⬜ Complex numbers (`C64`/`C32`, `complex.h` — its names are not yet reserved), pointers (`Ptr{T}` ↔ `T*`), `char32_t`
     ⬜ `mul` of two vectors where Julia would allow it (a 1×n matrix), and matrix × row
     ✅ `inv(A)`, `A \ b`, `B / A`, Cholesky — done 2026-09-04, `array.md` *Solving*
+    ⬜ A static SVD and QR: `pinv` and least squares for a rank-deficient `A`, as Julia does them (the Gram route reports `PosDefException` there)
     ⬜ LDLT: Julia has no `ldlt` for static matrices, so there's no syntax to hang it on; either a reference implementation shipped with the transpiler or `bunchkaufman`
     ⬜ `cholesky(A).L` / `.U` (the `U` is the transposed tag of `L`, free), `cholesky(A) \ B` with a matrix `B`, `B / cholesky(A)`, QR, `eigen` for symmetric 3×3 in closed form
     ⬜ `sizeof`, `@kwdef` constructors, `Union{T, Nothing}` fields, structs holding mutable structs, creating a mutable struct inside transpiled code (needs allocation and an ownership rule)

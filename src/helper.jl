@@ -432,19 +432,42 @@ end
 # `A \ b` for a square `A` and a vector `b`: `solve_3x3_3`. Sizes 1–3 by Cramer's rule,
 # written out exactly as StaticArrays writes them; from 4 on through `lu_NxN`.
 function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
-    n = shape(T)[1]
-    ndims(T) == 2 && allequal(shape(T)) && extent(B, 1) == n || throw(ArgumentError("\\: a $(describe(T)) can't be solved against a $(describe(B))"))
+    m, n = extent(T, 1), extent(T, 2)
+    ndims(T) == 2 && extent(B, 1) == m || throw(ArgumentError("\\: a $(describe(T)) can't be solved against a $(describe(B))"))
     E = eltype(R)
     name = helpername(:solve, (T, B))
     haskey(helpers, name) && return name
     A, b = inputs((T, B))
+    if m != n && ndims(B) == 1
+        # Not square: least squares. Tall, the normal equations `AᵀA x = Aᵀb` through
+        # Cholesky; short, the minimum-norm solution `x = Aᵀ (A Aᵀ)⁻¹ b`. Julia goes
+        # through QR; this is faster and agrees to rounding for a well-conditioned `A`.
+        AT = transposed(T)
+        if m > n
+            G, c = shaped(E, (n, n)), shaped(E, (n,))
+            body = ["$(ctype(E)) G[$n][$n];", "$(ctype(E)) c[$n];",
+                    "$(helper!(helpers, :mul, (AT, T), G))($A, $A, G);",
+                    "$(helper!(helpers, :mul, (AT, B), c))($A, $b, c);",
+                    "$(solveLLThelper!(helpers, G, c, R))(G, c, out);"]
+            doc = "$(describe(T)) \\ $(describe(B)) least squares by the normal equations"
+        else
+            G, y = shaped(E, (m, m)), shaped(E, (m,))
+            body = ["$(ctype(E)) G[$m][$m];", "$(ctype(E)) y[$m];",
+                    "$(helper!(helpers, :mul, (T, AT), G))($A, $A, G);",
+                    "$(solveLLThelper!(helpers, G, B, y))(G, $b, y);",
+                    "$(helper!(helpers, :mul, (AT, y), R))($A, y, out);"]
+            doc = "$(describe(T)) \\ $(describe(B)) minimum-norm solve through A Aᵀ"
+        end
+        helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc)
+        return name
+    end
     if ndims(B) == 2
         # A matrix right-hand side: one column at a time through the vector solve.
-        m = extent(B, 2)
-        V = shaped(eltype(B), (n,))
-        body = ["$(ctype(eltype(B))) column[$n];", "$(ctype(E)) x[$n];",
-                "for (int j = 0; j < $m; j++) {",
-                "    for (int i = 0; i < $n; i++) {",
+        k = extent(B, 2)
+        V = shaped(eltype(B), (m,))
+        body = ["$(ctype(eltype(B))) column[$m];", "$(ctype(E)) x[$n];",
+                "for (int j = 0; j < $k; j++) {",
+                "    for (int i = 0; i < $m; i++) {",
                 "        column[i] = $(access(B, b, ["i", "j"]));",
                 "    }",
                 "    $(solvehelper!(helpers, T, V, shaped(E, (n,))))($A, column, x);",
@@ -502,6 +525,37 @@ function rsolvehelper!(helpers::Dict{String, String}, B::Type, A::Type, R::Type)
                                             nest([("j", n)], ["$(access(R, "out", [i, "j"])) = x[j];"]))))
     helpers[name] = definition("void", name, [declare(B, Bn; constant=true), declare(A, An; constant=true), declare(R, "out"; restrict=true)], body;
                                doc="$(describe(B)) / $(describe(A)) solve, row by row through the transpose")
+    return name
+end
+
+# `pinv(A)`: `pinv_4x3`. Square, it is the inverse; tall, `(AᵀA)⁻¹ Aᵀ`; short,
+# `Aᵀ (A Aᵀ)⁻¹` — the Gram matrix through Cholesky, since it's positive definite
+# whenever `A` has full rank. Julia goes through the SVD, which also copes with a
+# rank-deficient `A`; this doesn't, and says so (`PosDefException`).
+function pinvhelper!(helpers::Dict{String, String}, T::Type, R::Type)
+    m, n = extent(T, 1), extent(T, 2)
+    ndims(T) == 2 || throw(ArgumentError("pinv needs a matrix, got a $(describe(T))"))
+    E = eltype(R)
+    name = helpername(:pinv, (T,))
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    AT = transposed(T)
+    body, doc = if m == n
+        ["$(invhelper!(helpers, T, R))($A, out);"], "pseudoinverse of a square $(describe(T)): the inverse"
+    elseif m > n
+        G = shaped(E, (n, n))
+        ["$(ctype(E)) G[$n][$n];", "$(ctype(E)) Ginv[$n][$n];",
+         "$(helper!(helpers, :mul, (AT, T), G))($A, $A, G);",
+         "$(invLLThelper!(helpers, G, G))(G, Ginv);",
+         "$(helper!(helpers, :mul, (G, AT), R))(Ginv, $A, out);"], "pseudoinverse of a tall $(describe(T)), (AᵀA)⁻¹Aᵀ"
+    else
+        G = shaped(E, (m, m))
+        ["$(ctype(E)) G[$m][$m];", "$(ctype(E)) Ginv[$m][$m];",
+         "$(helper!(helpers, :mul, (T, AT), G))($A, $A, G);",
+         "$(invLLThelper!(helpers, G, G))(G, Ginv);",
+         "$(helper!(helpers, :mul, (AT, G), R))($A, Ginv, out);"], "pseudoinverse of a short $(describe(T)), Aᵀ(AAᵀ)⁻¹"
+    end
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc)
     return name
 end
 

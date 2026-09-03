@@ -588,7 +588,7 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     f === Base.getindex && return slice!(lines, sc, i, args, dest; declaration)
     # `s \ A` is `A / s`; `A / s` is elementwise; anything else with `\` or `/` is a solve.
     f === Base.:\ && valuetype(sc, args[1]) <: Number && (args = [args[2], args[1]]; f = Base.:/)
-    (f === Base.:\ || f === Base.inv || (f === Base.:/ && isarray(valuetype(sc, args[2])))) && return solve!(lines, sc, i, f, args, dest; declaration)
+    (f === Base.:\ || f === Base.inv || f === LinearAlgebra.pinv || (f === Base.:/ && isarray(valuetype(sc, args[2])))) && return solve!(lines, sc, i, f, args, dest; declaration)
     name = usercall!(sc, f, args)
     if name !== nothing
         R = widen(sc.ci.ssavaluetypes[i])
@@ -656,7 +656,13 @@ function solve!(lines, sc::Scope, i, f, args, dest; declaration::Bool=false)
     T = valuetype(sc, x)
     R = widen(ci.ssavaluetypes[i])
     n = shape(T)[1]
-    (n >= 4 || method == :llt) && union!(sc.headers, ("stdio.h", "stdlib.h", "math.h"))
+    (n >= 4 || method == :llt || f === LinearAlgebra.pinv || !allequal(shape(T))) && union!(sc.headers, ("stdio.h", "stdlib.h", "math.h"))
+    if f === LinearAlgebra.pinv
+        declaration && emit!(lines, sc, declare(R, dest) * ";")
+        emit!(lines, sc, "$(pinvhelper!(sc.helpers, T, R))($(value(sc, x)), $dest);")
+        sc.shapes[i] = R
+        return
+    end
     if f === Base.inv
         name = method == :llt ? invLLThelper!(sc.helpers, T, R) : invhelper!(sc.helpers, T, R)
         declaration && emit!(lines, sc, declare(R, dest) * ";")

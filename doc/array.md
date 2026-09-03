@@ -210,6 +210,8 @@ output rather than its inputs). See `flow.md`.
 | `lu(A) \ b` | `solve_4x4_4` | the same as `A \ b` |
 | `B / A`, `v' / A` | `rsolve_2x3_3x3` | each row against `Aᵀ`, through `solve_T3x3_3` |
 | `A / s`, `s \ A` | `div_2x2_s` | elementwise |
+| `A \ b`, `A` not square | `solve_4x3_4`, `solve_3x4_3` | least squares (tall) or minimum norm (short), through the Gram matrix and Cholesky |
+| `pinv(A)` | `pinv_4x3`, `pinv_3x4`, `pinv_3x3` | `(AᵀA)⁻¹Aᵀ`, `Aᵀ(AAᵀ)⁻¹`, or the inverse |
 | `cross(v, w)` | `cross_3_3` | 3-vectors only |
 | `transpose(A)`, `A'` | nothing | free for anything: same storage, axes read the other way |
 | `zeros(3, 4)`, `zeros(T)`, `zero(A)` | `zero_3x4` | one `memset`; `zero_2x2I64` when not `Float64` |
@@ -267,6 +269,19 @@ LU path, or a non-positive-definite one in the Cholesky path, is Julia's
 `SingularException` / `PosDefException`; the C prints that to `stderr` and
 `abort`s, which is what an uncaught exception does in Julia. Sizes 1–3 don't
 check: they divide by the determinant, as StaticArrays does.
+
+A matrix that isn't square is a least-squares problem. `A \ b` with a tall
+`A` solves the normal equations `AᵀA x = Aᵀb` through Cholesky; with a
+short `A` it gives the minimum-norm solution `Aᵀ(AAᵀ)⁻¹b`. `pinv(A)` is the
+same two formulas as a matrix — `(AᵀA)⁻¹Aᵀ` and `Aᵀ(AAᵀ)⁻¹` — and the plain
+inverse when square, one helper per shape: `pinv_4x3`, `pinv_3x4`,
+`pinv_3x3`. Both build the Gram matrix with the transposed tag, so `AᵀA` is
+one `mul_T4x3_4x3` call and no transpose is ever formed. Julia goes through
+QR and the SVD here, which also cope with a rank-deficient `A`; the
+Gram-matrix route is faster and agrees to rounding for a well-conditioned
+`A`, and reports `PosDefException` for a rank-deficient one. The solve is
+faster than `pinv` followed by a multiply — one Cholesky solve instead of an
+inverse and a product — which is why it exists separately.
 
 Not yet: LDLT (Julia has no `ldlt` for static matrices to hang it on),
 `cholesky(A).L`, `cholesky(A) \ B` with a matrix `B`, QR, eigenvalues.

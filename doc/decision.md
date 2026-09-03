@@ -707,3 +707,23 @@ derived symbolically from input sizes (`A * B'` is `m×m`). That's a second
 helper layer, not an extension of this one, and it deserves its own
 session rather than the tail of one that added six features. Nothing done
 here makes it harder.
+
+---
+
+## 2026-09-04 — `pinv` and least squares through the Gram matrix
+
+**Decision.** `pinv(A)` is one helper per shape — `pinv_4x3`, `pinv_3x4`,
+`pinv_3x3` — computing `(AᵀA)⁻¹Aᵀ` for a tall matrix, `Aᵀ(AAᵀ)⁻¹` for a
+short one, and the inverse for a square one; the Gram matrix goes through
+Cholesky. A non-square `A \ b` is the matching solve: the normal
+equations for tall, the minimum-norm solution for short, one Cholesky
+solve instead of an inverse and a product.
+
+**Why.** Julia uses the SVD for `pinv` and QR for least squares, both of
+which survive a rank-deficient `A`. Reproducing them would mean a static
+SVD, a large piece of work; the Gram route is a few lines on top of
+helpers that already exist, it's faster, and for the full-rank,
+well-conditioned matrices this project is for it agrees to rounding. The
+rank-deficient case is reported (`PosDefException`) rather than
+silently wrong. The transposed tag is what makes it cheap: `AᵀA` is one
+multiply helper reading `A` both ways, with no transpose ever formed.

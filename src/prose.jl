@@ -18,7 +18,7 @@ const unaryword = Dict(:neg => "negation", :abs => "absolute value", :sqrt => "s
                    :log10 => "base-10 logarithm", :log1p => "logarithm of one plus", :floor => "floor",
                    :ceil => "ceiling", :trunc => "truncation", :round => "rounding",
                    :sum => "sum", :prod => "product", :maximum => "maximum", :minimum => "minimum",
-                   :any => "any", :all => "all", :norm => "norm")
+                   :any => "any", :all => "all", :norm => "norm", :inv => "inverse", :pinv => "pseudoinverse")
 
 # One operand as a person names it: "scalar", "3-vector", "2×3-matrix", "4×3×2-array",
 # "transposed 3-vector"; the element type in front when the helper's name carries
