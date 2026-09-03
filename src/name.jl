@@ -11,9 +11,10 @@
 #   anything else                  U + its code point in hex: 🤠 -> U1F920
 #
 # A name that collides with a C keyword, or with another name in the same scope, gets
-# `_` appended until it doesn't. The reserved words live in `reserved.jl`. (Julia already
-# forbids a leading digit, sub- or superscript, so nothing here can produce a name C
-# rejects for starting wrong.)
+# `_` appended until it doesn't. The reserved words live in `reserved.jl`. A name that
+# starts with `_` has its underscores moved to the end, since C reserves those. (Julia
+# already forbids a leading digit, sub- or superscript, so nothing here can produce a
+# name C rejects for starting wrong.)
 #
 # This applies to every Julia name that reaches C: variables, functions, types, fields —
 # anything that has to be spelled in the output.
@@ -28,17 +29,25 @@ include("reserved.jl")
 `name` converted to a valid C identifier by the rules at the top of `name.jl`.
 Collisions are not handled here; see [`identifiers`](@ref).
 """
-identifier(name::AbstractString) = join(piece(c) for c in Unicode.normalize(String(name), :NFKD))
+function identifier(name::AbstractString)
+    s = join(piece(c) for c in Unicode.normalize(String(name), :NFKD))
+    # C keeps every file-scope name that starts with `_` (and `_X…`, `__…` anywhere) for
+    # itself, so leading underscores move to the end: `_x` -> `x_`, `__Foo` -> `Foo__`.
+    m = match(r"^_+", s)
+    m === nothing || (s = s[length(m.match)+1:end] * m.match)
+    return s
+end
 
 """
     identifiers(names) -> Vector{String}
 
 C identifiers for a list of names that share a scope. Each is converted with
 [`identifier`](@ref), then given a trailing `_` (repeatedly if needed) until it
-matches neither a reserved word (`reserved.jl`) nor any name earlier in the list.
+matches neither a reserved word (`reserved.jl`), nor a name in `blocked` (the
+generated helpers, on a second pass), nor any name earlier in the list.
 """
-function identifiers(names)
-    taken = copy(reserved)
+function identifiers(names; blocked=())
+    taken = union(reserved, blocked)
     out = String[]
     for n in names
         s = identifier(n)

@@ -73,7 +73,7 @@ All of this is straight-line only — see below.
   and a value defined inside one iteration is never used in the next — that
   goes through a variable). The unoptimized IR has no phi nodes; branches
   meet through variables, which the check already accounts for.
-- **Multiple returns.** Related: `result` is currently claimed once per
+- **Multiple returns.** Related: `result` (or `out`) is currently claimed once per
   function; with several return paths it needs to be declared once and
   assigned on each path.
 

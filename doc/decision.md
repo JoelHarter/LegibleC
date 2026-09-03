@@ -384,11 +384,11 @@ a different shape and isn't attempted yet.
 - *A row vector is the same C storage as its column, remembered as a row.*
   `v'` emits nothing; the value is tagged `Row{T,N}` internally, named `r3`,
   and every helper that gets one treats it as 1×N (`mul_r3_3x2`,
-  `mulB_3_r3`). The alternative — a real 1×N C array `double r[1][3]` — would
+  `mulP_3_r3`). The alternative — a real 1×N C array `double r[1][3]` — would
   cost a copy at every transpose and read worse. Since the C is identical
   either way, the tag is the cheaper truth.
 - *Broadcast chains are un-fused.* Julia turns `exp.(v) .+ 2.0` into one loop;
-  here it's `expE_3` then `addB_3_s` through a temp. One helper per
+  here it's `expP_3` then `addP_3_s` through a temp. One helper per
   operation keeps the naming scheme (one name, one operation, its input
   sizes) intact and the helpers reusable. The cost is an extra pass over
   small arrays; fusing is a later optimization if it ever matters.
@@ -422,3 +422,193 @@ C is unchanged in every case that existed before except matrix×vector, which
 now zeroes and accumulates into `out[i]` like the others instead of through a
 local `sum` — the same i-k-j order the earlier decision chose, with no
 separate zeroing pass. All 23 numeric checks still agree with Julia.
+
+---
+
+## 2026-09-03 — One letter for pointwise operations: `P`
+
+**Decision.** Broadcast helpers are named with `P` (pointwise) after the
+operation — `mulP_3_3x2`, `addP_3`, `expP_3x3` — and otherwise by the same
+rule as every other helper. This replaces the earlier `E` (element-wise,
+same sizes, size written once, types run together) and `B` (broadcast, sizes
+differ, everything listed).
+
+**Why.** Two letters and two formats were more scheme than the distinction
+was worth: whether the sizes happened to match is visible from the name
+either way. One letter, one rule, nothing to remember.
+
+---
+
+## 2026-09-03 — Helper names list every input, always
+
+**Decision.** A helper's name is the operation plus one description per
+input, with no collapsing of identical inputs: `add_2x2_2x2`, `mul_2x2_2x2`,
+`mulP_3x2_3x2`, `dot_3_3`, `cross_3_3`. This replaces "if both args match we
+only say one" (`add_2x2`) and the `cross` exception.
+
+**Why.** `mulP_3x2` reads like a function of one thing — "a function that
+always multiplies 2 and 3 and gives 6." A name should stand on its own, and
+the collapsed form only ever made sense next to its call. Listing everything
+makes the name a transcription of the signature, needs no exceptions (the
+`cat` helpers had already had to opt out, since block count matters), and
+generalizes to any arity with no rule to remember. The cost is a few
+characters. `fill_3` and `hvcat2x2_…` carry output information because their
+inputs don't determine it — the rule's extension, not an exception to it.
+
+---
+
+## 2026-09-03 — Operands keep exactly their own dimensions
+
+**Context.** The generalized helpers first described every operand by a
+padded "logical shape": a vector as N×1, a row vector as 1×N, a scalar as
+1×1. It worked, but the wording was wrong, and the code said the wrong
+thing too.
+
+**Decision.** A vector has one dimension. A row vector has one dimension,
+which lines up with the second axis of whatever it meets. A scalar has zero
+dimensions (and, like 0!, a size of 1). Nothing is ever added: an operand is
+described by the axis each of its own dimensions lines up with (`axis`), and
+its extent along any axis is its size there or 1 where it has no dimension
+(`extent`). `bshape`/`stored` are gone; `access`, the contraction, the
+broadcast loop, and block placement all read from `axis`/`extent`.
+
+**Why.** It's the same principle as keeping every dimension the inputs
+gave us, read the other way: the shape is exactly what the inputs
+determined, no more and no less. Saying "a vector is N×1" invites someone to
+one day emit `double v[3][1]`, which would be wrong. The generated C is
+byte-identical before and after; only the description became true.
+
+---
+
+## 2026-09-03 — A transpose is a tag, never a copy, and its name is `T`
+
+**Context.** A vector's transpose was already free: the same storage,
+tagged `Row`, named `r3`. A matrix's transpose was a helper that copied
+into a temp, followed by the ordinary operation on the temp — `A * B'` cost
+a `transpose_2x3` pass that no one writing C by hand would make.
+
+**Decision.** One tag, `Transposed`, for the transpose of anything Julia
+lets you transpose (0–2 dimensions; a scalar's is itself and Julia inlines
+it away). It carries only the storage shape; what changes is which axis each
+dimension lines up with — reversed. Nothing in C records that a value is
+transposed, exactly as nothing records that a vector is a row: it's the same
+storage, and only Julia's type (hence the transpiler) knows. So `A * B'` is
+`mul_2x3_T2x3` with `a[i][k] * b[j][k]` inside, `A + B'` is
+`add_2x3_T3x2`, and `transpose_2x3` no longer exists. Where the value must
+land — `B = A'`, or a function returning `A'` — the C follows Julia's type
+for the landing spot: a lazy `Adjoint` (a vector's) is the same storage,
+copied as `copy_3`; an eager one (StaticArrays materializes a matrix
+transpose into a real 3×2) is copied axes-swapped by `copy_T2x3` into a
+`double [3][2]`. The tag never decides a C type; Julia's type does. In names, `T`
+in front of the storage shape (`T3`, `T2x3`) replaces `r3`: it's the
+mathematical notation, it covers matrices where "row" didn't, and it can't
+be read as a type suffix.
+
+**Why.** With operands described by the axis each of their dimensions lines
+up with, a transposed matrix needed no new machinery — reversing the axes
+is a one-line rule, and `access` then places every subscript. That is the
+generalization principle doing its job: `Row` was the special case, this is
+the general one it belongs to. The elementwise helpers walk storage order
+with plain subscripts when every operand lines up the same way (unchanged
+output, contiguous) and switch to axis-placed subscripts only when one is
+transposed relative to the others.
+
+---
+
+## 2026-09-03 — Helper comments speak like a person; the code never does
+
+**Decision.** Each generated helper carries a one-line `///` comment in
+ordinary mathematical English: `2×3 * 3×3 matrix multiplication`,
+`4-vector + 4×3×2-array broadcast addition`, `2×2-matrix negation`,
+`2×3-matrix element-wise exponential`, `transposed 3-vector * 3-vector
+multiplication`. The vocabulary — scalar, vector, matrix, N-D array,
+element-wise versus broadcast, `×` between sizes — lives in `src/prose.jl`
+and nowhere else.
+
+**Why.** The transpiler deliberately has no notion of a vector or a matrix
+(only arrays of any dimension, each dimension on an axis) and no notion of
+element-wise versus broadcast (only pointwise, one loop over the result).
+Those distinctions are exactly what made the code general, so they mustn't
+creep back in. But a reader thinks in them, and the README's second
+principle is that the output reads as hand-written. Keeping the human words
+in one prose layer gives the reader what they expect without giving the
+code an exception to make. Known functions are named in English
+(`exponential`, `square root`); user-defined or unlisted ones keep their
+Julia name, so nothing is refused for lack of a translation.
+
+---
+
+## 2026-09-04 — Helper parameters are letters; the output is `out`
+
+**Decision.** A helper's inputs are `a`, `b`, `c`, … in order, capitalized
+for a matrix or higher-dimensional array and lowercase for a vector or
+scalar, continuing `aa`, `ab`, … past 26 like spreadsheet columns; the output
+is `out`. A loop index that would collide with an input gets `_` appended
+(`i_`). The user function's array out-parameter is also `out` now (it was
+`result`); a returned scalar stays `result`.
+
+**Why.** `mul_2x3_3(const double A[2][3], const double b[3], double out[2])`
+reads like the mathematics, and `hvcat(A, B, C, D, out)` reads like
+`[A B; C D]`. One rule covers every arity with nothing to remember. On
+`out` versus `result`: an earlier entry rejected `out` because in C it
+connotes an output parameter — which is exactly what the trailing array
+parameter is, and exactly what a returned scalar isn't. Both names are now
+used, each where it means the right thing, and helpers and user functions
+agree.
+
+---
+
+## 2026-09-04 — Arrays from nothing are one `memset`
+
+**Decision.** `zeros`, `zero(A)` produce `zero_3x4(out)`, whose body is
+`memset(out, 0, sizeof(double[3][4]))`; `one(A)` and `SMatrix{3,3}(I)`
+produce `identity_3x3(out)`, the same `memset` followed by ones down the
+diagonal. `ones` and `fill` still assign every element, since there's no
+byte pattern for an arbitrary value.
+
+**Why.** All-zero bytes are zero in every type the transpiler emits (IEEE
+floats, two's-complement integers, `bool`), so `memset` is both the fastest
+and the most hand-written form. `sizeof(double[3][4])` rather than a byte
+count keeps it readable and self-checking.
+
+---
+
+## 2026-09-04 — Name collisions: rename variables, refuse functions, reserve widely
+
+**Decision.** Three rules, in `naming.md`:
+
+- A user *variable* whose C name matches a generated helper's is renamed
+  with `_`, by generating that function again once the helper names are
+  known. A user *function* whose name matches a helper's is an error.
+- The reserved list grows from the headers the output might emit to the
+  headers C written around the output commonly includes (`stdio`, `time`,
+  `ctype`, `limits`, `float`, `errno`, `assert`, the POSIX names a default
+  compiler exposes), all three widths of every `math.h` function, and
+  `main`. A reserved name gets `_` appended, as before; nothing is refused.
+- A name beginning with `_` has its leading underscores moved to the end.
+
+**Why.** Renaming a variable is invisible to the caller; renaming a function
+changes the C interface, and the user should choose the new name. Reserving
+by header regardless of whether the header is included keeps the output
+stable (adding an include later can't rename an existing variable) and
+keeps it safe next to outside C. The underscore rule is the only one that
+can't be an `_` suffix, since a leading underscore is the problem.
+
+---
+
+## 2026-09-04 — `det`: sizes 1–3 written out, cofactor expansion beyond
+
+**Decision.** `det(A)` becomes `det_NxN(A)`, a scalar-returning helper. For
+1×1, 2×2 and 3×3 the formula is written out in full, as a person writes it.
+From 4×4 up the body is cofactor expansion along the first row: a loop over
+the column, the minor cut into a local `M`, and a call to the next size
+down, so `det_5x5` calls `det_4x4` calls `det_3x3`. The sign alternates
+through a local `sign`, not `pow(-1, j)`.
+
+**Why.** For small fixed sizes the expanded formula is both the fastest
+thing and the most readable, and those are the sizes that dominate the
+kinds of code this transpiler is for. Cofactor expansion is exponential and
+would be the wrong choice for large matrices, but a large *static* matrix
+is rare, and the recursion through generated helpers reads exactly like the
+textbook. This is the pattern for the more involved algorithms to come:
+sizes 1–3 hardcoded, a general form beyond, both as helpers.

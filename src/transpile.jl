@@ -76,15 +76,25 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
     helpers = Dict{String, String}()
     headers = Set(["stdint.h", "stdbool.h"])
     functions = [cfunction(n, mi, sig, helpers, headers; templimit, staticarray, source) for (n, (mi, sig)) in zip(names, instances)]
+    # The helpers' names are known only now. A function that shares one is an error,
+    # since its name is the C interface; a variable that shares one is renamed with `_`
+    # by generating that function again with the helper names blocked.
+    for n in names
+        haskey(helpers, n) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
+    end
+    for (k, (n, (mi, sig))) in enumerate(zip(names, instances))
+        any(v -> haskey(helpers, v), functions[k][3]) || continue
+        functions[k] = cfunction(n, mi, sig, helpers, headers; templimit, staticarray, source, blocked=keys(helpers))
+    end
     path = joinpath(outpath, endswith(outfile, ".c") ? outfile : outfile * ".c")
     open(path, "w") do io
-        for h in ("stdint.h", "stdbool.h", "stdlib.h", "math.h")
+        for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "math.h")
             h in headers && println(io, "#include <", h, ">")
         end
         println(io)
-        for (prototype, _) in functions; println(io, prototype); end
+        for (prototype, _, _) in functions; println(io, prototype); end
         for name in sort!(collect(keys(helpers))); println(io); print(io, helpers[name]); end
-        for (_, definition) in functions; println(io); print(io, definition); end
+        for (_, definition, _) in functions; println(io); print(io, definition); end
     end
     return path
 end

@@ -33,7 +33,26 @@ already forbids a leading digit, subscript, or superscript.
 other name already in the same scope, gets `_` appended, repeatedly, until
 it's unique: a variable `long` becomes `long_`; with both `omega` and `ω` in
 scope, whichever comes second becomes `omega_`. Function names are checked the
-same way, after the mangling below.
+same way, after the mangling below. Nothing is ever refused for its name.
+
+The reserved list (`src/reserved.jl`) holds the C keywords and the names of
+every standard header the output might include *or that C written around
+the output commonly does* — `stdint`, `stdlib`, `string`, `stdio`, `math`
+in all three widths, `time`, `ctype`, `limits`, `float`, `errno`, `assert` —
+plus `main`. So a Julia `time` or `index` comes out as `time_` or `index_`
+whether or not that header is in play, which keeps the output stable as
+headers come and go. A name that starts with `_` has its leading underscores
+moved to the end (`_x` → `x_`, `__Foo` → `Foo__`), because C reserves every
+such name at file scope and `_X…`/`__…` everywhere.
+
+**Generated helpers** (`add_2x2_2x2`, `mulP_3_3x2`, …, see `array.md`) live in
+the same file as the user's functions, so their names can collide with the
+user's. Their names are known only once everything has been generated, so
+the check comes last: a *variable* that matches a helper is renamed with `_`
+like any other collision (the function is generated again with the helper
+names blocked); a *function* that matches one is an error, since a
+function's name is the C interface and quietly changing it would mislead the
+caller.
 
 ## Function names: the same function at several signatures
 
@@ -151,10 +170,16 @@ double fun45(double a, double c) {
 ```
 
 `result` is an ordinary name in the function's scope and collides like any
-other: if the user already has a `result`, the result is `result_`. (`out`
-was considered and rejected: in C it connotes an output parameter. Anything
+other: if the user already has a `result`, the result is `result_`. Anything
 more specific than `result` should be written as a named variable in the
-Julia, and will come through as such.)
+Julia, and will come through as such.
+
+When the result is an *array* it can't be returned; it comes out through a
+trailing parameter, and an output parameter in C is called `out` — `out_` if
+the Julia already uses `out`. That is the same name every generated helper
+uses for its output, so `add_2x2_2x2(A, B, out)` and `void add(…, double
+out[2][2])` read alike. `out` was deliberately not used for a returned
+scalar, where it would suggest a parameter that isn't there.
 
 A temp that gets stored into a variable is referred to by that variable from
 then on (provided the variable isn't reassigned), so `d = (a + b) * c / 2` as

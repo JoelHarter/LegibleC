@@ -74,7 +74,9 @@ variable is an error. A range step must be a literal.
 |---|---|
 | `v[i]`, `A[i, j]` | `v[i - 1]`, `A[i - 1][j - 1]`; literal indices are shifted at transpile time |
 | `v[i] = x` | `v[i - 1] = x;` — a parameter written this way loses its `const` |
-| `zeros(n)`, `zeros(m, n)`, `ones(…)`, `fill(x, …)` | a `fill_<dims>` helper; dimensions must be literal |
+| `zeros(n)`, `zeros(m, n)`, `zeros(T)`, `zero(A)` | a `zero_<dims>` helper (one `memset`); dimensions must be literal |
+| `ones(…)`, `fill(x, …)` | a `fill_<dims>` helper |
+| `one(A)`, `SMatrix{3,3}(I)` | an `identity_<dims>` helper |
 
 ## Not yet
 

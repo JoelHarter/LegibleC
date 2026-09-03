@@ -44,7 +44,7 @@ And a few that exist on one side but not cleanly on the other:
 
 ## Arrays
 
-Arrays aren't emitted yet, but their part in mangling is defined:
+Their part in mangling:
 
 - A **static** array type carries its size in the type — the test is whether
   `size` is defined on the type itself, so no particular package is required.

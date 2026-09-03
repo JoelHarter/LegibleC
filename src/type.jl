@@ -48,48 +48,66 @@ Base.size(::Type{Shaped{T, S, N}}) where {T, S, N} = S
 shaped(T::Type, s) = Shaped{T, Tuple(s), length(s)}
 
 
-# A row vector: the transpose of a vector. Stored in C exactly like the vector it came
-# from — `double r[3]` — but every helper treats it as 1×N, and it's named `r3`.
-struct Row{T, N} <: AbstractArray{T, 1} end
-Base.size(::Type{Row{T, N}}) where {T, N} = (N,)
-isrow(T::Type) = T <: Row
+# A transposed array — `v'`, `A'`, `transpose(A)` — as the transpiler sees it. Stored
+# in C exactly like the array it came from, `double v[3]` or `double A[2][3]`: C never
+# knows a value is transposed, any more than it knows a vector is a row. Only the
+# transpiler does, and all that changes is which axis each dimension lines up with
+# (`axis`). So a transpose emits nothing, and named with a `T` in front: `T3`, `T2x3`.
+# Julia allows it for at most two dimensions; a scalar's transpose is itself and never
+# reaches us.
+struct Transposed{T, S, N} <: AbstractArray{T, N} end
+Base.size(::Type{Transposed{T, S, N}}) where {T, S, N} = S
+istransposed(T::Type) = T <: Transposed
+isrow(T::Type) = istransposed(T) && ndims(T) == 1
 
-# Julia's lazy `Adjoint`/`Transpose` wrappers, as the transpiler sees them: a wrapped
-# vector is a `Row`; a wrapped matrix is the transposed shape. Everything else passes.
+# `T` without its transpose tag: the storage as a plain array.
+plain(T::Type) = istransposed(T) ? shaped(eltype(T), shape(T)) : T
+
+# The transpose of `T`: a transposed array is its original, anything else gets the tag.
+function transposed(T::Type)
+    T <: AbstractArray || return T
+    istransposed(T) && return plain(T)
+    ndims(T) <= 2 || throw(ArgumentError("transpose of a $(ndims(T))-dimensional array (Julia allows at most two)"))
+    return Transposed{eltype(T), shape(T), ndims(T)}
+end
+
+# Julia's lazy `Adjoint`/`Transpose` wrappers, as the transpiler sees them: the
+# transpose of what they wrap. Everything else passes.
 function normalize(T::Type)
     T === Union{} && return T
     T <: LinearAlgebra.Adjoint || T <: LinearAlgebra.Transpose || return T
     P = T.parameters[2]
-    s = shape(P)
-    s === nothing && return T
-    length(s) == 1 && return Row{eltype(T), s[1]}
-    P <: Row && return shaped(eltype(T), s)
-    return shaped(eltype(T), reverse(s))
+    shape(P) === nothing && return T
+    return transposed(P)
 end
 
 # The dimensions of an array type as they appear in a mangled name: `3`, `2x3`, `4x3x4`;
-# `r3` for a row vector. Under `staticarray` a regular array is treated exactly like a
+# `T3`, `T2x3` when transposed. Under `staticarray` a regular array is treated exactly like a
 # static one, so it needs a size too; until there's a way to supply one, it's an error
 # rather than a guess.
 function dims(T::Type)
     s = shape(T)
     s === nothing && throw(ArgumentError("arrays without a size in their type are not yet supported (got $T)"))
-    return (isrow(T) ? "r" : "") * join(s, "x")
+    return (istransposed(T) ? "T" : "") * join(s, "x")
 end
 
-# An array's *logical* shape, the one the mathematics sees: a vector is N×1, a row
-# vector is 1×N, anything else is its own shape. A scalar is 1×1.
-function bshape(T::Type)
-    T <: AbstractArray || return (1, 1)
-    isrow(T) && return (1, shape(T)[1])
-    s = shape(T)
-    return length(s) == 1 ? (s[1], 1) : s
+# The axis each of an operand's dimensions lines up with, in storage order. Nothing is
+# added: a vector has one dimension, on axis 1; a matrix two, on axes 1 and 2; a scalar
+# none. Transposed, the axes come in the other order — a row vector's one dimension is
+# on axis 2, a transposed matrix's two on axes 2 and 1. With `extent`, this is all a
+# helper needs to index any operand the same way.
+axis(T::Type) = T <: AbstractArray ? (istransposed(T) ? collect(2:-1:3-ndims(T)) : collect(1:ndims(T))) : Int[]
+
+# The extent of `T` along axis `d`: its size there, or 1 where it has no dimension —
+# which is what makes a missing dimension line up with anything (and a scalar with
+# everything) without pretending it exists.
+function extent(T::Type, d::Integer)
+    p = findfirst(==(d), axis(T))
+    return p === nothing ? 1 : shape(T)[p]
 end
 
-# Which logical dimensions an array type stores, in storage order. A row vector stores
-# only its column dimension; everything else stores every dimension in order. With
-# `bshape`, this is all a helper needs to index any array the same way.
-stored(T::Type) = isrow(T) ? [2] : collect(1:ndims(T))
+# The extents of `T` along every axis up to its last, for looping over its elements.
+extents(T::Type) = Tuple(extent(T, d) for d in 1:(isempty(axis(T)) ? 0 : maximum(axis(T))))
 
 # A C declaration of `name` with type `T`: `double x`, `const double a[2][2]`.
 function declare(T::Type, name::AbstractString; constant::Bool=false)

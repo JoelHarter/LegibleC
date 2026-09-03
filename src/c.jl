@@ -9,6 +9,7 @@
 
 include("name.jl")
 include("type.jl")
+include("prose.jl")
 include("helper.jl")
 include("source.jl")
 
@@ -48,8 +49,8 @@ mutable struct Scope
     whiles::Dict{Int, Any}
 end
 
-function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, helpers, headers, copycode::Bool)
-    names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])])]
+function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, helpers, headers, copycode::Bool, blocked)
+    names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])]; blocked)]
     hidden = Set{Int}(i for (i, s) in enumerate(ci.slotnames) if i > 1 && isempty(string(s)))
     result = "result"
     while result in names
@@ -79,10 +80,16 @@ stand-in carrying the size the IR doesn't know. Any array helpers it needs are a
 to `helpers`, and any standard headers to `headers`.
 """
 function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, helpers::Dict{String, String}, headers::Set{String};
-                   templimit::Integer=40, staticarray::Bool=true, source::Bool=true)
+                   templimit::Integer=40, staticarray::Bool=true, source::Bool=true, blocked=())
     ci, rettype = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
-    sc = Scope(ci, mi, sig, templimit, staticarray, helpers, headers, source)
+    sc = Scope(ci, mi, sig, templimit, staticarray, helpers, headers, source, blocked)
     sc.resultparam = isarray(rettype)
+    sc.rettype = widen(rettype)
+    if sc.resultparam
+        # An array comes out through a parameter, and an output parameter is `out` —
+        # `result` is kept for a returned scalar (see naming.md).
+        sc.result = sc.resultname = free("out", sc.names)
+    end
     analyze!(sc)
 
     body = String[]
@@ -107,7 +114,7 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, helpers::
     origin = "$(mi.def.name)($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
              (sc.src === nothing ? "" : ", $(sc.src.name):$(sc.src.first)")
     block = doxygen(doc, origin, sc.names[2:ci.nargs], sc.resultparam ? sc.resultname : nothing)
-    return signature * ";", join([comments; block; signature * " {"; "    " .* lines; "}"], "\n") * "\n"
+    return signature * ";", join([comments; block; signature * " {"; "    " .* lines; "}"], "\n") * "\n", sc.names
 end
 
 # Everything that has to be known before emission starts: the loops, the statements
@@ -186,9 +193,12 @@ function statement!(lines, sc::Scope, i, st)
         v = value(sc, st.val)
         if sc.resultparam
             # An array result is written into the out parameter; if it isn't there
-            # already, copy it. A `return` is only needed before the end.
-            sc.rettype = valuetype(sc, st.val)
-            v == sc.resultname || emit!(lines, sc, "$(copyhelper(sc, st.val))($v, $(sc.resultname));")
+            # already, copy it. The result has Julia's return type where that has a
+            # size, otherwise the value's own; a transposed value landing in a plain
+            # type is copied with its axes swapped. A `return` is only needed before
+            # the end.
+            shape(sc.rettype) === nothing && (sc.rettype = valuetype(sc, st.val))
+            v == sc.resultname || emit!(lines, sc, "$(copyhelper(sc, st.val, sc.rettype))($v, $(sc.resultname));")
             i == length(ci.code) || emit!(lines, sc, "return;")
         else
             emit!(lines, sc, "return $v;")
@@ -197,23 +207,14 @@ function statement!(lines, sc::Scope, i, st)
         f = callee_or_nothing(ci, st.args[1])
         if f === Base.setindex!
             emit!(lines, sc, "$(index(sc, st.args[2], st.args[4:end])) = $(value(sc, st.args[3]));")
-        elseif f in (Base.zeros, Base.ones, Base.fill) || isconstruction(f) || f === Base.materialize
+        elseif f in (Base.zeros, Base.ones, Base.fill) || (f in (Base.zero, Base.one) && isarray(T)) || isconstruction(f) || f === Base.materialize
             dest = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
             construct!(lines, sc, i, st, dest; declaration=!(onlyreturned(ci, i) && sc.resultparam))
         elseif (f === Base.adjoint || f === Base.transpose) && isarray(T)
-            # A vector's transpose is the same storage read as a row (or back again):
-            # nothing to do in C. A matrix's transpose is a helper.
-            A = valuetype(sc, st.args[2])
-            if ndims(A) == 1
-                sc.expr[i] = value(sc, st.args[2])
-                sc.shapes[i] = isrow(A) ? shaped(eltype(A), shape(A)) : Row{eltype(A), shape(A)[1]}
-            else
-                R = shaped(eltype(A), reverse(shape(A)))
-                dest = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
-                (onlyreturned(ci, i) && sc.resultparam) || emit!(lines, sc, declare(R, dest) * ";")
-                emit!(lines, sc, "$(transposehelper!(sc.helpers, A, R))($(value(sc, st.args[2])), $dest);")
-                sc.shapes[i] = R
-            end
+            # A transpose is the same storage with its axes read the other way round:
+            # nothing to do in C, the value just carries the tag from here on.
+            sc.expr[i] = value(sc, st.args[2])
+            sc.shapes[i] = transposed(valuetype(sc, st.args[2]))
         elseif f === Colon() || f === Base.OneTo || f === Base.eachindex || f === Base.axes
             throw(ArgumentError("ranges are only supported as the range of a for loop (statement $i)"))
         elseif isarray(T)
@@ -283,12 +284,17 @@ function store!(lines, sc::Scope, i, x, rhs)
     slot = sc.ci.code[i].args[1].id
     if rhs isa Expr
         f = callee_or_nothing(sc.ci, rhs.args[1])
-        if f in (Base.zeros, Base.ones, Base.fill) || isconstruction(f) || f === Base.materialize
+        if f in (Base.zeros, Base.ones, Base.fill, Base.zero, Base.one) || isconstruction(f) || f === Base.materialize
             construct!(lines, sc, i, rhs, x)
-        elseif (f === Base.adjoint || f === Base.transpose) && ndims(valuetype(sc, rhs.args[2])) == 1
-            emit!(lines, sc, "$(copyhelper(sc, rhs.args[2]))($(value(sc, rhs.args[2])), $x);")
-            A = valuetype(sc, rhs.args[2])
-            sc.shapes[i] = isrow(A) ? shaped(eltype(A), shape(A)) : Row{eltype(A), shape(A)[1]}
+        elseif (f === Base.adjoint || f === Base.transpose) && isarray(valuetype(sc, rhs.args[2]))
+            # `B = A'`: a copy into whatever Julia says `B` is. A lazy `Adjoint` (a
+            # vector's) is the same storage, known to be transposed; an eager one
+            # (StaticArrays materializes a matrix transpose) is copied axes-swapped.
+            A = transposed(valuetype(sc, rhs.args[2]))
+            R = slottype(sc, slot)
+            shape(R) === nothing && (R = A)
+            emit!(lines, sc, "$(copyhelper(sc, rhs.args[2], R; from=A))($(value(sc, rhs.args[2])), $x);")
+            sc.shapes[i] = R
         elseif x in (value(sc, a) for a in rhs.args[2:end])
             t = temp!(sc, nothing, parts(sc, rhs))
             arraycall!(lines, sc, i, rhs, t; declaration=true)
@@ -303,23 +309,54 @@ function store!(lines, sc::Scope, i, x, rhs)
     end
 end
 
-# Calls that make a whole array: `zeros`/`ones`/`fill`, block construction and array
-# literals, static constructors, and a broadcast being materialized.
+# Calls that make a whole array: `zeros`/`ones`/`fill`, `zero`/`one`, `SMatrix{…}(I)`,
+# block construction and array literals, static constructors, and a broadcast being
+# materialized.
 function construct!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false)
     f = callee(sc.ci, ex.args[1])
     args = ex.args[2:end]
     f === Base.materialize && return broadcast!(lines, sc, i, args[1], dest; declaration)
+    T = widen(sc.ci.ssavaluetypes[i])
+    if isconstruction(f) && length(args) == 1 && literal(sc, args[1]) isa LinearAlgebra.UniformScaling
+        # `SMatrix{3,3}(I)`: the identity matrix.
+        literal(sc, args[1]).λ == 1 || throw(ArgumentError("only `I` itself can be made into a matrix, not a multiple of it (statement $i)"))
+        return nullary!(lines, sc, i, identityhelper!(sc.helpers, T), T, dest; declaration)
+    end
     isconstruction(f) && return concatenate!(lines, sc, i, f, args, dest; declaration)
-    x = f === Base.fill ? value(sc, args[1]) : f === Base.zeros ? "0.0" : "1.0"
+    if f in (Base.zero, Base.one) || (f in (Base.zeros, Base.ones) && length(args) == 1 && literal(sc, args[1]) isa Type)
+        # `zero(A)`, `zeros(SMatrix{3,4})`, `one(A)`: the size is in the result's type.
+        shape(T) === nothing && throw(ArgumentError("$f needs a static array type (statement $i)"))
+        f === Base.one && return nullary!(lines, sc, i, identityhelper!(sc.helpers, T), T, dest; declaration)
+        f in (Base.zero, Base.zeros) && return nullary!(lines, sc, i, zerohelper!(sc.helpers, T), T, dest; declaration)
+        declaration && emit!(lines, sc, declare(T, dest) * ";")
+        emit!(lines, sc, "$(fillhelper!(sc.helpers, T))($(eltype(T) <: AbstractFloat ? "1.0" : "1"), $dest);")
+        sc.shapes[i] = T
+        return
+    end
+    x = f === Base.fill ? value(sc, args[1]) : "1.0"
     f === Base.fill && (args = args[2:end])
-    dims = [a isa Integer ? a : a isa Core.SSAValue && sc.ci.ssavaluetypes[a.id] isa Core.Const ? sc.ci.ssavaluetypes[a.id].val :
-            throw(ArgumentError("$f needs literal dimensions (statement $i)")) for a in args]
-    E = eltype(widen(sc.ci.ssavaluetypes[i]))
-    R = shaped(E, Tuple(dims))
-    E <: AbstractFloat || (x = f === Base.zeros ? "0" : f === Base.ones ? "1" : x)
+    dims = [literal(sc, a) isa Integer ? literal(sc, a) : throw(ArgumentError("$f needs literal dimensions (statement $i)")) for a in args]
+    R = shaped(eltype(T), Tuple(dims))
+    f === Base.zeros && return nullary!(lines, sc, i, zerohelper!(sc.helpers, R), R, dest; declaration)
+    eltype(T) <: AbstractFloat || f !== Base.ones || (x = "1")
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     emit!(lines, sc, "$(fillhelper!(sc.helpers, R))($x, $dest);")
     sc.shapes[i] = R
+end
+
+# Emit a helper that makes an array from nothing: `zero_3x4(out);`, `identity_3x3(out);`.
+function nullary!(lines, sc::Scope, i, name, R::Type, dest; declaration::Bool)
+    push!(sc.headers, "string.h")
+    declaration && emit!(lines, sc, declare(R, dest) * ";")
+    emit!(lines, sc, "$name($dest);")
+    sc.shapes[i] = R
+end
+
+# The compile-time value of `x`, or `nothing` if it has none.
+function literal(sc::Scope, x)
+    x isa Core.SSAValue && return (t = sc.ci.ssavaluetypes[x.id]; t isa Core.Const ? t.val : nothing)
+    x isa GlobalRef && return getfield(x.mod, x.name)
+    return x
 end
 
 # `hvcat`, `vcat`, `hcat`, `vect`, their `typed_` forms, and static-array constructors.
@@ -409,13 +446,12 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     if isarray(T)
         E = eltype(T)
         R = shape(T) !== nothing ? T :
-            T <: LinearAlgebra.Adjoint || T <: LinearAlgebra.Transpose ? Row{E, bs[2]} :
-            ndims(T) == 1 ? shaped(E, (bs[1],)) : shaped(E, bs)
+            T <: LinearAlgebra.Adjoint || T <: LinearAlgebra.Transpose ? Transposed{E, Tuple(reverse(bs)[1:ndims(T)]), ndims(T)} : shaped(E, bs)
     else
         # An inner node of a fused broadcast: the IR only knows it as a `Broadcasted`.
         E = promote_type((isarray(t) ? eltype(t) : t for t in types)...)
-        R = all(t -> !isarray(t) || isrow(t), types) ? Row{E, bs[2]} :
-            bs[2] == 1 && all(t -> !isarray(t) || ndims(t) == 1, types) ? shaped(E, (bs[1],)) : shaped(E, bs)
+        R = all(t -> !isarray(t) || istransposed(t), types) ?
+            (nd = maximum(ndims(t) for t in types if isarray(t)); Transposed{E, Tuple(reverse(bs)[1:nd]), nd}) : shaped(E, bs)
     end
     op, cfn = broadcastop(f, length(inputs), E)
     cfn isa String && push!(sc.headers, cfn == "llabs" ? "stdlib.h" : "math.h")
@@ -489,7 +525,15 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
 end
 
 # The copy helper for the array value `x`.
-copyhelper(sc::Scope, x) = (T = valuetype(sc, x); helper!(sc.helpers, :copy, (T,), T))
+# The helper that copies `x` into a value of type `R`, by default `x`'s own. Between
+# like layouts it's a storage copy, named for the storage whether or not the value is
+# transposed (`copy_3` for `v'`); into the other layout it swaps the axes as it goes
+# (`copy_T2x3`, writing a 3×2).
+function copyhelper(sc::Scope, x, R::Type=valuetype(sc, x); from::Type=valuetype(sc, x))
+    T = from
+    axis(T) == axis(R) && (T = R = plain(R))
+    return helper!(sc.helpers, :copy, (T,), R)
+end
 
 isarray(T) = T <: AbstractArray
 
@@ -594,6 +638,10 @@ function render(sc::Scope, i, ex::Expr)
     fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$name(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
     floating = T <: AbstractFloat
 
+    # The determinant: a helper that returns the scalar.
+    if f === LinearAlgebra.det && n == 1 && isarray(valuetype(sc, args[1]))
+        return "$(dethelper!(sc.helpers, valuetype(sc, args[1]), T))($(value(sc, args[1])))", PRIMARY
+    end
     # A dot product, or a row times a column: a helper that returns the scalar.
     if (f === LinearAlgebra.dot || f === Base.:*) && n == 2 && all(a -> isarray(valuetype(sc, a)), args) &&
        ndims(valuetype(sc, args[1])) == 1 && ndims(valuetype(sc, args[2])) == 1

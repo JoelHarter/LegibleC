@@ -53,7 +53,7 @@ output holding the Julia return value:
 ```c
  * @param[in]  A
  * @param[in]  B
- * @param[out] result  The value the Julia function returns.
+ * @param[out] out  The value the Julia function returns.
 ```
 
 No descriptions are invented for parameters: the transpiler knows their
