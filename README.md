@@ -50,8 +50,8 @@ that element type and size. One `.c` file comes out with prototypes, the
 helpers it needs, and the functions; anything a listed function calls is
 transpiled too. Options: `outfile`, `outpath`, `source` (copy each Julia
 line into the C as a comment, on by default), `precise` (print every digit
-of a floating value), `width` (the longest C line, 100), `templimit`,
-`staticarray`.
+of a floating value), `portable` (own `NEWT_PI` macros instead of `M_PI`),
+`width` (the longest C line, 100), `templimit`, `staticarray`.
 
 Sizes are static: arrays are `StaticArrays` types, or `Array`s given a size
 in the call. Every generated function is C11 and compiles clean under

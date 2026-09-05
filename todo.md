@@ -41,7 +41,7 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ `for` over the elements of an array (`for x in v`), and ranges with a non-literal step
     ⬜ `while` whose header can't be inlined — the `while (true) { …; if (!c) break; }` fallback is written but untested
     ✅ Integer `^` beyond 2 and 3 — done 2026-09-05, `powi(x, n)` by squaring, `doc/scalar.md`
-    ⬜ `mod` on floats, `Float32` math (`sqrtf` and friends)
+    ✅ `mod` on floats (`modulo`), `Float32` math (`sqrtf` and friends) — done 2026-09-06
     ✅ Tuples as values, multiple return values — done 2026-09-04, `struct.md`
     ✅ Structs → C structs — done 2026-09-04, `struct.md`: by value, mutable through a pointer, parametric, nested
     ✅ Printing (`print`, `println`, `@printf`, `@show`) — done 2026-09-05, `doc/io.md`
@@ -70,12 +70,12 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ In-place zeroing and filling: `fill!(A, 0)`, `A .= 0`, `A .= x` on a mutable array → the same `zero_`/`fill_` helper called on the existing variable (there's no separate C: "make a zero array" is a declaration plus `zero_3x4(A)`, "wipe this one" is just `zero_3x4(A)`)
     ⬜ Hardcode sizes 1–3 wherever a general algorithm would be slower or read worse than the written-out form (as `det` does), and say so in each helper's comment
     ⬜ `SMatrix{3,3}(2I)` — a multiple of the identity; only `I` itself is accepted — and `A + 2I`, which adds to the diagonal
-    ⬜ A numeric literal coefficient, `5.3A` or `-3A`: an integer literal times a `Float64` array today produces `mul_sI64_2x2F64` and an `Int64` scalar in C; the literal should take the array's element type, giving `mul_s_2x2` and `-3.0`
-    ⬜ `zero(x)`, `one(x)` on scalars
+    ✅ A numeric literal coefficient, `-3A`: the integer literal takes the array's element type, `mul_s_2x2(-3.0, A, out)` — done 2026-09-06
+    ✅ `zero(x)`, `one(x)` on scalars — done 2026-09-06
     ⬜ Loop order in `mul` when an operand is transposed: `mul_2x3_T2x3` walks `b[j][k]` with `j` inside, which strides; hand-written C would sum over `k` innermost there
 
 ⬜ Portability
-    ⬜ `M_PI` and `M_E` are POSIX, not ISO C: a compiler in strict `-std=c11` mode without POSIX extensions may not define them. Investigate; the fallback is not to type the number into the code but to define our own macros once at the top of the file, under a prefix unlikely to step on anyone's toes (`NEWT_PI`, `NEWT_E`), and emit those
+    ✅ `M_PI` and `M_E` are POSIX, not ISO C — done 2026-09-06: `M_PI` stays the default; the `portable` option defines `NEWT_PI` and `NEWT_E` (as the doubles, `string(Float64(π))`) at the top of the file and uses those
 
 ⬜ Correctness
     ⬜ Signed integer overflow: Julia wraps, C says undefined — pick the one fixed compiler flag (`-fwrapv`) or emit unsigned arithmetic

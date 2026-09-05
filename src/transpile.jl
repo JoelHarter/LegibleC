@@ -37,6 +37,9 @@ Options:
   regardless; this controls the code. See `doc/comment.md`.
 - `precise`: print every digit of a floating value (`%.17g`, `%.9g` for
   `Float32`) instead of `%g`. See `doc/io.md`.
+- `portable`: define `NEWT_PI` and `NEWT_E` at the top of the file and use those,
+  instead of `M_PI` and `M_E` from `math.h`, which are POSIX rather than ISO C and
+  can be missing under a strict `-std=c11`.
 - `width`: the longest line the C may have, in columns. A scalar expression
   that would run past it is wrapped at its loosest operators, each
   continuation line starting with the operator. See `doc/copy.md`.
@@ -53,7 +56,8 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    staticarray::Bool=true,
                    source::Bool=true,
                    precise::Bool=false,
-                   width::Integer=100)
+                   width::Integer=100,
+                   portable::Bool=false)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
@@ -81,7 +85,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
     unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
     names = cnames(instances)
-    prog = Program(; precise, width)
+    prog = Program(; precise, width, portable)
     union!(prog.names, names)
     for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
     generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source, blocked)
@@ -109,6 +113,8 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
             h in prog.headers && println(io, "#include <", h, ">")
         end
         println(io)
+        for m in sort!(collect(prog.macros)); println(io, "#define NEWT_", m, " ", Float64(constants[m]), "  // the double nearest ", constants[m]); end
+        isempty(prog.macros) || println(io)
         for (_, definition) in prog.structs; print(io, definition); println(io); end
         for name in sort!(collect(keys(prog.foreign))); println(io, prog.foreign[name]); end
         isempty(prog.foreign) || println(io)

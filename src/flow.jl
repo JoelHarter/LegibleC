@@ -375,7 +375,7 @@ function duplicates(sc::Scope, u, use::Expr, i)
         p = sc.ci.ssavaluetypes[use.args[4].id]
         return use.args[3] == Core.SSAValue(i) && p isa Core.Const && p.val isa Val && typeof(p.val).parameters[1] in (2, 3)
     end
-    f === Base.mod && return true
+    f === Base.mod && T <: Integer && return true
     f in (Base.max, Base.min) && T <: Integer && return true
     f === Base.:(==) && (isstruct(valuetype(sc, use.args[2])) || istuple(valuetype(sc, use.args[2]))) && return true
     return false

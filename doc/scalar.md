@@ -40,7 +40,8 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `/` | `/` | Julia's `/` is always floating: two integers get `.0` on a literal or a cast on a variable, `(double)a / (double)b` |
 | `a \ b` | `b / a` | |
 | `÷`, `%` | `/`, `%` | both truncate toward zero in both languages |
-| `mod(a, b)` | `((a % b) + b) % b` | integers only |
+| `mod(a, b)` | `((a % b) + b) % b`; on floats `modulo(a, b)`, a helper with Julia's definition | C's `fmod` takes the dividend's sign, Julia's `mod` the divisor's |
+| `zero(x)`, `one(x)`, `zero(Float64)` | `0.0`, `1.0` | the literal of the type |
 | `x^2`, `x^3` | `x * x`, `x * x * x` | `x^0` is `1.0`, `x^1` is `x` |
 | `x^-1` | `1.0 / x` | |
 | `x^n`, any other literal `n` | `powi(x, n)`, one helper by squaring (`powiF32`, `powiI64` off the double) | the exponent is a literal at every call, so at `-O2` the compiler unrolls the helper into the bare multiply chain — five multiplies for `x^13`, no loop, no branch. Julia's `Float64^Int` is a compensated squaring, a bit more accurate; this is the plain one, three times faster |
@@ -48,7 +49,8 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `< <= > >= == !=` | the same | |
 | `!`, `&`, `\|`, `xor`, `<<`, `>>`, `~` | `!`, `&`, `\|`, `^`, `<<`, `>>`, `~` | |
 | `&&`, `\|\|`, `c ? x : y` | the same, or an `if` — see `flow.md` | |
-| `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc hypot copysign` | the same, from `math.h` | |
+| `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc hypot copysign` | the same, from `math.h`; the `f` family on a `Float32` (`sqrtf`, `fabsf`, `powf`) | |
+| `pi`, `ℯ` | `M_PI`, `M_E` | POSIX, not ISO C; the `portable` option defines `NEWT_PI` and `NEWT_E` at the top of the file instead |
 | `abs(x)` | `fabs(x)`; `llabs(x)` for `Int64`, `abs(x)` for `Int32` (`stdlib.h`) | |
 | `max`, `min` on floats | `fmax`, `fmin` | |
 | `max`, `min` on integers | `(a > b ? a : b)` | |

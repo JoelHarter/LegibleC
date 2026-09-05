@@ -15,7 +15,8 @@ transpile(f, g, (h, Float64, 3, Float64, 2, 3); outfile="name", outpath=dir)
 A target is a function with one concrete method, a `MethodInstance`, or a
 tuple of a function and argument types — where a type followed by integers is
 an array of that element type and size. Options: `outfile`, `outpath`,
-`templimit`, `staticarray` (on), `source` (on), `precise`, `width` (100). One
+`templimit`, `staticarray` (on), `source` (on), `precise`, `portable`, `width`
+(100). One
 `.c` file comes out, with
 prototypes, the helpers it needs, and the functions.
 

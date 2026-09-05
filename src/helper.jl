@@ -275,6 +275,21 @@ function powhelper!(helpers::Dict{String, String}, E::Type)
     return name
 end
 
+# Julia's `mod` on floats: the remainder with the divisor's sign, where C's `fmod` gives
+# the dividend's. `modulo(x, y)`, `moduloF32` for floats — Julia's definition, in C.
+function modhelper!(helpers::Dict{String, String}, E::Type)
+    name = "modulo" * (E === Float64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t = ctype(E)
+    f = t == "float" ? "f" : ""
+    zero = t == "float" ? "0.0f" : "0.0"
+    body = ["$t r = fmod$f(x, y);",
+            "if (r == $zero) {", "    return copysign$f(r, y);", "}",
+            "return (r > $zero) != (y > $zero) ? r + y : r;"]
+    helpers[name] = definition(t, name, ["$t x", "$t y"], body; doc=["remainder with the divisor's sign, as Julia's mod", "returns mod(x, y)"])
+    return name
+end
+
 # ---- the rest ----------------------------------------------------------------------
 
 # The determinant of a square matrix of type `T`, returned as `E`: `det_3x3`. Sizes 1–3

@@ -24,12 +24,19 @@ mutable struct Program
     structs::Vector{Pair{Type, String}}                            # struct typedefs, dependencies first
     precise::Bool                                                  # print every digit of a floating value, not `%g`
     width::Int                                                     # the longest line; scalar expressions wrap past it
+    portable::Bool                                                 # our own `NEWT_PI` macros instead of POSIX `M_PI`
+    macros::Set{String}                                            # the constants used: "PI", "E"
     effects::Dict{Core.MethodInstance, Set{Symbol}}                # what a user function does besides compute (see `effects!`)
 end
-Program(; precise::Bool=false, width::Integer=100) =
+Program(; precise::Bool=false, width::Integer=100, portable::Bool=false) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
-            Dict{Core.MethodInstance, Set{Symbol}}())
+            portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}())
+
+# The mathematical constants, for when the output defines its own macros (`portable`):
+# each is emitted as the double it rounds to, in the shortest form that reads back to
+# it, with the symbol in a comment (`transpile` writes the lines).
+const constants = Dict("PI" => π, "E" => ℯ)
 
 # Per-function state.
 mutable struct Scope
@@ -846,22 +853,27 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     # The result's element type comes from Julia's promotion; its size from the IR if
     # the type carries one, otherwise from the operation's own rule.
     result(types) = (R = widen(sc.ci.ssavaluetypes[i]); shape(R) === nothing ? resulttype(op, types, E) : R)
+    # An integer literal coefficient of a floating array takes the array's element type:
+    # `-3A` is `mul_s_2x2(-3.0, A, out)`, not a mixed-type helper and an `int64_t`.
+    function operand(x, other)
+        x isa Integer && isarray(other) && eltype(other) <: AbstractFloat && return eltype(other), value(sc, eltype(other)(x))
+        return valuetype(sc, x), value(sc, x)
+    end
     acc = args[1]
-    accname = value(sc, acc)
-    acctype = valuetype(sc, acc)
+    acctype, accname = length(args) >= 2 ? operand(acc, valuetype(sc, args[2])) : (valuetype(sc, acc), value(sc, acc))
     R = acctype
     for (n, a) in enumerate(args[2:end])
         last = n == length(args) - 1
-        types = (acctype, valuetype(sc, a))
+        atype, aname = operand(a, acctype)
+        types = (acctype, atype)
         R = result(types)
         out = last ? dest : temp!(sc, nothing, unique([contribution(sc, acc); contribution(sc, a)]))
         (last ? declaration : true) && emit!(lines, sc, declare(R, out) * ";")
         # A folded negation (`foldable`) lands on the scalar operand.
-        aname = value(sc, a)
         isnegated(sc, acc) && (aname = negate(aname))
         isnegated(sc, a) && (accname = negate(accname))
         emit!(lines, sc, "$(helper!(sc.helpers, op, types, R))($accname, $aname, $out);")
-        step!(lines, sc, "$out = $(spell(acctype, accname)) $(Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[op]) $(spell(valuetype(sc, a), aname))")
+        step!(lines, sc, "$out = $(spell(acctype, accname)) $(Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[op]) $(spell(atype, aname))")
         accname, acctype = out, R
     end
     if length(args) == 1
@@ -1124,8 +1136,11 @@ function render(sc::Scope, i, ex::Expr)
     end
     # `-(-x)` is `x`, exactly.
     unary(sym) = (t = operand(sc, args[1], UNARY); sym == "-" && startswith(t, "-") ? (t[2:end], PRIMARY) : (sym * t, UNARY))
-    fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$name(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
+    # A `math.h` function on a `float` is the `f` variant: `sqrtf`, `fabsf`, `powf`.
+    fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$name$(hdr == "math.h" && ctype(T) == "float" ? "f" : "")(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
     floating = T <: AbstractFloat
+    # `zero(x)`, `one(T)`: the literal of the result's type.
+    f in (Base.zero, Base.one) && n == 1 && T <: Number && return value(sc, f === Base.zero ? zero(T) : one(T)), PRIMARY
 
     # A reduction: a helper that returns the scalar.
     if f in (Base.sum, Base.prod, Base.maximum, Base.minimum, Base.any, Base.all, LinearAlgebra.norm) && n == 1 && isarray(valuetype(sc, args[1]))
@@ -1171,7 +1186,9 @@ function render(sc::Scope, i, ex::Expr)
     f === Base.div && return op("/", MUL)
     f === Base.rem && return floating ? fn("fmod") : op("%", MUL)
     if f === Base.mod
-        floating && throw(ArgumentError("mod on floats is not yet supported (statement $i)"))
+        # On floats, Julia's `mod` takes the divisor's sign where C's `fmod` takes the
+        # dividend's: a helper (`modhelper!`).
+        floating && (push!(sc.headers, "math.h"); return fn(modhelper!(sc.helpers, T), ""))
         a, b = operand(sc, args[1], MUL), operand(sc, args[2], MUL; right=true)
         return "(($a % $b) + $b) % $b", MUL
     end
@@ -1179,8 +1196,8 @@ function render(sc::Scope, i, ex::Expr)
         p = ci.ssavaluetypes[args[3].id].val
         p isa Val || throw(ArgumentError("unsupported power (statement $i)"))
         e = typeof(p).parameters[1]
-        one = ctype(T) == "float" ? "1.0f" : floating ? "1.0" : "1"
-        e == 0 && return one, PRIMARY
+        unit = ctype(T) == "float" ? "1.0f" : floating ? "1.0" : "1"
+        e == 0 && return unit, PRIMARY
         e == 1 && return expression(sc, args[2])
         floating || e > 0 || throw(ArgumentError("a negative power of an integer is a DomainError in Julia (statement $i)"))
         x = operand(sc, args[2], MUL)
@@ -1188,7 +1205,7 @@ function render(sc::Scope, i, ex::Expr)
         # `powi(x, n)`, by squaring (`powhelper!`).
         e == 2 && return "$x * $x", MUL
         e == 3 && return "$x * $x * $x", MUL
-        e == -1 && return "$one / $x", MUL
+        e == -1 && return "$unit / $x", MUL
         return "$(powhelper!(sc.helpers, T))($(expression(sc, args[2])[1]), $e)", PRIMARY
     end
     if f === Base.:^
@@ -1606,11 +1623,15 @@ function value(sc::Scope, x)
     x isa Bool            && return x ? "true" : "false"
     x isa Integer         && return string(x)
     x isa AbstractFloat   && return isinf(x) ? (push!(sc.headers, "math.h"); x > 0 ? "INFINITY" : "-INFINITY") :
-                                    isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : x isa Float32 ? repr(Float64(x)) * "f" : repr(x)
-    x isa Irrational      && return (push!(sc.headers, "math.h"); x === pi ? "M_PI" : x === ℯ ? "M_E" : repr(Float64(x)))
+                                    isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(x)
+    x isa Irrational      && return x === pi ? constant(sc, "PI") : x === ℯ ? constant(sc, "E") : repr(Float64(x))
     x isa GlobalRef       && return value(sc, getfield(x.mod, x.name))
     throw(ArgumentError("unsupported value: $(repr(x))"))
 end
+
+# `M_PI` from `math.h`, which is POSIX rather than ISO C; or, with `portable`, our own
+# `NEWT_PI`, defined at the top of the file.
+constant(sc::Scope, name) = sc.prog.portable ? (push!(sc.prog.macros, name); "NEWT_" * name) : (push!(sc.headers, "math.h"); "M_" * name)
 
 # The type of a value: what inference says, except that an array whose size the IR
 # doesn't know is given as the shaped stand-in the transpiler tracks for it.
