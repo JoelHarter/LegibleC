@@ -1049,3 +1049,24 @@ correctly rounded, at about three times the multiplications; here speed
 wins the conflict, and results agree to within a few units in the last
 place. `powi` is the established name: LLVM's intrinsic, GCC's builtin,
 Rust's `f64::powi`.
+
+---
+
+## 2026-09-06 — Operations along a dimension: the dimension on the operation's name
+
+**Decision.** `sum(A; dims=1)`, `prod`, `maximum` and `minimum` with `dims`,
+`diff`, `cumsum` and `cumprod` become helpers whose name carries the
+dimension directly after the operation, then the usual shape suffix:
+`sum1_2x3`, `diff2_2x3`, `cumsum1_2x3`. A vector leaves the dimension off,
+`diff_4`, `cumsum_4`, except a reduction with `dims` on a vector, `sum1_4`,
+because `sum_4` is the sum to a scalar. The `dims` keyword is read at
+transpile time from the `kwcall`'s tuple, whose construction is skipped.
+
+**Why.** The suffix after the underscore has always described the inputs —
+shapes, and types when not all double. The dimension worked along describes
+the operation itself: `sum1` and `sum2` are different functions of the same
+2×3, not the same function of different arguments, so the dimension belongs
+on the name and not in the suffix. A vector has one dimension, and saying so
+would only make `diff_4` read as "diff along the 4th". The keyword call is
+the first `kwcall` the transpiler handles; its keyword tuple is a constant,
+so the statements that build it are no more C than a type parameter is.

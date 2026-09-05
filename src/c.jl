@@ -222,6 +222,16 @@ function analyze!(sc::Scope)
         (f === Base.string || f === Base.repr) && all(u -> u isa Expr && u.head === :call && callee_or_nothing(ci, u.args[1]) in (Base.print, Base.println, Base.string, Base.repr),
                                                       (u for u in code if uses(u, i))) && push!(sc.skipped, i)
     end
+    # The keyword tuple of a `kwcall` — `(dims = 1,)`, built over a few statements — is
+    # read at transpile time; none of it is C.
+    function skipconstant!(x)
+        x isa Core.SSAValue || return
+        push!(sc.skipped, x.id)
+        code[x.id] isa Expr && foreach(skipconstant!, code[x.id].args)
+    end
+    for st in code
+        st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.kwcall && skipconstant!(st.args[2])
+    end
     # The iterator state of `x, y = t` — `getfield(indexed_iterate(...), 2)`, usually
     # assigned to a hidden slot — has no C.
     for (i, st) in enumerate(code)
@@ -822,6 +832,12 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         sc.shapes[i] = R
         return
     end
+    # `sum(A; dims=1)`, `diff(v)`, `cumsum(A; dims=2)`: an operation along one dimension.
+    if f === Core.kwcall || f in (Base.diff, Base.cumsum, Base.cumprod)
+        kw = f === Core.kwcall ? literal(sc, args[1]) : (;)
+        f === Core.kwcall && (f = callee(sc.ci, args[2]); args = args[3:end])
+        return along!(lines, sc, i, f, args, kw, dest; declaration)
+    end
     op = f === Base.:+ ? :add :
          f === Base.:- ? (length(args) == 1 ? :neg : :sub) :
          f === Base.:* ? :mul :
@@ -1270,6 +1286,29 @@ function render(sc::Scope, i, ex::Expr)
     name === nothing || return "$name($(callargs(sc, args)))", PRIMARY
 
     throw(ArgumentError("unsupported call: $f (statement $i)"))
+end
+
+# An operation along one dimension of an array, into `dest`: a reduction that keeps the
+# dimension at extent 1 (`sum(A; dims=1)` of a 2×3 is 1×3), `diff` (the dimension
+# shrinks by one), `cumsum` and `cumprod` (the shape stays). The dimension comes from
+# the `dims` keyword, or is 1 for a vector; the helper is `sum1_2x3`, `diff2_2x3`,
+# `cumsum_4` (`dimhelper!`).
+function along!(lines, sc::Scope, i, f, args, kw, dest; declaration::Bool=false)
+    op = f === Base.sum ? :sum : f === Base.prod ? :prod : f === Base.maximum ? :maximum : f === Base.minimum ? :minimum :
+         f === Base.diff ? :diff : f === Base.cumsum ? :cumsum : f === Base.cumprod ? :cumprod :
+         throw(ArgumentError("unsupported operation along a dimension: $f (statement $i)"))
+    length(args) == 1 && isarray(valuetype(sc, args[1])) || throw(ArgumentError("$f along a dimension takes one array (statement $i)"))
+    T = valuetype(sc, args[1])
+    keys(kw) ⊆ (:dims,) || throw(ArgumentError("unsupported keywords for $f: $(join(setdiff(keys(kw), (:dims,)), ", ")) (statement $i)"))
+    d = haskey(kw, :dims) ? kw.dims : ndims(T) == 1 ? 1 : throw(ArgumentError("$f of a $(describe(T)) needs dims (statement $i)"))
+    d isa Integer && 1 <= d <= ndims(T) || throw(ArgumentError("dims=$d is out of range for a $(describe(T)) (statement $i)"))
+    R = widen(sc.ci.ssavaluetypes[i])
+    shape(R) === nothing && throw(ArgumentError("the size of $f along dimension $d isn't known (statement $i)"))
+    name = dimhelper!(sc.helpers, op, d, T, R)
+    declaration && emit!(lines, sc, declare(R, dest) * ";")
+    emit!(lines, sc, "$name($(value(sc, args[1])), $dest);")
+    step!(lines, sc, "$dest = $op($(value(sc, args[1]))$(ndims(T) == 1 ? "" : "; dims=$d"))")
+    sc.shapes[i] = R
 end
 
 # ---- structs and tuples -------------------------------------------------------------

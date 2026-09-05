@@ -116,6 +116,7 @@ marked as such rather than forced.
 | `v[2:3]`, `A[i, :]`, `A[:, j]` (copies in Julia) | `slice_5_3`, `row_2x3`, `col_2x3` helpers that copy into a static array | ✅ |
 | `@view A[:, j]`, `view(v, 2:3)` | a pointer for a contiguous slice (`&v[1]`), a `{pointer, stride, length}` struct otherwise — §3.4 | ⬜ |
 | `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all` | reduction helpers, one loop each | ✅ |
+| `sum(A; dims=d)`, `prod`, `maximum`, `minimum` with `dims`; `diff`, `cumsum`, `cumprod` | helpers along one dimension, the dimension on the name: `sum1_2x3`, `diff2_2x3`, `cumsum_4` | ✅ |
 | `extrema`, `argmax`, `count` | reduction helpers | ⬜ |
 | `inv`, `A \ b`, `B / A`, `pinv`, `cholesky(A) \ b` | 1–3 written out; pivoted LU, Cholesky, the Gram matrix beyond — `linear.md` | ✅ |
 | `tr`, `diag`, `diagm`, `kron`, `transpose!` | small helpers | ⬜ |

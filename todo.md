@@ -37,6 +37,7 @@ transpiler does today is in [doc/](doc/), starting with
 ⬜ Language coverage (`doc/flow.md`; the wider catalogue of what could map, both ways, is `doc/dev/map.md`)
     ✅ Slicing and slice assignment in any dimension — done 2026-09-05, inline; still open: a range held in a variable, `A[:, 1] .= 0`
     ✅ Reductions: `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all` — done 2026-09-04; `maximum`/`minimum` skip a NaN where Julia returns it
+    ✅ Operations along one dimension: `sum(A; dims=1)` and friends, `diff`, `cumsum`, `cumprod` — done 2026-09-06, `doc/array.md` *Slices and reductions*
     ⬜ `for` over the elements of an array (`for x in v`), and ranges with a non-literal step
     ⬜ `while` whose header can't be inlined — the `while (true) { …; if (!c) break; }` fallback is written but untested
     ✅ Integer `^` beyond 2 and 3 — done 2026-09-05, `powi(x, n)` by squaring, `doc/scalar.md`

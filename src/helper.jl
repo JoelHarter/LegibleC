@@ -331,6 +331,53 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
     return name
 end
 
+# An operation along dimension `d` of an array of type `T`, into an array of type `R`:
+# `sum1_2x3` (sum along dimension 1 of a 2×3, into a 1×3), `maximum2_2x3`, `diff2_2x3`
+# (into a 2×2), `cumsum1_2x3`. The dimension sits on the operation's name, since it says
+# how the operation works, not what it is given; a vector has only the one, so `diff_4`
+# and `cumsum_4` leave it off — `sum1_4` keeps it, because `sum_4` is the sum to a
+# scalar. Loops over the other dimensions outside, the one worked along inside.
+function dimhelper!(helpers::Dict{String, String}, op::Symbol, d::Integer, T::Type, R::Type)
+    reduction = op in (:sum, :prod, :maximum, :minimum)
+    name = helpername(ndims(T) == 1 && !reduction ? op : Symbol(op, d), (T,))
+    haskey(helpers, name) && return name
+    E = eltype(R)
+    t = ctype(E)
+    A = inputs((T,))[1]
+    s = shape(T)
+    names = indices(ndims(T))
+    idx = [s[k] > 1 ? names[k] : "0" for k in eachindex(s)]
+    outer = [(names[k], s[k]) for k in eachindex(s) if k != d && s[k] > 1]
+    inner = s[d] > 1 ? [(names[d], s[d])] : Tuple{String, Int}[]
+    a = access(T, A, idx)
+    out = access(R, "out", idx)
+    one, zero = onezero(E)
+    body = if op == :sum || op == :prod
+        acc, init, sym = op == :sum ? ("sum", zero, "+=") : ("product", one, "*=")
+        nest(outer, ["$t $acc = $init;"; nest(inner, ["$acc $sym $a;"]); "$out = $acc;"])
+    elseif op == :maximum || op == :minimum
+        acc, cmp = op == :maximum ? ("max", ">") : ("min", "<")
+        first = access(T, A, [k == d ? "0" : idx[k] for k in eachindex(s)])
+        nest(outer, ["$t $acc = $first;"; nest(inner, ["if ($a $cmp $acc) {", "    $acc = $a;", "}"]); "$out = $acc;"])
+    elseif op == :diff
+        # Loops over the result's shape; the dimension worked along is one shorter.
+        so = shape(R)
+        idx = [so[k] > 1 ? names[k] : "0" for k in eachindex(so)]
+        next = [k == d ? (idx[k] == "0" ? "1" : idx[k] * " + 1") : idx[k] for k in eachindex(so)]
+        nest([(names[k], so[k]) for k in eachindex(so) if so[k] > 1], ["$(access(R, "out", idx)) = $(access(T, A, next)) - $(access(T, A, idx));"])
+    else
+        acc, init, sym = op == :cumsum ? ("sum", zero, "+=") : ("product", one, "*=")
+        nest(outer, ["$t $acc = $init;"; nest(inner, ["$acc $sym $a;", "$out = $acc;"])])
+    end
+    what = op == :sum ? "sum" : op == :prod ? "product" : op == :maximum ? "maximum" : op == :minimum ? "minimum" :
+           op == :diff ? "differences" : op == :cumsum ? "cumulative sum" : "cumulative product"
+    typed = eltype(T) !== Float64
+    along = ndims(T) == 1 ? "" : " along dimension $d"
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out")], body;
+                               doc=["$(describe(T; typed)) $what$along", "out = $op($A$(ndims(T) == 1 ? "" : "; dims=$d"))"])
+    return name
+end
+
 # ---- solving and inverting ---------------------------------------------------------
 #
 # The rule for every algorithm here: sizes 1–3 are written out in full, the way

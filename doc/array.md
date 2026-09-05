@@ -172,6 +172,18 @@ must match, as Julia requires. Not yet: a scalar or broadcast into a slice
 returning the scalar (`sum_3`, `maximum_2x3`, `norm_3`); `maximum` and
 `minimum` compare, so a NaN is passed over where Julia would return it.
 
+Along one dimension — `sum(A; dims=1)`, `prod`, `maximum`, `minimum` with
+`dims`, `diff`, `cumsum`, `cumprod` — the result is an array and the helper
+carries the dimension on its name: `sum1_2x3(A, out)` sums a 2×3 along
+dimension 1 into a 1×3, `diff2_2x3` differences along dimension 2 into a
+2×2, `cumsum1_2x3` keeps the shape. The dimension is glued to the operation
+because it says how the operation works, not what it is given; the shape
+suffix after the underscore is the input's, as everywhere. A vector has one
+dimension, so `diff_4` and `cumsum_4` leave it off — except `sum(v; dims=1)`,
+which is `sum1_4`, since `sum_4` is the sum to a scalar. The `dims` keyword
+must be a literal; the loops run over the other dimensions outside and the
+one worked along inside.
+
 ## Declarations
 
 A variable is declared where it is first assigned, as C is written today
@@ -239,7 +251,10 @@ The meaning of each follows Julia's definition.
 | `zeros`, `zero(A)`; `ones`, `fill`; `one(A)`, `SMatrix{3,3}(I)` | inline `memset`; a loop; both | |
 | `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[i, 2:3]` | inline `memcpy` or a loop | any dimension |
 | `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:4] = B`, `v[2:3] = w` | inline `memcpy` or a loop | into a mutable array |
-| `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm` | `sum_3`, `maximum_2x3`, `norm_3` | |
+| `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm` | `sum_3`, `maximum_2x3`, `norm_3` | to a scalar |
+| `sum(A; dims=1)`, `prod`, `maximum`, `minimum` with `dims` | `sum1_2x3(A, out)`, a 1×3 | the dimension is on the operation's name |
+| `diff(v)`, `diff(A; dims=2)` | `diff_4`, `diff2_2x3` | one shorter along that dimension |
+| `cumsum(v)`, `cumsum(A; dims=1)`, `cumprod` | `cumsum_4`, `cumsum1_2x3`, `cumprod_4` | |
 
 Shape mismatches are errors at transpile time, as they'd be at run time in
 Julia. `A + B + C` (one call in Julia) is chained through a temp.
