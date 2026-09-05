@@ -102,7 +102,7 @@ ever consumed by other C code that needs stable symbol names.
 
 **Context.** Every intermediate value in the IR becomes a C local. The names
 `_4`, `_5` mirrored SSA numbering, which is machine bookkeeping on display and
-fails the README's readability principle. Spelling out the full expression
+fails the philosophy's readability principle. Spelling out the full expression
 instead (no temps at all) is a separate, later step; this decides what temps
 are called while they exist.
 
@@ -247,7 +247,7 @@ represented in C, how operations are emitted, and how results come back.
   call shapes uniform.
 - *Matrix–matrix multiply in i-k-j order.* The textbook i-j-k form reads more
   obviously as "multiply", but its inner loop strides down a column of `b`.
-  Speed wins the tie per the README; the i-k-j form is still short.
+  Speed wins the tie per the philosophy; the i-k-j form is still short.
 - *Direct store unless the destination is an operand.* `B = -A` writes into
   `B`; `A = A * A` goes through a temp. Checked by name, uniformly, rather
   than reasoning per operation about which ones tolerate aliasing.
@@ -344,7 +344,7 @@ stops section headers from being mistaken for documentation.
 
 **Context.** Julia lowers every `if`, `while`, `for`, `&&`, `||`, and `?:`
 into `goto`s before the transpiler sees the function. C has `goto`, so the
-literal translation exists — and would fail the README's readability
+literal translation exists — and would fail the philosophy's readability
 principle completely.
 
 **Decision.** Recognise the goto patterns Julia's lowering produces and emit
@@ -405,7 +405,7 @@ a different shape and isn't attempted yet.
 
 ## 2026-09-03 — Helper generators are written once, for the general case
 
-**Context.** The README's third principle — generalize whatever can be —
+**Context.** The philosophy's third principle — generalize whatever can be —
 arrived after the linear-algebra helpers, which had grown separate bodies for
 matrix×vector, matrix×matrix, row×matrix, column×row, and separate access
 code for vectors, rows, and matrices in broadcasting and block placement.
@@ -529,7 +529,7 @@ and nowhere else.
 (only arrays of any dimension, each dimension on an axis) and no notion of
 element-wise versus broadcast (only pointwise, one loop over the result).
 Those distinctions are exactly what made the code general, so they mustn't
-creep back in. But a reader thinks in them, and the README's second
+creep back in. But a reader thinks in them, and the philosophy's second
 principle is that the output reads as hand-written. Keeping the human words
 in one prose layer gives the reader what they expect without giving the
 code an exception to make. Known functions are named in English
@@ -625,7 +625,7 @@ the user function says the caller must not overlap it with an input.
 aliases an input; the transpiler already routes a result that is also an
 operand through a temp, and now that promise is written down where the C
 compiler can use it to keep loads in registers across the stores and to
-vectorize. It's the README's first principle for free. The array-parameter
+vectorize. It's the philosophy's first principle for free. The array-parameter
 spelling (`out[restrict 3]`) is legal C99 and keeps the size visible, which
 `double *restrict out` would lose.
 
@@ -727,3 +727,51 @@ well-conditioned matrices this project is for it agrees to rounding. The
 rank-deficient case is reported (`PosDefException`) rather than
 silently wrong. The transposed tag is what makes it cheap: `AᵀA` is one
 multiply helper reading `A` both ways, with no transpose ever formed.
+
+---
+
+## 2026-09-04 — A helper's name says what the contract leaves open
+
+**Decision.** This replaces "helper names list every input, always". A
+description is always shape then type, with a scalar's shape `s` (`sF32`,
+never a bare `F32`). An operation that leaves the shapes open lists every
+input: matrix multiplication (`mul_2x2_2x3`, `mul_sF32_2x2F64`) and every
+pointwise operation (`mulP_3x2_3x2`). One whose contract fixes the shapes
+as identical writes the shape once and then the types run together, one if
+they agree: `add_2x2`, `add_2x2F32F64`, `dot_3`. `cross`, whose shapes are
+fixed entirely, keeps only the types: `cross`, `cross_F32`, `cross_F64F32`.
+A transposed operand still lists in full (`add_2x3_T3x2`), since the
+storage differs. Output-named helpers (`fill_3`, `slice_5_3`) are unchanged.
+
+**Why.** For `add` and `dot` the second description said nothing: the
+operation already demands identical shapes. The earlier objection —
+`mulP_3x2` reads like "multiply 2 and 3" — was really about pointwise
+operations, where broadcasting lets shapes differ and one description
+leaves the reader guessing; those keep listing every input, so the
+objection is met by the narrower rule rather than contradicted. Making a
+scalar always `s` is what lets `cross_F32` exist: under the old scheme a
+bare `F32` *was* a scalar, so `cross_F32` would have read as a scalar
+cross product. Multiplication stays fully listed because its contract only
+constrains the shapes, and no notation for "inner sizes equal" would be
+understood at a glance. The result has no exceptions: `cross` is just what
+the rule produces for an operation that fixes everything.
+
+---
+
+## 2026-09-05 — Small helpers are `static inline`; solvers are `static`
+
+**Decision.** A helper that is straight-line code or plain loops is
+`static inline`; one that calls other helpers, searches, or can abort — the
+solvers and factorizations from 4×4, Cholesky, `pinv`, and their pieces — is
+plain `static`. Helpers stay in the `.c`; no header yet.
+
+**Why.** For a `static` function in one translation unit the optimizer
+inlines a three-line loop at any sane setting, so `inline` is mostly a
+hint; but it is the hint an experienced C programmer writes on a small
+helper, it costs nothing, and it helps at the margins (many call sites, a
+conservative compiler). On a factorization it is the wrong signal. Drawing
+the line by *shape of the code* — no calls, no search, no abort — rather
+than by judgment per helper keeps it one rule. Header-only helpers would
+pay off only when two outputs share them, which is also when the companion
+`.h` on the todo becomes necessary; marking the small ones `inline` now is
+exactly what that header will need, so this leaves that step open.

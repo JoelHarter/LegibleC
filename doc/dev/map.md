@@ -3,10 +3,10 @@
 A survey of what could cross between the two languages: the Julia worth
 transpiling, the C worth being able to reach, and proposals for how the
 important ones would map. It's a catalogue and a set of designs to argue
-about, not a plan — `todo.md` holds the plan. Status marks: ✅ done,
+about, not a plan — the repo's `todo.md` holds the plan. Status marks: ✅ done,
 🟡 partly, ⬜ open, ✗ no C meaning worth pursuing.
 
-The lens throughout is the README: fastest C, reading as hand-written, one
+The lens throughout is `philosophy.md`: fastest C, reading as hand-written, one
 general rule over many special ones. A mapping that can't meet all three is
 marked as such rather than forced.
 
@@ -21,16 +21,16 @@ marked as such rather than forced.
 | `Array{T,N}` with a size given to `transpile` | the same C as a static array | ✅ |
 | `Array{T,N}` with a runtime size | VLA parameters, `void f(int m, int n, double A[m][n])` — see §3.4 | ⬜ |
 | `Vector{T}` that grows (`push!`, `pop!`, `resize!`) | a generated `struct { T *data; size_t length, capacity; }` with helpers over `realloc` — §3.4 | ⬜ |
-| `struct` (immutable) | `typedef struct { … } Name;` passed and returned by value — §3.1 | ⬜ |
-| `mutable struct` | the same struct, handled through a pointer — §3.1 | ⬜ |
-| parametric `struct Point{T}` at a concrete `T` | one C struct per instantiation, name mangled like a function's: `Point_F32` | ⬜ |
+| `struct` (immutable) | `typedef struct { … } Name;` passed and returned by value — §3.1 | ✅ |
+| `mutable struct` | the same struct, handled through a pointer — §3.1 | ✅ (passed in; not created inside) |
+| parametric `struct Point{T}` at a concrete `T` | one C struct per instantiation, name mangled like a function's: `Point_F32` | ✅ |
 | `Base.@kwdef` | designated initializers `(Point){.x = 1, .y = 2}` | ⬜ |
-| `Tuple` (heterogeneous), multiple return values | a generated struct `Tuple_F64_I64`, returned by value — §3.2 | ⬜ |
-| `NTuple{N,T}` (homogeneous) | `T a[N]` — the same C as a static vector | ⬜ |
+| `Tuple` (heterogeneous), multiple return values | a generated struct `Tuple_F64_I64`, returned by value — §3.2 | ✅ |
+| `NTuple{N,T}` (homogeneous) | the same struct (`Tuple_F64_F64_F64`); a `T a[N]` would be the optimization | 🟡 |
 | `NamedTuple` | a struct with those field names | ⬜ |
 | `@enum` | `typedef enum { RED, GREEN } Color;` | ⬜ |
 | `Union{T, Nothing}`, `missing` | `struct { bool present; T value; }`, or `NaN` for floats, or a null pointer for structs — §3.3 | ⬜ |
-| `Nothing` as a return | `void` | 🟡 (void functions exist; `return nothing` not recognized) |
+| `Nothing` as a return | `void` | ✅ |
 | `Complex{Float64}` | `double _Complex` from `complex.h`; `+ - * /` and `creal`, `cimag`, `cabs`, `conj` map one to one | ⬜ |
 | `Char` | `char32_t` (`uchar.h`); C's `char` is a byte and not equivalent | ⬜ |
 | `String` | `const char *` UTF-8 for literals and read-only arguments; a built string is a `char[]` buffer — §3.6 | ⬜ |
@@ -52,16 +52,16 @@ marked as such rather than forced.
 | default arguments `f(x, y=1)` | the IR already sees `f(x, 1)`; nothing to do | ⬜ untested |
 | keyword arguments | the IR sees an ordinary call; nothing to do | ⬜ untested |
 | varargs `f(xs...)` | monomorphized per arity: `f_3(a, b, c)`; or an array plus a count | ⬜ |
-| calling another transpiled function | a call — the callee is emitted first, with a prototype | ⬜ |
-| calling a function that isn't transpiled | an error today; could be inlined at the call, or transpiled on demand | ⬜ |
-| recursion | recursion | ⬜ untested |
+| calling another transpiled function | a call — every function has a prototype | ✅ |
+| calling a function that isn't transpiled | transpiled on demand | ✅ |
+| recursion | recursion | ✅ |
 | closures and `x -> …` | inlined when the closure is known at transpile time (nearly always); a function pointer plus a context struct when it must be a value — §3.5 | ⬜ |
 | `map`, `reduce`, `foldl`, `filter`, `any(f, v)` | the loop they are, with the function inlined — §3.5 | ⬜ |
 | `do` blocks | the same as closures | ⬜ |
 | comprehensions `[f(i) for i in 1:n]` | a loop filling a static array (size known from the range) | ⬜ |
-| `ccall((:f, "lib"), …)` | the call itself, plus an `extern` prototype: Julia that calls C becomes C that calls C — §3.9 | ⬜ |
+| `ccall((:f, "lib"), …)` | the call itself, plus a prototype or the header: Julia that calls C becomes C that calls C — §3.9 | ✅ |
 | `@inline`, `@noinline` | `inline`, `__attribute__((noinline))` — the latter is an extension | ⬜ |
-| `@inbounds`, `@simd`, `@fastmath` | nothing: C never checks bounds, and a per-site flag would break the README's one-fixed-flag rule — §3.10 | ✗ / ⬜ |
+| `@inbounds`, `@simd`, `@fastmath` | nothing: C never checks bounds, and a per-site flag would break the philosophy's one-fixed-flag rule — §3.10 | ✗ / ⬜ |
 | macros generally | expanded before the transpiler sees anything | ✅ |
 | `@generated`, `@static if` | resolved before we see anything | ✅ |
 | `main` — Julia 1.11's `function (@main)(args)` | `int main(int argc, char **argv)`, `ARGS` from `argv` — §3.11 | ⬜ |
@@ -90,7 +90,7 @@ marked as such rather than forced.
 | `count_ones`, `leading_zeros`, `trailing_zeros`, `bswap`, `bitrotate` | `__builtin_popcountll` and friends (extensions), or portable loops | ⬜ |
 | `typemax`, `typemin`, `eps`, `floatmax`, `floatmin` | `INT64_MAX`, `DBL_EPSILON`, `DBL_MAX`, … | ⬜ |
 | `isnan`, `isinf`, `isfinite`, `signbit`, `copysign`, `flipsign` | the same names in `math.h` | 🟡 |
-| `Float32` math (`sqrt(x::Float32)`) | `sqrtf` and friends | ⬜ |
+| `Float32` math (`sqrt(x::Float32)`) | `sqrtf` and friends | ⬜ (except under `ccall`) |
 | `round(x, digits=2)` | `rint(x * 100) / 100` | ⬜ |
 | `rand()`, `randn()` | Julia's own generator, Xoshiro256++, written out in C: same seed, same stream, bit for bit — §3.12 | ⬜ |
 | `time()`, `time_ns()` | `clock_gettime` (POSIX) or `timespec_get` (C11) | ⬜ |
@@ -113,10 +113,11 @@ marked as such rather than forced.
 | Julia | would become in C | status |
 |---|---|---|
 | `+ - *` (all shapes), `'`, broadcasting, `dot`, `cross`, `det`, `zeros`, `ones`, `fill`, `one`, `I`, literals, `[A B; C D]`, copies | helpers named for their inputs | ✅ |
-| `v[2:3]`, `A[i, :]`, `A[:, j]` (copies in Julia) | a `slice_…` helper that copies into a static array of the known size | ⬜ |
+| `v[2:3]`, `A[i, :]`, `A[:, j]` (copies in Julia) | `slice_5_3`, `row_2x3`, `col_2x3` helpers that copy into a static array | ✅ |
 | `@view A[:, j]`, `view(v, 2:3)` | a pointer for a contiguous slice (`&v[1]`), a `{pointer, stride, length}` struct otherwise — §3.4 | ⬜ |
-| `sum`, `prod`, `maximum`, `minimum`, `extrema`, `argmax`, `norm`, `any`, `all`, `count` | reduction helpers, one loop each | ⬜ |
-| `inv`, `A \ b` | adjugate over the cofactors `det` already expands for 1–3; LU beyond | ⬜ |
+| `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all` | reduction helpers, one loop each | ✅ |
+| `extrema`, `argmax`, `count` | reduction helpers | ⬜ |
+| `inv`, `A \ b`, `B / A`, `pinv`, `cholesky(A) \ b` | 1–3 written out; pivoted LU, Cholesky, the Gram matrix beyond — `linear.md` | ✅ |
 | `tr`, `diag`, `diagm`, `kron`, `transpose!` | small helpers | ⬜ |
 | `lu`, `qr`, `cholesky`, `eigen` | 1–3 in closed form where one exists (symmetric 3×3 eigenvalues do); iterative beyond, as helpers | ⬜ |
 | `reshape`, `vec`, `permutedims`, `reverse`, `circshift` | index remapping helpers; `reshape` of a static array is free (same storage, like a transpose) | ⬜ |
@@ -144,13 +145,13 @@ what Julia could say to produce them.
 |---|---|---|
 | `static` file-scope functions | every helper; and every user function not `export`ed from a module | 🟡 |
 | `const` parameters | every array argument not written to | ✅ |
-| `restrict` | provable: a Julia result is a fresh array, so `out` never aliases an input — `double *restrict out` is justified on every helper and user function | ⬜ |
+| `restrict` | provable: a Julia result is a fresh array, so `out` never aliases an input — `double out[restrict 3]` on every helper and user function | ✅ |
 | `inline` | `@inline`; or small single-use helpers automatically | ⬜ |
 | fixed-size arrays `double A[2][3]` | static arrays | ✅ |
 | VLA parameters `void f(int m, int n, double A[m][n])` | `Array{T,N}` arguments with runtime sizes — as readable as the static form, and the sizes travel with the call | ⬜ |
 | `malloc`/`realloc`/`free` | growing vectors; a returned `Vector` is owned by the caller, who frees it | ⬜ |
-| `struct`, `typedef` | `struct` | ⬜ |
-| compound literals `(Point){1.0, 2.0}` | constructor calls | ⬜ |
+| `struct`, `typedef` | `struct` | ✅ |
+| compound literals `(Point){1.0, 2.0}` | constructor calls | ✅ |
 | designated initializers `{.x = 1.0}` | `@kwdef` constructors | ⬜ |
 | `union` | `reinterpret`; or a `Union` of isbits types as a tagged union | ⬜ |
 | `enum` | `@enum` | ⬜ |
@@ -164,6 +165,7 @@ what Julia could say to produce them.
 | `static const double table[] = {…}` | `const` global arrays | ⬜ |
 | function-like macros | `@inline` one-liners come out as functions, which the compiler inlines anyway | ✗ (not needed) |
 | `#include`, separate compilation, a `.h` | modules; a companion `.h` for the transpiled functions is already on the todo | ⬜ |
+| `memset` | `zeros`, `zero(A)`, `one(A)` | ✅ |
 | `extern` | references across modules | ⬜ |
 | `int main(int argc, char **argv)` | `(@main)(args)` | ⬜ |
 | `exit(code)`, `abort()` | `exit(code)`, an uncaught `throw` | ⬜ |
@@ -314,7 +316,7 @@ are also transpiled).
   from the types (`%g` for floats, `PRId64` for `Int64`, `%s`, `%d` for
   `Bool` as `true`/`false`). Julia prints the shortest round-trip decimal;
   `%g` doesn't. `%.17g` does round-trip but is uglier. Decide once,
-  document it, and note it as a rounding-level difference the README
+  document it, and note it as a rounding-level difference the philosophy
   allows.
 - `@printf`/`@sprintf` formats are already C formats and pass straight
   through.
@@ -372,7 +374,7 @@ cleanly — a strong reason to do this early.
 ### 3.10 Hints and flags
 
 `@inbounds` is nothing (C never checks). `@fastmath` would be
-`-ffast-math` or `#pragma STDC FP_CONTRACT`; the README's rule is one fixed
+`-ffast-math` or `#pragma STDC FP_CONTRACT`; the philosophy's rule is one fixed
 flag for everything, so the honest mapping is to *ignore* it and choose
 once, globally, whether the emitted C is compiled with fast math. `@simd`
 likewise: the compiler vectorizes plain loops with the loops written as we
@@ -392,7 +394,7 @@ and file I/O this makes a transpiled program runnable, not just linkable.
 
 Julia's default generator is Xoshiro256++, a public-domain algorithm of a
 few dozen lines. Emitting it in C with the same seeding gives the *same
-stream*, bit for bit — closer than the README asks for. `rand()` →
+stream*, bit for bit — closer than the philosophy asks for. `rand()` →
 `rand_F64(&rng)` with an explicit state struct (C's `rand()` is neither the
 same algorithm nor reentrant); `randn()` needs Julia's ziggurat tables to
 match exactly, or a Box–Muller with a documented difference.
@@ -404,6 +406,53 @@ The C so far uses `int` loop counters for static sizes, which is what
 people write. For runtime sizes (§3.4) the parameters should be `size_t`
 to match the C world the code will live in, with the loop counters
 following; a negative size is an error at the boundary, as it is in Julia.
+
+### 3.14 Structured matrices
+
+The transpose rule is a special case of something general: a tag on the
+*type*, never on the storage, that changes how an operand is read. A
+structured matrix is the same idea with two ingredients:
+
+1. **A storage map**: where element `(i, j)` lives, with a sign. Transposed:
+   `A[j][i]`. Symmetric stored in the lower half: `A[i][j]` if `i ≥ j`,
+   else `A[j][i]`. Skew: the same with a minus sign on the mirrored side.
+   Diagonal: `d[i]`, stored as a vector.
+2. **A support**: which `(i, j)` can be nonzero at all. Full for transposed
+   and symmetric; `j ≤ i` for lower triangular; `j = i` for diagonal;
+   `|i − j| ≤ b` for banded; an explicit list for sparse.
+
+Every kind is a (map, support) pair, and the transpose is (swap, full).
+One rule — `access` plus `support` — reaches every generator, as `access`
+alone does today.
+
+- **Speed comes from loop bounds, not branches.** The support drives the
+  bounds of the loops (`for k <= i` for a lower-triangular operand, one
+  loop for a diagonal one), and a mirror map splits a loop at the diagonal
+  rather than testing inside it. Inner loops stay branch-free. Where a
+  result has structure, its dead half is written as zeros, as Julia's
+  parent storage has them: `memset` then the support loop.
+- **Julia supplies the algebra.** `L * L` is `LowerTriangular`, `L + A` a
+  full matrix, `D * D` a `Diagonal`, `Symmetric * Symmetric` plain:
+  inference hands us the result type, exactly as for `A * B'`. We
+  implement reading and looping, never what a result "is".
+- **Algorithms improve.** `L \ b` is forward substitution, `U \ b` back
+  substitution, `D \ b` a divide, `det(L)` the product of the diagonal,
+  `inv(D)` reciprocals; a symmetric positive-definite solve is Cholesky.
+- **Names and comments** put the tag before the shape, next to `T2x3`:
+  `L3x3`, `U3x3`, `D3`, `S3x3`; "lower-triangular 3×3-matrix", "diagonal
+  3-vector". Unambiguous, since a type abbreviation comes *after* the shape.
+- **Landing** follows Julia's type, as for transposes: `LowerTriangular` is
+  lazy, so it lands as its parent's storage; `Diagonal` as its vector.
+
+Order, decided by what Julia offers: `Diagonal`, `LowerTriangular`,
+`UpperTriangular`, their unit variants, `Symmetric`, `Hermitian` are
+standard-library wrappers that work on static arrays — diagonal and
+triangular first, symmetric next. Skew-symmetric, banded, and
+fixed-pattern sparse have no static type in Julia; where such a type
+should come from is an open decision. Given one — a banded type carrying
+its bandwidths, a sparse one its pattern — the loops are fixed at
+transpile time, and a sparse product unrolls to exactly the nonzero
+multiplies a person writes for a known stencil.
 
 ## 4. Where to start
 

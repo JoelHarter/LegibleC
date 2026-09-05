@@ -412,13 +412,16 @@ function construct!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         return nullary!(lines, sc, i, identityhelper!(sc.helpers, T), T, dest; declaration)
     end
     isconstruction(f) && return concatenate!(lines, sc, i, f, args, dest; declaration)
-    if f in (Base.zero, Base.one) || (f in (Base.zeros, Base.ones) && length(args) == 1 && literal(sc, args[1]) isa Type)
-        # `zero(A)`, `zeros(SMatrix{3,4})`, `one(A)`: the size is in the result's type.
+    if f in (Base.zero, Base.one) || (f in (Base.zeros, Base.ones) && length(args) == 1 && literal(sc, args[1]) isa Type) ||
+       (f === Base.fill && length(args) == 2 && literal(sc, args[2]) isa Type)
+        # `zero(A)`, `zeros(SMatrix{3,4})`, `one(A)`, `fill(x, SMatrix{2,2})`: the size is in
+        # the result's type.
         shape(T) === nothing && throw(ArgumentError("$f needs a static array type (statement $i)"))
         f === Base.one && return nullary!(lines, sc, i, identityhelper!(sc.helpers, T), T, dest; declaration)
         f in (Base.zero, Base.zeros) && return nullary!(lines, sc, i, zerohelper!(sc.helpers, T), T, dest; declaration)
         declaration && emit!(lines, sc, declare(T, dest) * ";")
-        emit!(lines, sc, "$(fillhelper!(sc.helpers, T))($(eltype(T) <: AbstractFloat ? "1.0" : "1"), $dest);")
+        x = f === Base.fill ? value(sc, args[1]) : eltype(T) <: AbstractFloat ? "1.0" : "1"
+        emit!(lines, sc, "$(fillhelper!(sc.helpers, T))($x, $dest);")
         sc.shapes[i] = T
         return
     end
@@ -1017,6 +1020,7 @@ end
 function consumed(ci, i)
     for st in ci.code
         uses(st, i) || continue
+        st isa Expr && st.head === :(=) && (st = st.args[2])          # `X = [A B; C D]`
         st isa Expr && st.head === :call || return false
         f = callee_or_nothing(ci, st.args[1])
         (f !== nothing && (isconstruction(f) || f === Base.materialize)) || return false
@@ -1090,7 +1094,7 @@ function mentions(sc::Scope, x, a)
         (f === Base.broadcasted || f === Core.tuple) && return any(b -> mentions(sc, x, b), sc.ci.code[a.id].args[2:end])
     end
     v = try value(sc, a) catch; return false end
-    return v == x
+    return v == x || startswith(v, x * "[") || startswith(v, x * ".")   # the variable, or an element or field of it
 end
 
 # ---- ccall ---------------------------------------------------------------------------

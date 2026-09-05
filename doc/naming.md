@@ -1,7 +1,9 @@
 # Naming
 
 How the emitted C names things: first how Julia names are made valid in C,
-then how the names the transpiler invents are chosen.
+then how the names the transpiler invents are chosen. The names of the
+generated helpers (`add_2x2`, `mulP_3_3x2`) follow their own rule,
+described in `helper.md`.
 
 ## Variables and functions
 
@@ -39,17 +41,12 @@ it's unique: a variable `long` becomes `long_`; with both `omega` and `ω` in
 scope, whichever comes second becomes `omega_`. Function names are checked the
 same way, after the mangling below. Nothing is ever refused for its name.
 
-The reserved list (`src/reserved.jl`) holds the C keywords and the names of
-every standard header the output might include *or that C written around
-the output commonly does* — `stdint`, `stdlib`, `string`, `stdio`, `math`
-in all three widths, `time`, `ctype`, `limits`, `float`, `errno`, `assert` —
-plus `main`. So a Julia `time` or `index` comes out as `time_` or `index_`
-whether or not that header is in play, which keeps the output stable as
-headers come and go. A name that starts with `_` has its leading underscores
-moved to the end (`_x` → `x_`, `__Foo` → `Foo__`), because C reserves every
-such name at file scope and `_X…`/`__…` everywhere.
+A name that starts with `_` has its leading underscores moved to the end
+(`_x` → `x_`, `__Foo` → `Foo__`), because C reserves every such name at file
+scope and `_X…`/`__…` everywhere. The reserved list itself is described
+below.
 
-**Generated helpers** (`add_2x2_2x2`, `mulP_3_3x2`, …, see `array.md`) live in
+**Generated helpers** (`add_2x2`, `mulP_3_3x2`, …, see `helper.md`) live in
 the same file as the user's functions, so their names can collide with the
 user's. Their names are known only once everything has been generated, so
 the check comes last: a *variable* that matches a helper is renamed with `_`
@@ -69,7 +66,7 @@ for the names to differ, and applied uniformly to the whole group:
    and so on. Scalars contribute nothing at this level, so two scalar-only
    instances fall straight through.
    `g_3`, `g_2x3`
-2. **Type abbreviation,** after — from the table in `type.md`, an array
+2. **Type abbreviation,** after — from the table in `scalar.md`, an array
    described by its element type. A function whose arguments are all
    `Float64` leaves the abbreviations off entirely.
    `poly`, `poly_I64_I64`, `poly_F32_F32`
@@ -83,21 +80,22 @@ The only error is two *different* Julia methods landing on the same C
 signature — C can't hold both bodies.
 
 A regular array is described exactly like a static one under the
-`staticarray` option — it needs a size from somewhere other than its type.
-See `type.md`.
+`staticarray` option — it needs a size from somewhere other than its type
+(`array.md`).
 
 Implementation: `mangled` in `src/name.jl`.
 
-**Linear algebra helpers** are named on their own, stricter rule — always
-size and type, never class — described in `array.md`.
+## Reserved words
 
-**Reserved words** are a hand-maintained list in `src/reserved.jl`: C keywords,
-the names from every standard header the output *might* include, and anything
-the transpiler's own naming scheme claims.
+A hand-maintained list in `src/reserved.jl`: the C keywords, `main`, and
+the names of every standard header the output might include *or that C
+written around the output commonly does* — `stdint`, `stdlib`, `string`,
+`stdio`, `math` in all three widths, `time`, `ctype`, `limits`, `float`,
+`errno`, `assert`. A name on the list gets `_`: a Julia `exp`, `time`, or
+`index` comes out as `exp_`, `time_`, `index_`.
 
-Header names are reserved **always** — even in a file that doesn't include
-that header. A Julia variable called `exp` becomes `exp_` whether or not
-`math.h` is anywhere in sight. Two reasons:
+Header names are reserved **always**, even in a file that doesn't include
+that header. Two reasons:
 
 - *The C changes less between development updates.* If reservation depended
   on what each file happened to include, then adding `math.h` to the
@@ -107,11 +105,8 @@ that header. A Julia variable called `exp` becomes `exp_` whether or not
   output against their own C, which may include any of those headers, never
   finds our names fighting with the standard library's.
 
-The headers currently covered are `stdint.h`, `stdbool.h`, `stddef.h`, and
-`math.h`; when a new one joins the set the output can emit, add its names.
-
-Implementation: `identifier` and `identifiers` in `src/name.jl`; the list in
-`src/reserved.jl`.
+When a new header joins the set the output can emit, add its names.
+Implementation: `identifier` and `identifiers` in `src/name.jl`.
 
 ## Temporaries
 
@@ -181,7 +176,7 @@ Julia, and will come through as such.
 When the result is an *array* it can't be returned; it comes out through a
 trailing parameter, and an output parameter in C is called `out` — `out_` if
 the Julia already uses `out`. That is the same name every generated helper
-uses for its output, so `add_2x2_2x2(A, B, out)` and `void add(…, double
+uses for its output, so `add_2x2(A, B, out)` and `void add(…, double
 out[2][2])` read alike. `out` was deliberately not used for a returned
 scalar, where it would suggest a parameter that isn't there.
 

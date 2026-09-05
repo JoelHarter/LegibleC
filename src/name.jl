@@ -107,7 +107,7 @@ only as far as needed for the names to differ:
 2. the type abbreviation after — `f_4x4F32`, `f_I64_I64` — except that a function
    whose arguments are all `F64` leaves the abbreviations off
 
-See `doc/naming.md` and `doc/type.md`.
+See `doc/naming.md` and `doc/scalar.md`.
 """
 function mangled(name::AbstractString, sigs)
     length(sigs) == 1 && return [name]

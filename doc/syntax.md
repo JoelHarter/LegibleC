@@ -4,7 +4,7 @@ Every piece of Julia the transpiler accepts, in one place. The other documents
 explain *how* each part is handled; this one only says *what* works, so a
 reader can tell at a glance whether a function will go through. Anything not
 listed here is an error at transpile time, never silently wrong C — and
-`todo.md` lists what's coming.
+the repo's `todo.md` lists what's coming.
 
 ## Calling the transpiler
 
@@ -36,7 +36,7 @@ prototypes, the helpers it needs, and the functions.
 
 ## Scalar types
 
-`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`. See `type.md`
+`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`. See `scalar.md`
 for the C spelling of each. `struct` (immutable by value, mutable through a
 pointer, parametric at concrete types) and `Tuple` — see `struct.md`. Not
 yet: complex, `Char`, strings, `Int128`, `Float16`, `Rational`, `BigInt`,
@@ -101,7 +101,7 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `B = A`, `B = A'`, `A = A * A` | yes (copies, and a temp when the destination is an operand) |
 | `A[1:2, :]`, `A[i, 2:3]`, a range in a variable, N-D slices | not yet |
 | `.==`, `.<`, `ifelse.` | not yet |
-| runtime-sized `Array` arguments (`staticarray=false`) | not yet — see `map.md` §3.4 for the VLA design |
+| runtime-sized `Array` arguments (`staticarray=false`) | not yet — see `dev/map.md` §3.4 for the VLA design |
 | a multiple of the identity (`2I`) | not yet |
 
 ## Comments

@@ -1,6 +1,6 @@
 # The scalar types the transpiler supports: what Julia calls each, what C calls it, and
 # the abbreviation used when a type has to appear in a mangled name. The same table
-# is written up in doc/type.md; keep the two in step.
+# is written up in doc/scalar.md; keep the two in step.
 
 # (Julia, C, abbreviation)
 const scalars = (

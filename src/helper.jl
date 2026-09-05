@@ -29,19 +29,29 @@ end
 """
     helpername(op, types; pointwise=false) -> String
 
-The C name of the helper for `op` on `types`: the operation, then one description
-per input, always — `add_2x2_2x2`, `mul_2x2_2`, `dot_3_3`. An array is described by
-its dimensions (`2x2`, or `T3`, `T2x3` when transposed), a scalar by `s`; fundamental types
-appear only when not every input is `Float64`, and then on every input — appended to
-an array's dimensions, replacing a scalar's `s`. A pointwise (broadcast) operation
-gets `P` after the operation: `mulP_3_3x2`, `addP_3_3`. Full rules in `doc/array.md`.
+The C name of the helper for `op` on `types`. The name says exactly what the
+operation's contract leaves open. Each input is described by its shape — `2x2`, `3`,
+`T2x3` transposed, `s` for a scalar — then its type when not every input is `Float64`
+(`2x2F32`, `sF32`). An operation that leaves the shapes open lists every input:
+`mul_2x2_2x3`, `mul_s_2x2`, and every pointwise one, with `P` after the operation:
+`mulP_3_3x2`, `addP_3_3`. One whose contract fixes the shapes as identical writes the
+shape once and then the types run together, one if they agree: `add_2x2`,
+`add_2x2F32`, `add_2x2F32F64`, `dot_3`; `cross`, whose shapes are fixed entirely, has
+only the types: `cross`, `cross_F32`. Full rules in `doc/helper.md`.
 """
 function helpername(op::Symbol, types; pointwise::Bool=false)
     fundamental(T) = T <: AbstractArray ? eltype(T) : T
     alldouble = all(T -> fundamental(T) === Float64, types)
     sizes = [T <: AbstractArray ? dims(T) : "s" for T in types]
     typs = [abbrev(fundamental(T)) for T in types]
-    descs = [alldouble ? sz : (T <: AbstractArray ? sz * t : t) for (T, sz, t) in zip(types, sizes, typs)]
+    if !pointwise && op in (:add, :sub, :dot, :cross) && allequal(sizes)
+        # The contract fixes the shapes (a transposed operand still lists in full, since
+        # the storage differs): one shape, then the types.
+        t = alldouble ? "" : allequal(typs) ? typs[1] : join(typs)
+        body = (op == :cross ? "" : sizes[1]) * t
+        return isempty(body) ? string(op) : string(op, "_", body)
+    end
+    descs = [alldouble ? sz : sz * t for (sz, t) in zip(sizes, typs)]
     return string(op, pointwise ? "P_" : "_", join(descs, "_"))
 end
 
@@ -85,10 +95,16 @@ end
 
 # ---- the primitives every generator is built from ----------------------------------
 
-# A helper's full C definition, with its one-line comment (see prose.jl) above it;
-# `body` lines are relative to the function's own indent.
-definition(ret, name, params, body; doc::AbstractString="") =
-    (isempty(doc) ? "" : "/// $doc\n") * "static $ret $name($(join(params, ", "))) {\n" * join("    " .* body, "\n") * "\n}\n"
+# A helper's full C definition, with its comment above it: a one-line brief (see
+# prose.jl), or that plus `@param` lines for the parameters whose meaning isn't in
+# their name. `body` lines are relative to the function's own indent. A helper is
+# `static inline` when it's straight-line code or plain loops — the small things a C
+# programmer marks inline — and plain `static` when it calls other helpers, searches,
+# or can abort: the solvers and factorizations, which nobody wants copied into every
+# caller.
+definition(ret, name, params, body; doc::Union{AbstractString, Vector{String}}="", inline::Bool=true) =
+    join("/// " .* (doc isa AbstractString ? (isempty(doc) ? String[] : [doc]) : doc), "\n") * (isempty(doc) ? "" : "\n") *
+    "static $(inline ? "inline " : "")$ret $name($(join(params, ", "))) {\n" * join("    " .* body, "\n") * "\n}\n"
 
 # The (index name, extent) pairs that need a loop: those with more than one element.
 live(pairs) = [p for p in pairs if p[2] > 1]
@@ -211,7 +227,7 @@ end
 # The same array type with element type `E`.
 retype(T::Type, E::Type) = istransposed(T) ? Transposed{E, shape(T), ndims(T)} : shaped(E, shape(T))
 
-# A helper that returns a scalar: `dot_3_3`, or `mul_T3_3` for a row times a column.
+# A helper that returns a scalar: `dot_3`, or `mul_T3_3` for a row times a column.
 # Both are the contraction of two single dimensions, the first on axis 2, the second
 # on axis 1.
 function scalarhelper!(helpers::Dict{String, String}, op::Symbol, types, E::Type)
@@ -290,7 +306,7 @@ function dethelper!(helpers::Dict{String, String}, T::Type, E::Type)
         loop = nest([("j", n)], [cut; "det += sign * $(access(T, A, ["0", "j"])) * $(dethelper!(helpers, S, E))(M);"; "sign = -sign;"])
         ["$(ctype(E)) det = $zero;"; "$(ctype(E)) sign = $one;"; declare(S, "M") * ";"; loop; "return det;"]
     end
-    helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc="$(describe(T)) determinant")
+    helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc="$(describe(T)) determinant", inline=n <= 3)
     return name
 end
 
@@ -326,11 +342,14 @@ function slicehelper!(helpers::Dict{String, String}, kind::Symbol, T::Type, R::T
     haskey(helpers, name) && return name
     A = inputs((T,))[1]
     body, param, doc = if kind == :row
-        nest([("j", shape(R)[1])], ["out[j] = $(access(T, A, ["i", "j"]));"]), "int i", "row of a $(describe(T))"
+        nest([("j", shape(R)[1])], ["out[j] = $(access(T, A, ["i", "j"]));"]), "int i",
+        ["row of a $(describe(T))", "@param i  the row, 0-based"]
     elseif kind == :col
-        nest([("i", shape(R)[1])], ["out[i] = $(access(T, A, ["i", "j"]));"]), "int j", "column of a $(describe(T))"
+        nest([("i", shape(R)[1])], ["out[i] = $(access(T, A, ["i", "j"]));"]), "int j",
+        ["column of a $(describe(T))", "@param j  the column, 0-based"]
     else
-        nest([("i", shape(R)[1])], ["out[i] = $(A)[from + i];"]), "int from", "$(shape(R)[1])-element slice of a $(describe(T))"
+        nest([("i", shape(R)[1])], ["out[i] = $(A)[from + i];"]), "int from",
+        ["$(shape(R)[1])-element slice of a $(describe(T))", "@param from  where the slice starts, 0-based"]
     end
     helpers[name] = definition("void", name, [declare(T, A; constant=true), param, declare(R, "out"; restrict=true)], body; doc)
     return name
@@ -372,7 +391,11 @@ function pivothelper!(helpers::Dict{String, String}, T::Type)
             "    p[k] = p[best];",
             "    p[best] = t;",
             "}"]
-    helpers[name] = definition("void", name, ["$(ctype(E)) LU[$n][$n]", "int p[$n]", "int k"], body; doc="partial pivot of a $(describe(T)) at column k")
+    helpers[name] = definition("void", name, ["$(ctype(E)) LU[$n][$n]", "int p[$n]", "int k"], body;
+                               doc=["partial pivot of a $(describe(T)) at column k",
+                                    "@param LU  the work array being decomposed; rows k and best are swapped",
+                                    "@param p   the row permutation so far, swapped alongside",
+                                    "@param k   the column, 0-based"], inline=false)
     return name
 end
 
@@ -407,7 +430,9 @@ function luhelper!(helpers::Dict{String, String}, T::Type)
             "    }",
             "}"]
     helpers[name] = definition("void", name, [declare(T, A; constant=true), "$(ctype(E)) LU[restrict $n][$n]", "int p[restrict $n]"], body;
-                               doc="LU decomposition of a $(describe(T)) with partial pivoting")
+                               doc=["LU decomposition of a $(describe(T)) with partial pivoting",
+                                    "@param LU  L below the diagonal (unit diagonal implied), U on and above it",
+                                    "@param p   the row permutation: row i of LU is row p[i] of $A"], inline=false)
     return name
 end
 
@@ -458,7 +483,7 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
                     "$(helper!(helpers, :mul, (AT, y), R))($A, y, out);"]
             doc = "$(describe(T)) \\ $(describe(B)) minimum-norm solve through A Aᵀ"
         end
-        helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc)
+        helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=false)
         return name
     end
     if ndims(B) == 2
@@ -476,7 +501,7 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
                 "    }",
                 "}"]
         helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
-                                   doc="$(describe(T)) \\ $(describe(B)) solve, column by column")
+                                   doc="$(describe(T)) \\ $(describe(B)) solve, column by column", inline=false)
         return name
     end
     a(i, j) = access(T, A, [string(i), string(j)])
@@ -502,7 +527,7 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
         vcat(["$(ctype(E)) LU[$n][$n];", "int p[$n];", "$(luhelper!(helpers, T))($A, LU, p);"], lusolve(n, "out", access(B, b, ["p[i]", "0"])))
     end
     doc = n <= 3 ? "$(describe(T)) \\ $(describe(B)) solve by Cramer's rule" : "$(describe(T)) \\ $(describe(B)) solve by LU with partial pivoting"
-    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc)
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=n <= 3)
     return name
 end
 
@@ -524,7 +549,7 @@ function rsolvehelper!(helpers::Dict{String, String}, B::Type, A::Type, R::Type)
                                             ["$inner($An, row, x);"],
                                             nest([("j", n)], ["$(access(R, "out", [i, "j"])) = x[j];"]))))
     helpers[name] = definition("void", name, [declare(B, Bn; constant=true), declare(A, An; constant=true), declare(R, "out"; restrict=true)], body;
-                               doc="$(describe(B)) / $(describe(A)) solve, row by row through the transpose")
+                               doc="$(describe(B)) / $(describe(A)) solve, row by row through the transpose", inline=false)
     return name
 end
 
@@ -555,7 +580,7 @@ function pinvhelper!(helpers::Dict{String, String}, T::Type, R::Type)
          "$(invLLThelper!(helpers, G, G))(G, Ginv);",
          "$(helper!(helpers, :mul, (AT, G), R))($A, Ginv, out);"], "pseudoinverse of a short $(describe(T)), Aᵀ(AAᵀ)⁻¹"
     end
-    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc)
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=false)
     return name
 end
 
@@ -592,7 +617,7 @@ function invhelper!(helpers::Dict{String, String}, T::Type, R::Type)
              ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
     end
     doc = n <= 3 ? "$(describe(T)) inverse by the adjugate" : "$(describe(T)) inverse by LU with partial pivoting"
-    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc)
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=n <= 3)
     return name
 end
 
@@ -648,7 +673,7 @@ function llthelper!(helpers::Dict{String, String}, T::Type)
                 "}"]
     end
     helpers[name] = definition("void", name, [declare(T, A; constant=true), "$(ctype(E)) L[restrict $n][$n]"], body;
-                               doc="Cholesky factor of a $(describe(T)), A = L Lᵀ")
+                               doc="Cholesky factor of a $(describe(T)), A = L Lᵀ", inline=false)
     return name
 end
 
@@ -680,7 +705,7 @@ function solveLLThelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Typ
     A, b = inputs((T, B))
     body = vcat(["$(ctype(E)) L[$n][$n];", "$(llthelper!(helpers, T))($A, L);"], lltsolve(n, "out", access(B, b, ["i", "0"])))
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
-                               doc="$(describe(T)) \\ $(describe(B)) solve by Cholesky")
+                               doc="$(describe(T)) \\ $(describe(B)) solve by Cholesky", inline=false)
     return name
 end
 
@@ -697,7 +722,7 @@ function invLLThelper!(helpers::Dict{String, String}, T::Type, R::Type)
                 "    " .* lltsolve(n, "x", "i == j ? $one : $zero"),
                 ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body;
-                               doc="$(describe(T)) inverse by Cholesky")
+                               doc="$(describe(T)) inverse by Cholesky", inline=false)
     return name
 end
 
@@ -708,7 +733,7 @@ outname(R::Type) = dims(R) * (eltype(R) === Float64 ? "" : abbrev(eltype(R)))
 # The line that zeroes `out` of type `R`.
 zeroing(R::Type) = "memset(out, 0, sizeof($(ctype(eltype(R)))$(join("[$n]" for n in shape(R)))));"
 
-# The cross product. Only ever 3-vectors, but named like everything else: `cross_3_3`.
+# The cross product. Only ever 3-vectors, which the name therefore leaves out: `cross`.
 function crosshelper!(helpers::Dict{String, String}, types, R::Type)
     all(T -> shape(T) == (3,), types) || throw(ArgumentError("cross: both arguments must be 3-vectors"))
     name = helpername(:cross, types)

@@ -102,6 +102,51 @@ copied over, and most of the code is too, all as comments; the lines whose
 code isn't worth copying (brackets, `end`, a long-form signature) are treated
 like blank lines *except* that a comment on the end of them still counts.
 
+## On the helpers
+
+Every generated helper gets a one-line `///` comment saying what it does the
+way a person would say it:
+
+```c
+/// 2×3 * 3×3 matrix multiplication
+/// 2×2-matrix addition
+/// 3-vector + scalar broadcast addition
+/// 2×2-matrix negation
+/// 3×2-matrix element-wise exponential
+/// transposed 3-vector * 3-vector multiplication
+/// vertical concatenation of two 3-vectors
+/// LU decomposition of a 4×4-matrix with partial pivoting
+```
+
+The words are deliberately ones the transpiler itself never uses. To it
+there are only arrays of any dimension and one kind of pointwise operation;
+a reader expects "scalar", "vector", "matrix" and "4×3×2-array", and
+"element-wise" when the sizes match versus "broadcast" when they don't or a
+scalar is involved. Sizes are written with `×`, `transposed` goes in front,
+and the element type is named exactly when the helper's name carries types
+(`Float64 3×2-matrix * Float32 3×2-matrix element-wise multiplication`).
+Two plain operands of one kind share the noun (`2×3 * 3×3 matrix
+multiplication`); identical operands are written once (`2×2-matrix
+addition`). Known functions get their English name — `exponential`,
+`square root`, `hyperbolic tangent` — and anything else is called by its
+Julia name. Implementation: `src/prose.jl`.
+
+A helper whose parameters aren't all inputs and `out` gets `@param` lines
+under the brief, for exactly the parameters whose meaning isn't in their
+name — the work array and permutation of an LU, the position of a slice:
+
+```c
+/// partial pivot of a 4×4-matrix at column k
+/// @param LU  the work array being decomposed; rows k and best are swapped
+/// @param p   the row permutation so far, swapped alongside
+/// @param k   the column, 0-based
+```
+
+That is the whole of the Doxygen on helpers. They are `static`, and a full
+block per helper would mostly restate a signature the name already
+transcribes; the user's functions, which are the C interface, get the full
+`/** … */` block described above.
+
 ## Placement details
 
 - A line's comment goes ahead of the first C statement produced by that line.
@@ -112,7 +157,7 @@ like blank lines *except* that a comment on the end of them still counts.
   the continuation lines are emitted after that C, when the next statement
   arrives. Acceptable, and noted as a known imprecision.
 - Leading whitespace is dropped; the C's own indentation applies.
-- Nothing is emitted for generated helpers — they have no Julia source.
+- Generated helpers have no Julia source; they get the `///` line above and nothing else.
 - A function whose source can't be found (defined at the REPL, or via `-e`)
   gets no annotations at all, silently.
 

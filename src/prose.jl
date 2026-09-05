@@ -36,6 +36,8 @@ function prose(op::Symbol, types, R=nothing; pointwise::Bool=false)
     typed = !all(T -> (T <: AbstractArray ? eltype(T) : T) === Float64, types)
     d = [describe(T; typed) for T in types]
     op == :copy && return axis(types[1]) == axis(R) ? "$(d[1]) copy" : "$(describe(plain(types[1]); typed)) transpose"
+    # The cross product is only ever of 3-vectors, so saying so says nothing.
+    op == :cross && return (typed ? join(unique(string(eltype(T)) for T in types), " × ") * " " : "") * "cross product"
     length(types) == 1 && return "$(d[1]) $(pointwise ? "element-wise " : "")$(get(unaryword, op, string(op)))"
     a, b = types
     sym, verb = get(binaryword, op, (string(op), string(op)))

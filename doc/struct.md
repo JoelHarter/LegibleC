@@ -20,10 +20,8 @@ allocation and an ownership rule, so it's refused; the C caller owns those.
 
 A parametric struct at a concrete instantiation is one C struct per
 instantiation, named like a function at several signatures: `Pair2_F64`,
-`Body_3`. Field and type names go through the usual conversion. A trailing
-`!` on a function name (`bump!`) is dropped, since C has no mark for a
-function that mutates its argument; a collision with the plain name is
-handled like any other, with `_`.
+`Body_3`. Field and type names go through the usual conversion
+(`naming.md`), which also drops the `!` from `bump!`.
 
 Not yet: `@kwdef` constructors, structs holding mutable structs, `Union`
 fields, `sizeof`.
