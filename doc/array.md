@@ -115,10 +115,14 @@ functions in `scalar.md`.
 
 ## Construction
 
-`[A B; C D]`, `[u; v]`, `[u v]` become `hvcat2x2_…`, `vcat_…`, `hcat_…`
-helpers that copy each block into place, with the grid in `hvcat`'s name
-since the blocks alone don't say how they're arranged. A scalar among the
-blocks takes one cell. A literal with no arrays in it — `[1.0 2.0; 3.0 4.0]`,
+`[A B; C D]`, `[u; v]`, `[u v]`, and the `;;` forms — `[A; B;; C; D]` for
+the same grid listed down each column, `[A;; B]`, and `[B;; C;;; D;; E]` for
+a 2×4×2 array — are all one rule: a grid of blocks of any dimension, each
+copied into place at its offsets by one loop over its own dimensions. The
+helpers are `hvcat2x2_…`, `vcat_…`, `hcat_…`, `hvncat1x2x2_…`, with the
+grid in the name since the blocks alone don't say how they're arranged. A
+scalar among the blocks takes one cell; a ragged `[A B; C]` works too.
+A literal with no arrays in it — `[1.0 2.0; 3.0 4.0]`,
 `[1.0, 2.0, 3.0]`, `SVector(1.0, 2.0, 3.0)`, `@SMatrix […]`, `SA[…]` — is
 assigned element by element, no helper:
 
@@ -135,9 +139,17 @@ the `memset` and then ones down the diagonal (`identity_3x3`).
 
 ## Slices and reductions
 
-`A[i, :]`, `A[:, j]`, and `v[2:4]` are copies, as in Julia, through
-`row_2x3(A, i - 1, out)`, `col_2x3`, and `slice_5_3(v, 1, out)`, with the
-position a 0-based parameter so one helper serves every position. `sum`,
+`A[i, :]`, `A[:, j]`, `v[2:4]`, and a block `A[1:2, 2:3]` or `A[:, 2:end]`
+are copies, as in Julia, through `row_2x3(A, i - 1, out)`, `col_2x3`,
+`slice_5_3(v, 1, out)`, and `block_3x4_2x2(A, 0, 1, out)`, with the position
+a 0-based parameter so one helper serves every position. `end` is the size,
+which inference already knows.
+
+Assigning the other way into a mutable array — `A[2, :] = v`, `A[:, 1] = v`,
+`A[:, 3:end] = B`, `v[2:3] = w` — is the mirror image: `setrow_2x4_4(A, 1,
+v)`, `setcol_2x4_2`, `set_2x4_2x2(A, 0, 2, B)`, `set_5_2(v, 1, w)`. The
+shapes must match, as Julia requires. Not yet: part of a row or column
+(`A[i, 2:3] = v`), and a scalar or broadcast into a slice (`A[:, 1] .= 0`). `sum`,
 `prod`, `maximum`, `minimum`, `any`, `all`, and `norm` are one loop each,
 returning the scalar (`sum_3`, `maximum_2x3`, `norm_3`); `maximum` and
 `minimum` compare, so a NaN is passed over where Julia would return it.
@@ -172,9 +184,10 @@ The meaning of each follows Julia's definition.
 | `det(A)`, `A \ b`, `B / A`, `inv(A)`, `pinv(A)`, `cholesky(A) \ b` | `det_3x3`, `solve_3x3_3`, `rsolve_2x3_3x3`, `inv_3x3`, `pinv_4x3`, `solveLLT_3x3_3` | `linear.md` |
 | `A .+ B`, `v .* M`, `exp.(A)` | `addP_2x2_2x2`, `mulP_3_3x2`, `expP_2x2` | every input listed: broadcasting leaves the shapes open |
 | `A'`, `transpose(A)` | nothing | the same storage |
-| `[A B; C D]`, `[u; v]`, `[u v]` | `hvcat2x2_…`, `vcat_3_3`, `hcat_3_3` | |
+| `[A B; C D]`, `[u; v]`, `[u v]`, `[A;; B]`, `[B;; C;;; D;; E]` | `hvcat2x2_…`, `vcat_3_3`, `hcat_3_3`, `hvncat1x2x2_…` | any dimension |
 | `zeros`, `zero(A)`; `ones`, `fill`; `one(A)`, `SMatrix{3,3}(I)` | `zero_3x4`, `fill_3x4`, `identity_3x3` | |
-| `A[i, :]`, `A[:, j]`, `v[2:4]` | `row_2x3`, `col_2x3`, `slice_5_3` | |
+| `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]` | `row_2x3`, `col_2x3`, `slice_5_3`, `block_3x4_2x2` | |
+| `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:4] = B`, `v[2:3] = w` | `setrow_2x4_4`, `setcol_2x4_2`, `set_2x4_2x2`, `set_5_2` | into a mutable array |
 | `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm` | `sum_3`, `maximum_2x3`, `norm_3` | |
 
 Shape mismatches are errors at transpile time, as they'd be at run time in

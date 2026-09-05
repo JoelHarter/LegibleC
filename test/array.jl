@@ -21,6 +21,11 @@ regmul(A::Matrix{Float64}, B::Matrix{Float64}) = A * B
 regchain(A::Matrix{Float64}, s::Float64) = (B = 2.0 * A; C = B + A; C = C * s; C)
 regvec(A::Matrix{Float64}, v::Vector{Float64}) = A * v + v
 blocks(A::M2, B::M2, C::M2, D::M2) = [A B; C D]
+columns(A::M2, B::M2, C::M2, D::M2) = [A; B;; C; D]                 # the same grid, listed down each column
+beside2(A::M2, B::M2) = [A;; B]
+cube3(A::M2, B::M2, C::M2, D::M2) = [A;; B;;; C;; D]                 # 2×4×2
+stack3(u::V3, v::V3) = [u;;; v]                                      # 3×1×2
+ragged(A::M2, B::M2, C::SMatrix{2,4,Float64,8}) = [A B; C]
 stack(u::V3, v::V3) = [u; v]
 beside(u::V3, v::V3) = [u v]
 literal() = [1.0 2.0; 3.0 4.0]
@@ -76,7 +81,8 @@ cases = [Case(add, A, B), Case(mulmv, A, SVector(1.0, 2.0)), Case(mulmm, A, A23)
          Case(vec3, u, v, w), Case(cube, C3, D3), Case(namedarray, A, B),
          Case(regmul, [1.0 2.0 3.0; 4.0 5.0 6.0], [1.0 0.0 2.0; 0.0 1.0 0.0; 3.0 0.0 1.0]), Case(regchain, [1.0 2.0; 3.0 4.0], 0.5),
          Case(regvec, [1.0 2.0 3.0; 4.0 5.0 6.0; 7.0 8.0 9.0], [1.0, 2.0, 3.0]),
-         Case(blocks, A, B, B, A), Case(stack, u, v), Case(beside, u, v), Case(literal), Case(vlit), Case(svec), Case(smat),
+         Case(blocks, A, B, B, A), Case(columns, A, B, B, A), Case(beside2, A, B), Case(cube3, A, B, B, A), Case(stack3, u, v),
+         Case(ragged, A, B, SMatrix{2,4}(1.0:8.0...)), Case(stack, u, v), Case(beside, u, v), Case(literal), Case(vlit), Case(svec), Case(smat),
          Case(scalerows, u, A33), Case(elementwise, u, v), Case(shifted, u), Case(outer, u, v), Case(asrow, u),
          Case(rowtimes, u, A32), Case(rowdot, u, v), Case(dotted, u, v), Case(crossed, u, v), Case(flipped, A23),
          Case(scalecols, u, A32), Case(byscalar, A32), Case(pmixed, A32, SMatrix{3,2,Float32}(1, 2, 3, 4, 5, 6)),

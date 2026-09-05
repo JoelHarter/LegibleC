@@ -112,7 +112,8 @@ isn't. The abbreviations are in `scalar.md`.
 - When the inputs don't determine the **output** — `fill`'s only input is a
   scalar, `hvcat`'s blocks don't say how they're arranged, a slice's length
   isn't in its inputs — the output's description goes in: `fill_3`,
-  `zero_2x2I64`, `hvcat2x2_…`, `slice_5_3`.
+  `zero_2x2I64`, `hvcat2x2_…`, `slice_5_3`, `block_3x4_2x2`; and a slice
+  assignment names its target and its source, `setrow_2x4_4`, `set_5_2`.
 - Unary operations have one input: `neg_2x2`, `copy_3`, `det_3x3`, `sum_3`.
 - **Algorithms** carry their method: `solve_4x4_4` and `inv_4x4` (LU),
   `solveLLT_3x3_3` and `invLLT_3x3` (Cholesky), `rsolve_2x3_3x3` (`B / A`),

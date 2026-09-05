@@ -261,7 +261,7 @@ end
 # every C type the transpiler emits.
 function zerohelper!(helpers::Dict{String, String}, R::Type)
     name = "zero_" * outname(R)
-    haskey(helpers, name) || (helpers[name] = definition("void", name, [declare(R, "out")], [zeroing(R)]; doc="zero $(describe(R))"))
+    haskey(helpers, name) || (helpers[name] = definition("void", name, [declare(R, "out"; restrict=true)], [zeroing(R)]; doc="zero $(describe(R))"))
     return name
 end
 
@@ -275,7 +275,7 @@ function identityhelper!(helpers::Dict{String, String}, R::Type)
         one = ctype(eltype(R)) == "float" ? "1.0f" : eltype(R) <: AbstractFloat ? "1.0" : "1"
         i = d > 1 ? "i" : "0"
         body = [zeroing(R); nest(live([("i", d)]), ["out[$i][$i] = $one;"])]
-        helpers[name] = definition("void", name, [declare(R, "out")], body; doc="identity $(describe(R))")
+        helpers[name] = definition("void", name, [declare(R, "out"; restrict=true)], body; doc="identity $(describe(R))")
     end
     return name
 end
@@ -391,7 +391,7 @@ function pivothelper!(helpers::Dict{String, String}, T::Type)
             "    p[k] = p[best];",
             "    p[best] = t;",
             "}"]
-    helpers[name] = definition("void", name, ["$(ctype(E)) LU[$n][$n]", "int p[$n]", "int k"], body;
+    helpers[name] = definition("void", name, ["$(ctype(E)) LU[restrict $n][$n]", "int p[restrict $n]", "int k"], body;
                                doc=["partial pivot of a $(describe(T)) at column k",
                                     "@param LU  the work array being decomposed; rows k and best are swapped",
                                     "@param p   the row permutation so far, swapped alongside",
@@ -726,6 +726,124 @@ function invLLThelper!(helpers::Dict{String, String}, T::Type, R::Type)
     return name
 end
 
+# A block of a matrix copied out: `block_3x4_2x2(A, i0, j0, out)`, the corner 0-based.
+function blockhelper!(helpers::Dict{String, String}, T::Type, R::Type)
+    name = "block_" * dims(T) * "_" * dims(R)
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    body = nest([("i", shape(R)[1]), ("j", shape(R)[2])], ["out[i][j] = $(access(T, A, ["i0 + i", "j0 + j"]));"])
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), "int i0", "int j0", declare(R, "out"; restrict=true)], body;
+                               doc=["$(describe(R)) block of a $(describe(T))", "@param i0  the block's first row, 0-based", "@param j0  the block's first column, 0-based"])
+    return name
+end
+
+# A whole array assigned into part of a mutable one: `setrow_2x4_4(A, i, v)`,
+# `setcol_2x4_2(A, j, v)`, `set_2x4_2x2(A, i0, j0, B)` for a block, `set_5_2(v, from, w)`
+# for a run of a vector — the mirror images of `row_`, `col_`, `block_`, `slice_`. Named
+# for the target and the source; the position is 0-based.
+function sethelper!(helpers::Dict{String, String}, kind::Symbol, T::Type, S::Type)
+    name = (kind == :row ? "setrow" : kind == :col ? "setcol" : "set") * "_" * dims(T) * "_" * dims(S)
+    haskey(helpers, name) && return name
+    A, b = inputs((T, S))
+    body, params, doc = if kind == :run
+        nest([("i", extent(S, 1))], ["$A[from + i] = $(access(S, b, ["i"]));"]), ["int from"],
+        ["run of a $(describe(T)) set from a $(describe(S))", "@param from  where the run starts, 0-based"]
+    elseif kind == :row
+        nest([("j", extent(S, 1))], ["$A[i][j] = $(access(S, b, ["j"]));"]), ["int i"],
+        ["row of a $(describe(T)) set from a $(describe(S))", "@param i  the row, 0-based"]
+    elseif kind == :col
+        nest([("i", extent(S, 1))], ["$A[i][j] = $(access(S, b, ["i"]));"]), ["int j"],
+        ["column of a $(describe(T)) set from a $(describe(S))", "@param j  the column, 0-based"]
+    else
+        nest([("i", extent(S, 1)), ("j", extent(S, 2))], ["$A[i0 + i][j0 + j] = $(access(S, b, ["i", "j"]));"]), ["int i0", "int j0"],
+        ["block of a $(describe(T)) set from a $(describe(S))", "@param i0  the block's first row, 0-based", "@param j0  the block's first column, 0-based"]
+    end
+    helpers[name] = definition("void", name, [declare(T, A; restrict=true); params; declare(S, b; constant=true)], body; doc)
+    return name
+end
+
+# The output's description for a helper named by what it makes: `3x4`, `2x2I64` — the
+# type appears by the same rule as for inputs, only when it isn't Float64.
+outname(R::Type) = dims(R) * (eltype(R) === Float64 ? "" : abbrev(eltype(R)))
+
+# The line that zeroes `out` of type `R`.
+zeroing(R::Type) = "memset(out, 0, sizeof($(ctype(eltype(R)))$(join("[$n]" for n in shape(R)))));"
+
+# The cross product. Only ever 3-vectors, which the name therefore leaves out: `cross`.
+function crosshelper!(helpers::Dict{String, String}, types, R::Type)
+    all(T -> shape(T) == (3,), types) || throw(ArgumentError("cross: both arguments must be 3-vectors"))
+    name = helpername(:cross, types)
+    if !haskey(helpers, name)
+        (a, b), (an, bn) = types, inputs(types)
+        helpers[name] = definition("void", name, [declare(a, an; constant=true), declare(b, bn; constant=true), declare(R, "out"; restrict=true)],
+                                   ["out[0] = $an[1] * $bn[2] - $an[2] * $bn[1];", "out[1] = $an[2] * $bn[0] - $an[0] * $bn[2];",
+                                    "out[2] = $an[0] * $bn[1] - $an[1] * $bn[0];"]; doc=prose(:cross, types, R))
+    end
+    return name
+end
+
+# A broadcast: `f` applied elementwise over `types`, with Julia's rules — dimensions
+# line up from the left, and a size of 1 stretches to match. An operand with no
+# dimension on some axis just contributes nothing there; `access` does the stretching
+# by indexing a dimension of extent 1 with `0`.
+function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types, R::Type)
+    name = helpername(op, types; pointwise=true)
+    if !haskey(helpers, name)
+        argnames = inputs(types)
+        idx, pairs = loopindices(extents(R); taken=argnames)
+        accesses = [access(T, n, idx) for (T, n) in zip(types, argnames)]
+        expr = cfn isa String ? "$cfn($(join(accesses, ", ")))" :
+               cfn == :neg ? "-" * accesses[1] :
+               cfn == :div && all(T -> (T <: AbstractArray ? eltype(T) : T) <: Integer, types) ?
+                   "($(ctype(eltype(R))))$(accesses[1]) / ($(ctype(eltype(R))))$(accesses[2])" :
+               join(accesses, " " * Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[cfn] * " ")
+        body = nest(pairs, ["$(access(R, "out", idx)) = $expr;"])
+        params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
+        push!(params, declare(R, "out"; restrict=true))
+        helpers[name] = definition("void", name, params, body; doc=prose(op, types, R; pointwise=true))
+    end
+    return name
+end
+
+# The shape of a broadcast over `types`: one extent per axis up to the last axis any
+# operand reaches, every dimension the operands brought kept (extent-1 ones included).
+# Nothing if the extents don't line up.
+function broadcastshape(types)
+    nd = maximum(T -> isempty(axis(T)) ? 0 : maximum(axis(T)), types)
+    out = Int[]
+    for d in 1:nd
+        big = unique(filter(!=(1), [extent(T, d) for T in types]))
+        length(big) <= 1 || return nothing
+        push!(out, isempty(big) ? 1 : big[1])
+    end
+    return Tuple(out)
+end
+
+# Block construction of any dimension: each block copied into place by one loop over
+# its own dimensions, with its offsets added. `[A B; C D]`, `[u; v]`, `[A;; B]`, and
+# `[B;; C;;; D;; E]` all come here; only the offsets differ. A scalar block takes one
+# cell. Named for the form and the blocks: `hvcat2x2_2x2_2x2_2x2_2x2`, `vcat_3_3`,
+# `hvncat1x2x2_…`.
+function cathelper!(helpers::Dict{String, String}, form::AbstractString, types, offsets, R::Type; grid)
+    descs = [T <: AbstractArray ? dims(T) : abbrev(T) for T in types]
+    name = form * "_" * join(descs, "_")
+    haskey(helpers, name) && return name
+    argnames = inputs(types)
+    N = ndims(R)
+    lines = String[]
+    for (k, T) in enumerate(types)
+        idx, pairs = loopindices(Tuple(extent(T, d) for d in 1:N); taken=argnames)
+        place(o, x) = x == "0" ? string(o) : o == 0 ? x : "$o + $x"
+        subs = [place(offsets[k][d], idx[d]) for d in 1:N]
+        inner = "$(access(R, "out", subs)) = $(access(T, argnames[k], idx));"
+        append!(lines, nest(pairs, [inner]))
+    end
+    params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
+    push!(params, declare(R, "out"; restrict=true))
+    helpers[name] = definition("void", name, params, lines; doc=blockprose(grid, types))
+    return name
+end
+
 # The output's description for a helper named by what it makes: `3x4`, `2x2I64` — the
 # type appears by the same rule as for inputs, only when it isn't Float64.
 outname(R::Type) = dims(R) * (eltype(R) === Float64 ? "" : abbrev(eltype(R)))
@@ -819,24 +937,3 @@ function cathelper!(helpers::Dict{String, String}, kind::Symbol, rows, types, R:
     return name
 end
 
-# The shape a block construction produces: rows of blocks laid out as in Julia.
-function catshape(rows, types)
-    k = 1
-    H = 0
-    W = 0
-    for nblocks in rows
-        w = 0
-        h = 0
-        for _ in 1:nblocks
-            bh, bw = extent(types[k], 1), extent(types[k], 2)
-            h == 0 || h == bh || throw(ArgumentError("blocks in a row have different heights"))
-            h = bh
-            w += bw
-            k += 1
-        end
-        W == 0 || W == w || throw(ArgumentError("rows have different widths"))
-        W = w
-        H += h
-    end
-    return (H, W)
-end

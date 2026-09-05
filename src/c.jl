@@ -281,6 +281,8 @@ function statement!(lines, sc::Scope, i, st)
             target = fieldaccess(sc, st.args[2], st.args[3])
             isarray(F) ? emit!(lines, sc, "$(copyhelper(sc, st.args[4], F))($(value(sc, st.args[4])), $target);") :
                          emit!(lines, sc, "$target = $(value(sc, st.args[4]));")
+        elseif f === Base.setindex! && any(k -> literal(sc, k) isa Colon || literal(sc, k) isa AbstractUnitRange, st.args[4:end])
+            setslice!(lines, sc, i, st.args[2], st.args[3], st.args[4:end])
         elseif f === Base.setindex!
             emit!(lines, sc, "$(index(sc, st.args[2], st.args[4:end])) = $(value(sc, st.args[3]));")
         elseif f in (Base.zeros, Base.ones, Base.fill) || (f in (Base.zero, Base.one) && isarray(T)) || isconstruction(f) || f === Base.materialize
@@ -291,10 +293,13 @@ function statement!(lines, sc::Scope, i, st)
             # nothing to do in C, the value just carries the tag from here on.
             sc.expr[i] = value(sc, st.args[2])
             sc.shapes[i] = transposed(valuetype(sc, st.args[2]))
+        elseif f in (Base.lastindex, Base.firstindex, Base.length, Base.size) && ci.ssavaluetypes[i] isa Core.Const && ci.ssavaluetypes[i].val isa Integer
+            # A size inference already knows (`end` in an index): the number, no temp.
+            sc.expr[i] = string(ci.ssavaluetypes[i].val)
         elseif f === Colon() || f === Base.OneTo || f === Base.eachindex || f === Base.axes
             # A literal range that only indexes (`v[2:3]`) is compile-time; any other
             # range outside a `for` has no C.
-            ci.ssavaluetypes[i] isa Core.Const && all(st -> iscall(st, Base.getindex), (st for st in ci.code if uses(st, i))) && return
+            ci.ssavaluetypes[i] isa Core.Const && all(st -> iscall(st, Base.getindex) || iscall(st, Base.setindex!), (st for st in ci.code if uses(st, i))) && return
             throw(ArgumentError("ranges are only supported as the range of a for loop (statement $i)"))
         elseif isarray(T)
             # A calculation whose only use is to be returned is the function's result.
@@ -453,7 +458,7 @@ function literal(sc::Scope, x)
 end
 
 # `hvcat`, `vcat`, `hcat`, `vect`, their `typed_` forms, and static-array constructors.
-isconstruction(f) = f in (Base.hvcat, Base.vcat, Base.hcat, Base.vect, Base.typed_hvcat, Base.typed_vcat, Base.typed_hcat) ||
+isconstruction(f) = f in (Base.hvcat, Base.vcat, Base.hcat, Base.vect, Base.typed_hvcat, Base.typed_vcat, Base.typed_hcat, Base.hvncat) ||
                     (f isa Type && f <: StaticArrays.StaticArray)
 
 # Block construction and array literals. All-scalar literals are assigned element by
@@ -479,38 +484,100 @@ function concatenate!(lines, sc::Scope, i, f, args, dest; declaration::Bool=fals
         return
     end
     f in (Base.typed_hvcat, Base.typed_vcat, Base.typed_hcat) && (args = args[2:end])
+    # Every form is a set of blocks with a position each. `[A B; C D]` gives rows of
+    # blocks (possibly ragged); `[A;; B]`, `[B;; C;;; D;; E]` give a rectangular grid
+    # of any dimension, listed down each column unless the flag says row by row.
     if f in (Base.hvcat, Base.typed_hvcat)
         rows = tupleof(args[1])
         rows === nothing && throw(ArgumentError("hvcat needs literal row lengths (statement $i)"))
         blocks = args[2:end]
-        kind = :hvcat
+        grid = allequal(rows) ? permutedims(reshape(1:length(blocks), rows[1], length(rows))) : nothing
+        name = "hvcat" * join(rows, "x")
+    elseif f === Base.hvncat && literal(sc, args[1]) isa Tuple
+        d = literal(sc, args[1])
+        rowfirst = literal(sc, args[2]) === true
+        blocks = args[3:end]
+        length(blocks) == prod(d) || throw(ArgumentError("[;;] needs $(prod(d)) blocks, got $(length(blocks)) (statement $i)"))
+        grid = rowfirst ? permutedims(reshape(1:length(blocks), reverse(d)...), length(d):-1:1) : reshape(1:length(blocks), d...)
+        rows = nothing
+        name = (length(d) <= 2 ? "hvcat" : "hvncat") * join(d, "x")
+    elseif f === Base.hvncat
+        d = literal(sc, args[1])
+        d isa Integer && d >= 1 || throw(ArgumentError("concatenation needs a literal dimension (statement $i)"))
+        blocks = args[2:end]
+        grid = reshape(1:length(blocks), ntuple(k -> k == d ? length(blocks) : 1, d)...)
+        rows = nothing
+        name = d == 1 ? "vcat" : d == 2 ? "hcat" : "cat$d"
     else
         blocks = args
         rows = f in (Base.vcat, Base.typed_vcat, Base.vect) ? fill(1, length(blocks)) : [length(blocks)]
-        kind = f in (Base.vcat, Base.typed_vcat, Base.vect) ? :vcat : :hcat
+        grid = f in (Base.vcat, Base.typed_vcat, Base.vect) ? reshape(1:length(blocks), :, 1) : reshape(1:length(blocks), 1, :)
+        name = f in (Base.vcat, Base.typed_vcat, Base.vect) ? "vcat" : "hcat"
     end
     types = [valuetype(sc, b) for b in blocks]
-    (H, W) = catshape(rows, types)
+    offsets, size = grid === nothing ? ragged(rows, types) : gridoffsets(grid, types)
     T = widen(ci.ssavaluetypes[i])
     E = eltype(T)
-    R = shape(T) !== nothing ? T : ndims(T) == 1 ? shaped(E, (H,)) : shaped(E, (H, W))
-    ndims(R) == 1 && W != 1 && throw(ArgumentError("a vector can't hold $W columns (statement $i)"))
+    R = shape(T) !== nothing ? T : ndims(T) == 1 ? shaped(E, (size[1],)) : shaped(E, size)
+    ndims(R) == 1 && length(size) > 1 && size[2] != 1 && throw(ArgumentError("a vector can't hold $(size[2]) columns (statement $i)"))
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     if all(T -> !isarray(T), types)
-        # A literal: element by element, row by row.
-        k = 1
-        for (r, nblocks) in enumerate(rows)
-            for c in 1:nblocks
-                sub = ndims(R) == 1 ? "[$(r-1)]" : "[$(r-1)][$(c-1)]"
-                emit!(lines, sc, "$dest$sub = $(value(sc, blocks[k]));")
-                k += 1
-            end
+        # A literal: element by element, in place.
+        for (k, o) in enumerate(offsets)
+            sub = ndims(R) == 1 ? "[$(o[1])]" : join("[$(o[d])]" for d in 1:ndims(R))
+            emit!(lines, sc, "$dest$sub = $(value(sc, blocks[k]));")
         end
     else
-        name = cathelper!(sc.helpers, kind, Tuple(rows), types, R)
+        name = cathelper!(sc.helpers, name, types, offsets, R; grid=grid === nothing ? rows : Base.size(grid))
         emit!(lines, sc, "$name($(join((value(sc, b) for b in blocks), ", ")), $dest);")
     end
     sc.shapes[i] = R
+end
+
+# Offsets of blocks laid out on a rectangular grid of any dimension, `grid[g...]` the
+# argument index at grid position `g`, and the shape of the whole. Along each
+# dimension, a block's offset is the sum of the extents of the blocks before it on its
+# line; every block on a line must have the same extent along that line's dimension.
+function gridoffsets(grid, types)
+    N = ndims(grid)
+    ext(g, d) = extent(types[grid[g]], d)
+    offsets = [ntuple(N) do d
+                   sum((ext(CartesianIndex(ntuple(e -> e == d ? t : g[e], N)), d) for t in 1:g[d]-1); init=0)
+               end for g in CartesianIndices(grid)]
+    for g in CartesianIndices(grid), d in 1:N
+        for e in 1:N
+            e == d && continue
+            h = CartesianIndex(ntuple(k -> k == e ? 1 : g[k], N))
+            ext(g, d) == ext(h, d) || throw(ArgumentError("blocks don't tile: a $(describe(types[grid[g]])) next to a $(describe(types[grid[h]]))"))
+        end
+    end
+    size = ntuple(d -> sum(ext(CartesianIndex(ntuple(e -> e == d ? t : 1, N)), d) for t in 1:Base.size(grid, d)), N)
+    order = sortperm(vec([grid[g] for g in CartesianIndices(grid)]))
+    return vec(offsets)[order], size
+end
+
+# Offsets of blocks given as rows of varying length (`[A B; C]`), and the shape.
+function ragged(rows, types)
+    offsets = Tuple{Int, Int}[]
+    r0 = 0
+    W = 0
+    k = 1
+    for nblocks in rows
+        c0 = 0
+        height = 0
+        for _ in 1:nblocks
+            h, w = extent(types[k], 1), extent(types[k], 2)
+            height == 0 || height == h || throw(ArgumentError("blocks in a row have different heights"))
+            height = h
+            push!(offsets, (r0, c0))
+            c0 += w
+            k += 1
+        end
+        W == 0 || W == c0 || throw(ArgumentError("rows have different widths"))
+        W = c0
+        r0 += height
+    end
+    return offsets, (r0, W)
 end
 
 # A broadcast tree, from its `broadcasted` root, into `dest`. Julia fuses nested
@@ -687,6 +754,15 @@ function slice!(lines, sc::Scope, i, args, dest; declaration::Bool=false)
     iscolon(k) = literal(sc, k) isa Colon
     isrange(k) = literal(sc, k) isa AbstractUnitRange
     R = widen(sc.ci.ssavaluetypes[i])
+    if ndims(T) == 2 && length(idx) == 2 && all(k -> iscolon(k) || isrange(k), idx)
+        # `A[1:2, 2:3]`, `A[:, 2:3]`: a block, its corner passed 0-based.
+        spans = [span(sc, T, d, k) for (d, k) in enumerate(idx)]
+        R = shape(R) === nothing ? shaped(eltype(T), Tuple(s.extent for s in spans)) : R
+        declaration && emit!(lines, sc, declare(R, dest) * ";")
+        emit!(lines, sc, "$(blockhelper!(sc.helpers, T, R))($(value(sc, A)), $(join((s.offset for s in spans), ", ")), $dest);")
+        sc.shapes[i] = R
+        return
+    end
     if ndims(T) == 2 && length(idx) == 2 && (iscolon(idx[1]) ⊻ iscolon(idx[2])) && !any(isrange, idx)
         kind = iscolon(idx[2]) ? :row : :col
         n = kind == :row ? extent(T, 2) : extent(T, 1)
@@ -703,6 +779,45 @@ function slice!(lines, sc::Scope, i, args, dest; declaration::Bool=false)
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     emit!(lines, sc, "$(slicehelper!(sc.helpers, kind, T, R))($(value(sc, A)), $pos, $dest);")
     sc.shapes[i] = R
+end
+
+# One index of a slice, as the 0-based C offset it starts at and the extent it covers
+# along dimension `d` of `T`: a scalar covers 1, a colon the whole dimension, a literal
+# range its length.
+function span(sc::Scope, T::Type, d, k)
+    x = literal(sc, k)
+    x isa Colon && return (offset="0", extent=extent(T, d), scalar=false)
+    x isa AbstractUnitRange && return (offset=string(first(x) - 1), extent=length(x), scalar=false)
+    return (offset=zerobased(sc, k), extent=1, scalar=true)
+end
+
+# `A[2, :] = v`, `A[:, 3:4] = B`, `v[2:3] = w`: a row, a column, a block, or a run of
+# a mutable array assigned from a whole array, through a helper that takes the
+# 0-based position. Julia requires the shapes to match; so does the helper's
+# signature.
+function setslice!(lines, sc::Scope, i, A, src, idx)
+    T, S = valuetype(sc, A), valuetype(sc, src)
+    length(idx) == ndims(T) || throw(ArgumentError("$(length(idx)) indices into a $(ndims(T))-dimensional array (statement $i)"))
+    spans = [span(sc, T, d, k) for (d, k) in enumerate(idx)]
+    spanned = [d for d in 1:ndims(T) if !spans[d].scalar]
+    kind = ndims(T) == 1 ? :run :
+           ndims(T) == 2 && spanned == [2] ? :row :
+           ndims(T) == 2 && spanned == [1] ? :col :
+           ndims(T) == 2 && spanned == [1, 2] ? :block :
+           throw(ArgumentError("only a row, a column, a block, or a run of a vector can be assigned (statement $i)"))
+    Tuple(spans[d].extent for d in spanned) == Tuple(extents(S)) || throw(ArgumentError("assigning a $(describe(S)) into a $(join((spans[d].extent for d in spanned), "×")) slice (statement $i)"))
+    kind in (:row, :col) && spans[spanned[1]].offset != "0" && throw(ArgumentError("assigning into part of a row or column (`A[i, 2:3] = v`) is not supported yet (statement $i)"))
+    positions = kind == :row ? [spans[1].offset] : kind == :col ? [spans[2].offset] : [s.offset for s in spans]
+    source = value(sc, src)
+    if mentions(sc, value(sc, A), src)
+        # `A[:, :] = A`: the source is the target; copy it first, since the helper's
+        # target is `restrict`.
+        t = temp!(sc, nothing, contribution(sc, src))
+        emit!(lines, sc, declare(S, t) * ";")
+        emit!(lines, sc, "$(copyhelper(sc, src))($source, $t);")
+        source = t
+    end
+    emit!(lines, sc, "$(sethelper!(sc.helpers, kind, T, S))($(value(sc, A)), $(join(positions, ", ")), $source);")
 end
 
 # A Julia index as a 0-based C expression.

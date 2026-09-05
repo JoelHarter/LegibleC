@@ -53,7 +53,7 @@ end
 # The comment for a block construction: "vertical concatenation of two 3-vectors",
 # "2×2 block matrix of four 2×2-matrices", "horizontal concatenation of a 3-vector and
 # a scalar". Runs of the same kind of block are counted.
-function blockprose(kind::Symbol, rows, types)
+function blockprose(grid, types)
     several(n) = n == 1 ? "a" : get(Dict(2 => "two", 3 => "three", 4 => "four", 5 => "five", 6 => "six",
                                          7 => "seven", 8 => "eight", 9 => "nine"), n, string(n))
     items = String[]
@@ -65,8 +65,10 @@ function blockprose(kind::Symbol, rows, types)
         i = j + 1
     end
     list = length(items) == 1 ? items[1] : join(items[1:end-1], ", ") * " and " * items[end]
-    kind == :vcat && return "vertical concatenation of $list"
-    kind == :hcat && return "horizontal concatenation of $list"
-    grid = allequal(rows) ? "$(length(rows))×$(rows[1])" : "$(length(rows))-row"
-    return "$grid block matrix of $list"
+    # `grid` is the grid's dimensions, or the row lengths of a ragged `[A B; C]`.
+    d = grid isa Tuple ? collect(grid) : allequal(grid) ? [length(grid), grid[1]] : nothing
+    d !== nothing && length(d) == 2 && d[2] == 1 && return "vertical concatenation of $list"
+    d !== nothing && length(d) == 2 && d[1] == 1 && return "horizontal concatenation of $list"
+    d === nothing && return "$(length(grid))-row block matrix of $list"
+    return "$(join(d, "×")) block $(length(d) <= 2 ? "matrix" : "array") of $list"
 end
