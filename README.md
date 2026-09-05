@@ -28,15 +28,12 @@ static double dot_3(const double a[3], const double b[3]) {
 /**
  * Kinetic energy of a body of mass `m` moving at `v`.
  *
- * Julia: energy(m::Float64, v::SVector{3, Float64}), body.jl:4
- * @param[in]  m
- * @param[in]  v
+ * Julia signature: energy(m::Float64, v::SVector{3, Float64}), body.jl:4
+ * @param[in]  m    scalar
+ * @param[in]  v    3-vector
  */
 double energy(double m, const double v[3]) {
-    double temp1_v = dot_3(v, v);
-    double temp2_m_v = m * temp1_v;
-    double result = temp2_m_v / 2;
-    return result;
+    return m * dot_3(v, v) / 2;
 }
 ```
 
@@ -53,7 +50,8 @@ that element type and size. One `.c` file comes out with prototypes, the
 helpers it needs, and the functions; anything a listed function calls is
 transpiled too. Options: `outfile`, `outpath`, `source` (copy each Julia
 line into the C as a comment, on by default), `precise` (print every digit
-of a floating value), `templimit`, `staticarray`.
+of a floating value), `width` (the longest C line, 100), `templimit`,
+`staticarray`.
 
 Sizes are static: arrays are `StaticArrays` types, or `Array`s given a size
 in the call. Every generated function is C11 and compiles clean under

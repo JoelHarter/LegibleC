@@ -36,9 +36,9 @@ function fancy(a::Float64, b::Float64)
  *
  * Adds, then scales.
  *
- * Julia: fancy(a::Float64, b::Float64), probe.jl:8
- * @param[in]  a
- * @param[in]  b
+ * Julia signature: fancy(a::Float64, b::Float64), probe.jl:8
+ * @param[in]  a    scalar
+ * @param[in]  b    scalar
  */
 double fancy(double a, double b) {
 ```
@@ -46,18 +46,23 @@ double fancy(double a, double b) {
 Doxygen reads the *signature* from the C declaration itself, so that's
 always the C one. The generated tail adds the facts the declaration doesn't
 carry: which Julia method this is (its name, argument types, and location —
-so a mangled `poly_I64_I64` says it's `poly` at `(Int64, Int64)`), and, for
-a function whose Julia result is an array, that the trailing parameter is an
-output holding the Julia return value:
+so a mangled `poly_I64_I64` says it's `poly` at `(Int64, Int64)`), and what
+each parameter is in the vocabulary the helper comments use — *scalar*,
+*3-vector*, *3×3-matrix*. An array the function writes into (an `MVector`
+assigned through `v[i] = …`) is tagged `[in,out]`; the trailing parameter
+that carries an array result is `[out]`, the return value:
 
 ```c
- * @param[in]  A
- * @param[in]  B
- * @param[out] out  The value the Julia function returns.
+ * @param[in]     A    3×3-matrix
+ * @param[in,out] v    3-vector
+ * @param[out]    out  3-vector, the return value
 ```
 
-No descriptions are invented for parameters: the transpiler knows their
-types, not their meaning. If the docstring describes them in prose, that
+The C signature already says `double[3]`; the tail says *3-vector*, which
+is what a reader coming from the math wants. That `out` is `restrict` is in
+the signature too, and means what it says in C: the caller passes a fresh
+array. Nothing else is invented for a parameter: the transpiler knows its
+type, not its meaning. If the docstring describes them in prose, that
 prose is right there above. Every function gets the block, docstring or not;
 without a docstring it's just the tail. Section-header comments above a
 function (`# --- division ---`) stay `//`, so Doxygen doesn't mistake them
@@ -75,7 +80,7 @@ the body.
 
 | the line is… | what's carried over |
 |---|---|
-| blank | nothing |
+| blank | nothing — see *Spacing* below |
 | only a comment (`# …`, or inside `#= =#`) | the comment |
 | code, with or without a trailing comment | the whole line, as `file:line: code` — see below |
 | only closing brackets or `end`, e.g. `end`, `)`, `])` | its trailing comment, if any; not the code |
@@ -101,6 +106,28 @@ still appears, on its own.
 copied over, and most of the code is too, all as comments; the lines whose
 code isn't worth copying (brackets, `end`, a long-form signature) are treated
 like blank lines *except* that a comment on the end of them still counts.
+
+## Spacing
+
+Julia's blank lines are not copied. Instead every Julia statement gets a
+blank line before its C, comments included, so that a statement that became
+several C lines reads as a paragraph of its own; there is none right after
+an opening brace or against a closing one. Copying the author's spacing was
+considered and set aside: a Julia function with no blank lines still comes
+out dense, because the density comes from each line expanding, not from
+spacing lost — so the break is put where the expansion is. The rule holds
+with `source=false` too; the blank is then the only thing marking where one
+statement's C ends and the next begins.
+
+```c
+    // demo.jl:9: r = norm(x)
+    double r = norm_3(x_);
+
+    // demo.jl:10: a = -x / r^3
+    double temp1_r = r * r * r;
+    double a[3];
+    div_3_s(x_, -temp1_r, a);
+```
 
 ## On the helpers
 
@@ -155,17 +182,18 @@ transcribes; the user's functions, which are the C interface, get the full
 
 When one Julia line becomes several C operations, a reader has to follow
 the temps to see what happened. So each operation of such a line gets a
-*step* comment: at the end of the statement when the step is one statement,
-on the line above when it is a loop or several — and the trailing ones of a
-line are aligned with each other:
+*step* comment: two spaces after the statement when the step is one
+statement, on the line above when it is a loop or several. The trailing ones
+are not aligned with each other: with declarations sitting between the
+steps, alignment would only look like it had failed.
 
 ```c
 // f.jl:12: f(A, b, c, D) = (A .+ b) \ c + D
 double temp1[3][3];
-addP_3x3_3(A, b, temp1);         // temp1 = A .+ b
+addP_3x3_3(A, b, temp1);  // temp1 = A .+ b
 double temp2_c[3];
 solve_3x3_3(temp1, c, temp2_c);  // temp2_c = temp1 \ c
-add_3(temp2_c, D, out);          // out = temp2_c + D
+add_3(temp2_c, D, out);  // out = temp2_c + D
 ```
 
 The text is the step as a textbook would write it, in the spelling the
@@ -197,7 +225,8 @@ records its step.
 - Leading whitespace is dropped; the C's own indentation applies.
 - Generated helpers have no Julia source; they get the `///` line above and nothing else.
 - A function whose source can't be found (defined at the REPL, or via `-e`)
-  gets no annotations at all, silently.
+  gets no annotations at all, silently; the blank lines between statements
+  are still placed, since the line numbers come from the IR, not the file.
 
 ## Implementation
 

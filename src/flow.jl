@@ -118,6 +118,12 @@ function block!(lines, sc::Scope, lo::Int, hi::Int)
     code = sc.ci.code
     i = lo
     while i <= hi
+        # A new Julia line: a blank line first, then — at the top level — this is where
+        # a hoisted declaration goes, ahead of the line's source comment.
+        if sc.stmtline[i] > sc.cursor
+            separate!(lines, sc)
+            sc.depth == 0 && (sc.blockstart = length(lines) + 1)
+        end
         if haskey(sc.fors, i)
             i = forloop!(lines, sc, sc.fors[i])
         elseif haskey(sc.whiles, i)
@@ -321,39 +327,119 @@ function condition(sc::Scope, conds, op)
     for (x, negated) in conds
         text, p = expression(sc, x)
         negated && (text = "!" * (p < 14 ? "($text)" : text); p = 14)
-        push!(parts, p < prec ? "($text)" : text)
+        push!(parts, p < prec || (prec == LOR && p == LAND) ? "($text)" : text)
     end
     return join(parts, " $op ")
 end
 
-# Mark, ahead of emission, the statements that will be rendered inside conditions and
-# loop bounds rather than as temps: single-use, side-effect-free scalar calls feeding
-# a GotoIfNot or a range bound, transitively.
-function markinlined!(sc::Scope, fors)
-    code = sc.ci.code
-    uses = Dict{Int, Int}()
+# Mark, ahead of emission, the scalar calls that are rendered inside the expression
+# that consumes them rather than as temps: `sqrt(sq(a) + sq(b))`, not three temps. The
+# rule mirrors the author — a value they never named, used once, is written where it
+# is used, `return` included — with the exceptions that keep the C's meaning Julia's:
+#   - the consumer writes its operand twice (`x^2` is `x * x`; `mod`, integer `max`
+#     and `min`, `==` on a struct): a call evaluated twice costs twice;
+#   - something with an effect stands between the value and its consumer — a print, a
+#     store, a `setindex!`, a user function that does any of those: C leaves the order
+#     of operands and arguments unspecified, so pure work may move past pure work only;
+#   - the value itself carries an effect (its call, or a call inlined into it): then
+#     nothing that computes may stand between, not even a read, since a read of what
+#     the effect writes would see a different value.
+# Conditions and loop bounds follow the same rule; they were its first consumers.
+function markinlined!(sc::Scope)
+    ci = sc.ci
+    code = ci.code
+    count = Dict{Int, Int}()
     for st in code
-        countuses!(uses, st)
+        countuses!(count, st)
     end
-    roots = Any[]
-    for st in code
-        st isa Core.GotoIfNot && push!(roots, st.cond)
+    effectful = Set{Int}()
+    for (i, st) in enumerate(code)
+        st isa Expr && st.head === :call && get(count, i, 0) == 1 || continue
+        widen(ci.ssavaluetypes[i]) <: Number && !compiletime(ci.ssavaluetypes[i]) || continue
+        u = findfirst(s -> uses(s, i), code)
+        use = code[u]
+        use isa Expr && use.head === :(=) && (use = use.args[2])
+        use isa Expr && use.head === :call && duplicates(sc, u, use, i) && continue
+        effect = !pure(sc, st) || any(a -> a isa Core.SSAValue && a.id in effectful, st.args[2:end])
+        all(k -> effect ? silent(sc, k) : inert(sc, k), i+1:u-1) || continue
+        push!(sc.inlined, i)
+        effect && push!(effectful, i)
     end
-    for F in values(fors)
-        for b in (F.lo, F.hi, F.step)
-            b === nothing && continue
-            b isa Expr ? append!(roots, b.args) : push!(roots, b)
-        end
+end
+
+# Does the call at `u`, consuming SSA value `i`, write that operand more than once?
+function duplicates(sc::Scope, u, use::Expr, i)
+    f = callee_or_nothing(sc.ci, use.args[1])
+    T = widen(sc.ci.ssavaluetypes[u])
+    if f === Base.literal_pow
+        p = sc.ci.ssavaluetypes[use.args[4].id]
+        return use.args[3] == Core.SSAValue(i) && p isa Core.Const && p.val isa Val && typeof(p.val).parameters[1] in (2, 3)
     end
-    while !isempty(roots)
-        x = pop!(roots)
-        x isa Core.SSAValue || continue
-        st = code[x.id]
-        get(uses, x.id, 0) == 1 && st isa Expr && st.head === :call && !isarray(widen(sc.ci.ssavaluetypes[x.id])) &&
-            !any(a -> a isa Core.SSAValue && isarray(valuetype(sc, a)), st.args[2:end]) || continue
-        push!(sc.inlined, x.id)
-        append!(roots, st.args[2:end])
+    f === Base.mod && return true
+    f in (Base.max, Base.min) && T <: Integer && return true
+    f === Base.:(==) && (isstruct(valuetype(sc, use.args[2])) || istuple(valuetype(sc, use.args[2]))) && return true
+    return false
+end
+
+# Can a pure computation move past statement `k` without changing what it computes?
+# Yes for anything that is no statement in C, a read, or a pure call.
+inert(sc::Scope, k) = silent(sc, k) || (st = sc.ci.code[k]; st isa Expr && st.head === :call && pure(sc, st))
+
+# Can a computation with an effect move past statement `k`? Only if `k` computes
+# nothing at all: a variable read (a Julia local, which no callee can change), a
+# constant, or a statement with no C.
+function silent(sc::Scope, k)
+    st = sc.ci.code[k]
+    k in sc.skipped || st === nothing || st isa GlobalRef || st isa Core.NewvarNode || st isa Core.SlotNumber ||
+        st isa Core.SSAValue || st isa Number || st isa Expr && st.head in (:meta, :code_coverage_effect)
+end
+
+# Calls with an effect the C must keep in order: writes and prints. Anything foreign
+# (a `ccall`) counts as both.
+const writing = (Base.setindex!, Base.setproperty!, Core.setfield!, Base.push!, Base.pop!, Base.fill!, Base.copyto!, Base.materialize!)
+const printing = (Base.print, Base.println, Printf.format)
+const known = (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf)
+
+# Is this call free of effects? Julia's own functions are, except the ones above; a
+# user function is examined (`effects!`).
+function pure(sc::Scope, st::Expr)
+    f = callee_or_nothing(sc.ci, st.args[1])
+    f === nothing && return false
+    (f in writing || f in printing) && return false
+    f isa Type && return true
+    nameof(Base.moduleroot(parentmodule(f))) in known && return true
+    r = userinstance!(sc, f, st.args[2:end])
+    return r === nothing || isempty(effects!(sc.prog, r[1]))
+end
+
+# What a user function does besides compute: `:write` (a store into an array or
+# struct), `:print`, `:foreign` (a `ccall`), `:unknown` (a call that couldn't be
+# resolved) — its own, and those of every user function it calls. Read off its typed
+# IR, once per instance. A recursive function contributes nothing to itself.
+function effects!(prog::Program, mi::Core.MethodInstance)
+    haskey(prog.effects, mi) && return prog.effects[mi]
+    prog.effects[mi] = Set{Symbol}()
+    ci = only(Base.code_typed_by_type(mi.specTypes; optimize=false))[1]
+    rawtype(t) = t isa Core.Const ? typeof(t.val) : t isa Core.PartialStruct ? t.typ : t
+    argtype(a) = a isa GlobalRef ? typeof(getfield(a.mod, a.name)) : rawtype(valuetype_ir(ci, a))
+    found = Set{Symbol}()
+    for st in ci.code
+        ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+        ex isa Expr || continue
+        ex.head === :foreigncall && (push!(found, :foreign); continue)
+        ex.head === :call || continue
+        f = callee_or_nothing(ci, ex.args[1])
+        f === nothing && (push!(found, :unknown); continue)
+        f in writing && push!(found, :write)
+        f in printing && push!(found, :print)
+        f isa Type && continue
+        nameof(Base.moduleroot(parentmodule(f))) in known && continue
+        types = [argtype(a) for a in ex.args[2:end]]
+        m = all(T -> T isa Type && isconcretetype(T), types) ? Base.method_instance(f, Tuple(types)) : nothing
+        m === nothing ? push!(found, :unknown) : union!(found, effects!(prog, m))
     end
+    prog.effects[mi] = found
+    return found
 end
 
 countuses!(uses, x) = x isa Core.SSAValue ? (uses[x.id] = get(uses, x.id, 0) + 1) :
@@ -373,8 +459,10 @@ end
 
 # An operand of an operator with precedence `prec`, parenthesised if it binds less
 # tightly. `right` operands of equal precedence are parenthesised too (left
-# associativity).
+# associativity). Under a shift or a bitwise operator any other operator is
+# parenthesised, and `&&` under `||`: C's precedence there is what nobody remembers,
+# a person writes `(a & b) | (c << 2)`, and clang warns without the parentheses.
 function operand(sc::Scope, x, prec; right::Bool=false)
     text, p = expression(sc, x)
-    return p < prec || (right && p == prec) ? "($text)" : text
+    return p < prec || (right && p == prec) || (prec in (SHIFT, BAND, BXOR, BOR) && p < UNARY && p != prec) || (prec == LOR && p == LAND) ? "($text)" : text
 end

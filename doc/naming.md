@@ -41,6 +41,10 @@ it's unique: a variable `long` becomes `long_`; with both `omega` and `ω` in
 scope, whichever comes second becomes `omega_`. Function names are checked the
 same way, after the mangling below. Nothing is ever refused for its name.
 
+An array parameter that Julia reassigns keeps its name for the parameter;
+the working copy is the same name under this rule, `x_` (`array.md`,
+*Assignment and aliasing*). A scalar parameter is simply reassigned.
+
 A name that starts with `_` has its leading underscores moved to the end
 (`_x` → `x_`, `__Foo` → `Foo__`), because C reserves every such name at file
 scope and `_X…`/`__…` everywhere. The reserved list itself is described
@@ -156,22 +160,27 @@ this way passes nothing along to later temps, same as any bare temp.
 ## Results
 
 If the function returns a named variable — `return x`, or `x` as the last
-line — the C returns that variable. If the last thing is an unnamed
-calculation, that calculation is the function's result and is named `result`
-rather than as a temp:
+line — the C returns that variable. An unnamed scalar calculation is returned
+as written, `return a + c * c;`, like any other scalar work the author didn't
+name (`copy.md`). Only a value that can't be written inside the `return` —
+the result of a `ccall`, or one returned from more than one place — is stored
+first, in a variable named `result` rather than as a temp:
 
 ```c
 double fun45(double a, double c) {
-    double temp1_c = c * c;
-    double result = a + temp1_c;
-    return result;
+    return a + c * c;
+}
+
+double resulttaken(double a, double result) {
+    double result_ = fabs(a * result);
+    return result_;
 }
 ```
 
 `result` is an ordinary name in the function's scope and collides like any
-other: if the user already has a `result`, the result is `result_`. Anything
-more specific than `result` should be written as a named variable in the
-Julia, and will come through as such.
+other: if the user already has a `result`, as above, the result is `result_`.
+Anything more specific than `result` should be written as a named variable in
+the Julia, and will come through as such.
 
 When the result is an *array* it can't be returned; it comes out through a
 trailing parameter, and an output parameter in C is called `out` — `out_` if

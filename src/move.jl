@@ -50,7 +50,10 @@ sizeof_(T::Type) = ctype(eltype(T)) * join("[$n]" for n in shape(T))
 function copy!(lines, sc::Scope, src, S::Type, dst, D::Type)
     if axis(S) == axis(D)
         push!(sc.headers, "string.h")
-        emit!(lines, sc, "memcpy($dst, $src, sizeof($(sizeof_(D))));")
+        # `sizeof src` when the source is a whole local array; a parameter has decayed
+        # to a pointer, so its type is spelled out.
+        size = occursin(r"^\w+$", src) && !(src in sc.names[2:sc.ci.nargs]) ? "sizeof $src" : "sizeof($(sizeof_(D)))"
+        emit!(lines, sc, "memcpy($dst, $src, $size);")
     else
         move!(lines, sc, eltype(D), dst, whole(D), src, whole(S), [extent(D, a) for a in 1:maximum(axis(D))])
     end

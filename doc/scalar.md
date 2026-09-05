@@ -41,9 +41,10 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `a \ b` | `b / a` | |
 | `÷`, `%` | `/`, `%` | both truncate toward zero in both languages |
 | `mod(a, b)` | `((a % b) + b) % b` | integers only |
-| `x^2`, `x^3` | `x * x`, `x * x * x` | |
+| `x^2`, `x^3` | `x * x`, `x * x * x` | `x^0` is `1.0`, `x^1` is `x` |
 | `x^-1` | `1.0 / x` | |
-| `x^n`, `x^y` (floats) | `pow(x, n)` | integer `^` beyond 3 is an error |
+| `x^n`, any other literal `n` | `powi(x, n)`, one helper by squaring (`powiF32`, `powiI64` off the double) | the exponent is a literal at every call, so at `-O2` the compiler unrolls the helper into the bare multiply chain — five multiplies for `x^13`, no loop, no branch. Julia's `Float64^Int` is a compensated squaring, a bit more accurate; this is the plain one, three times faster |
+| `x^y` (floats) | `pow(x, y)` | a negative power of an integer is a `DomainError` in Julia, and an error here |
 | `< <= > >= == !=` | the same | |
 | `!`, `&`, `\|`, `xor`, `<<`, `>>`, `~` | `!`, `&`, `\|`, `^`, `<<`, `>>`, `~` | |
 | `&&`, `\|\|`, `c ? x : y` | the same, or an `if` — see `flow.md` | |

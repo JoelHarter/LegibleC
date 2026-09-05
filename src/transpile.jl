@@ -37,6 +37,9 @@ Options:
   regardless; this controls the code. See `doc/comment.md`.
 - `precise`: print every digit of a floating value (`%.17g`, `%.9g` for
   `Float32`) instead of `%g`. See `doc/io.md`.
+- `width`: the longest line the C may have, in columns. A scalar expression
+  that would run past it is wrapped at its loosest operators, each
+  continuation line starting with the operator. See `doc/copy.md`.
 
 Each function keeps its Julia name in C. If the same function is transpiled at more
 than one signature in a single call, those get the argument types appended
@@ -49,7 +52,8 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    # to off, and static becomes something you opt into.
                    staticarray::Bool=true,
                    source::Bool=true,
-                   precise::Bool=false)
+                   precise::Bool=false,
+                   width::Integer=100)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
@@ -77,7 +81,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
     unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
     names = cnames(instances)
-    prog = Program(; precise)
+    prog = Program(; precise, width)
     union!(prog.names, names)
     for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
     generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source, blocked)

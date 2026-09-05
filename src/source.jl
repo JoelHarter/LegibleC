@@ -88,21 +88,23 @@ function leading(src::Source)
 end
 
 """
-    doxygen(doc, julia, params, result) -> Vector{String}
+    doxygen(doc, julia, params) -> Vector{String}
 
 A Doxygen block for a C function: the Julia docstring's text as written, then what the
 C declaration can't say — which Julia method it came from, and which parameter carries
 the Julia return value.
 """
-function doxygen(doc, julia::AbstractString, params, result)
+function doxygen(doc, julia::AbstractString, params)
     lines = ["/**"]
     append!(lines, [isempty(l) ? " *" : " * " * l for l in doc])
     isempty(doc) || push!(lines, " *")
-    push!(lines, " * Julia: " * julia)
-    for p in params
-        push!(lines, " * @param[in]  " * p)
+    push!(lines, " * Julia signature: " * julia)
+    # `params` are (tag, name, description): the tags and the names each line up.
+    tagwidth = maximum(length(p[1]) for p in params; init=0)
+    width = maximum(length(p[2]) for p in params; init=0)
+    for (tag, name, what) in params
+        push!(lines, rstrip(" * @param" * rpad("[" * tag * "]", tagwidth + 2) * " " * rpad(name, width) * "  " * what))
     end
-    result === nothing || push!(lines, " * @param[out] " * result * "  The value the Julia function returns. Must not overlap an input.")
     push!(lines, " */")
     return lines
 end

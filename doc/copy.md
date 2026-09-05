@@ -50,21 +50,41 @@ All of this is straight-line only — see below.
    unconditionally.
 4. **Temp stored into a variable.** After `x = temp3;` where `x` is stable,
    later uses of `temp3` say `x`. This is what makes a function whose last
-   line is `d = expr` return `d` rather than the temp. The store itself still
-   happens through the temp (`temp3 = expr; d = temp3;`) — see below.
+   line is `d = expr` return `d` rather than the temp.
+5. **Unnamed scalar values are written where they are used.** `d = (a + b) *
+   c / 2` is `double d = (a + b) * c / 2;`, and `sqrt(sq(a) + sq(b))` is
+   exactly that: a scalar SSA value with one use is rendered inside its
+   consumer, never as a temp. The rule mirrors the author — what they named
+   is named, what they didn't isn't — which is also the answer to "when is a
+   named temp more readable": the author already decided. Precedence is
+   handled by `render`, which returns every expression with its C precedence
+   level so `operand` can parenthesise (with extra parentheses under a shift
+   or bitwise operator, and around `&&` under `||`, where a person adds them
+   too). A `return` is a consumer like any other: `return sqrt(sq(a) +
+   sq(b));`. Two exceptions keep a temp:
+   - **a consumer that writes its operand twice** — `x^2` is `x * x`, `mod`,
+     integer `max` and `min`, `==` on a struct — since a call evaluated twice
+     costs twice;
+   - **an effect in the way**: C leaves the order of a call's arguments and
+     an operator's operands unspecified, so a value may move only past work
+     that can't notice. A pure value moves past pure work; a value carrying
+     an effect — a print, a store, a `setindex!`, a `ccall`, a user function
+     that does any of those, read off the callee's own IR transitively
+     (`effects!` in `src/flow.jl`) — moves past nothing that computes, not
+     even a read. So in `mutate!(v, 1.0) + mutate!(v, 2.0) + v[1]` both calls
+     are pinned as temps in Julia's order, and `shout(a) + shout(b)` comes
+     out `temp1_a + shout(b)`.
+   `markinlined!` in `src/flow.jl` decides; conditions and loop bounds were
+   its first consumers and follow the same rule.
 
-## What's not done — the can of worms
+   A line that would run past the `width` option (100 columns) is wrapped at
+   the operators binding least tightly, each continuation line starting with
+   the operator, aligned under the first operand — `emitexpr!` in
+   `src/c.jl`. A one-line Julia expression is otherwise a one-line C
+   expression, however long.
 
-- **Storing directly.** `double temp3_a_b_c = temp2 / 2; d = temp3_a_b_c;`
-  should be `d = temp2 / 2;` when the temp has no other use. That's the same
-  safety rule (the temp is an SSA value, so it's always safe) but requires
-  deciding *at the temp's creation* that it will be consumed by a store, and
-  emitting nothing there. Closely related to the next item.
-- **Collapsing single-use temps into expressions.** `temp1 = a + b;
-  temp2 = temp1 * c;` should be `temp2 = (a + b) * c` when `temp1` is used
-  once. Always safe for SSA values; the work is precedence and
-  parenthesization, and deciding when an expression has grown long enough
-  that a named temp is *more* readable, not less.
+## What's not done
+
 - **Control flow** turned out not to be a problem for the rule. The `stable`
   check walks statements textually, and that is sound for Julia's lowering
   because it is *structured*: every statement executed between a value's

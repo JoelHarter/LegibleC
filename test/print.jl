@@ -59,7 +59,7 @@ x = 3
     out, err = run(src, calls)
     @test out == expected || (println("C printed:\n", out, "expected:\n", expected); false)
     @test err == "bad: 2\n"
-    @test occursin("printf(\"x = %g, n = %lld, b = %d, u = %llu 100%%\\n\", x, (long long)n, b, (unsigned long long)temp1);", src)
+    @test occursin("printf(\"x = %g, n = %lld, b = %d, u = %llu 100%%\\n\", x, (long long)n, b, (unsigned long long)(uint8_t)200);", src)
     @test occursin("printarray(stdout, &A[0][0], 2, (const int[]){2, 2});", src) && occursin("printarray(stdout, v, 1, (const int[]){3});", src)
     @test occursin("static void printarray_I64(FILE *f, const int64_t *a, int ndims, const int dims[])", src) && occursin("printarray_B(", src)
     @test occursin("fprintf(stderr, \"bad: %g\\n\", x);", src)

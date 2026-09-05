@@ -24,7 +24,8 @@ single(A::SMatrix{3,3,Float64,9}, B::SMatrix{3,3,Float64,9}) = A * B
 src = csource("comment", scaled, project, nodoc, steps, built, single)
 @testset "comment" begin
     @test occursin("/**", src) && occursin("Scales a 2x2 matrix, then adds it to itself.", src)
-    @test occursin("@param[out] out  The value the Julia function returns. Must not overlap an input.", src)
+    @test occursin("Julia signature: scaled(", src) && occursin("@param[in]  A    2×2-matrix", src) && occursin("@param[in]  s    scalar", src)
+    @test occursin("@param[out] out  2×2-matrix, the return value", src)
     @test occursin("// trailing on the signature", src)
     @test occursin("// Scale first.", src)
     @test occursin("// comment.jl:", src) && occursin("B = A * s      # trailing on a line of code", src)
@@ -42,5 +43,10 @@ src = csource("comment", scaled, project, nodoc, steps, built, single)
     @test occursin("mul_3x3_3x3(A, B, out);\n", src) && !occursin("mul_3x3_3x3(A, B, out);  //", src)
     bare = csource("commentless", scaled; source=false)
     @test occursin("// Scale first.", bare) && !occursin("B = A * s      #", bare)
+    # Spacing: a blank line before each Julia statement's C, source comments or not;
+    # none after the opening brace or before the closing one.
+    @test occursin("mul_2x2_s(A, s, B);\n\n    // comment.jl:", src) && occursin("mul_2x2_s(A, s, B);\n\n    double C[2][2];", bare)
+    @test occursin(") {\n    // trailing on the signature\n    // Scale first.", src) && occursin("    return x * x;\n}", src)
+    @test !occursin("\n\n\n", src) && !occursin("\n\n}", src)
 end
 end

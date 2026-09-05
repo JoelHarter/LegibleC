@@ -78,7 +78,8 @@ function print!(lines, sc::Scope, args, newline::Bool)
             printarray!(lines, sc, io, a)
         else
             fmt *= conversion(T; precise=sc.prog.precise)
-            push!(fargs, argument(T, value(sc, a)))
+            t, p = expression(sc, a)
+            push!(fargs, argument(T, p < UNARY ? "($t)" : t))
         end
     end
     newline && (fmt *= "\\n")

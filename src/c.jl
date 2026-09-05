@@ -23,9 +23,13 @@ mutable struct Program
     foreign::Dict{String, String}                                  # a `ccall`ed symbol -> its prototype
     structs::Vector{Pair{Type, String}}                            # struct typedefs, dependencies first
     precise::Bool                                                  # print every digit of a floating value, not `%g`
+    width::Int                                                     # the longest line; scalar expressions wrap past it
+    effects::Dict{Core.MethodInstance, Set{Symbol}}                # what a user function does besides compute (see `effects!`)
 end
-Program(; precise::Bool=false) = Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
-                    Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise)
+Program(; precise::Bool=false, width::Integer=100) =
+    Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
+            Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
+            Dict{Core.MethodInstance, Set{Symbol}}())
 
 # Per-function state.
 mutable struct Scope
@@ -66,6 +70,18 @@ mutable struct Scope
     steps::Vector{Tuple{Int, Int, String, Int}}
     current::Int                        # the statement being emitted
     math::Dict{Int, String}             # SSA id -> the math a rendered helper call computes
+    # An array parameter Julia reassigns: its working copy's slot -> the parameter's
+    # slot. The copy is made at the top of the function, under a comment saying why.
+    rebound::Dict{Int, Int}
+    declared::Set{Int}                  # slots already declared, at their first assignment
+    blockstart::Int                     # where the current top-level statement or construct began
+    # Lines to insert once the walk is done, (at, priority, text or () -> text): hoisted
+    # declarations and the comments that go above a multi-line step. Deferred so that
+    # nothing shifts under the line numbers recorded along the way.
+    inserts::Vector{Tuple{Int, Int, Any}}
+    # Array negations folded into the scalar of the multiply or divide that consumes
+    # them: `-x / s` is `div_3_s(x, -s, …)`. The SSA value reads as the array itself.
+    negated::Set{Int}
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, prog::Program, copycode::Bool, blocked)
@@ -82,11 +98,12 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
     end
     slotshapes = Dict{Int, Type}(i + 1 => T for (i, T) in enumerate(sig) if isarray(T))
     src = Source(mi.def)
-    stmtline = src === nothing ? zeros(Int, length(ci.code)) : statementlines(mi, length(ci.code))
+    stmtline = statementlines(mi, length(ci.code))   # from the IR, so it works without the file
     return Scope(ci, names, result, result, false, staticarray, limit, blocked, 0, Dict{Int, String}(), prog.helpers, prog.headers,
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
-                 Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}())
+                 Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), 1,
+                 Tuple{Int, Int, Any}[], Set{Int}())
 end
 
 include("flow.jl")
@@ -120,12 +137,38 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
 
     body = String[]
     block!(body, sc, 1, length(ci.code))
-    sc.src === nothing || annotate!(body, sc, sc.src.last)   # whatever follows the last statement
+    if sc.src !== nothing && sc.src.last > sc.cursor   # whatever follows the last statement
+        separate!(body, sc)
+        annotate!(body, sc, sc.src.last)
+    end
     steps!(body, sc)
-
-    # Declarations come after the walk: a regular array's size is only known once
-    # something has been stored in it.
-    lines = [declare(slottype(sc, i), sc.names[i]) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden)]
+    # Hoisted declarations and above-the-line comments go in last, from the bottom up so
+    # that nothing shifts; at one place a declaration comes first, then its copy, then a
+    # step comment.
+    for (at, _, text) in sort(sc.inserts; by=t -> (-t[1], -t[2]))
+        insert!(body, at, text isa String ? text : text())
+    end
+    # A statement's blank line never sits against the closing brace of its block.
+    body = [l for (k, l) in enumerate(body) if !(isempty(l) && (k == length(body) || startswith(lstrip(body[k+1]), "}")))]
+    # Anything not declared along the way (a variable assigned only where the walk
+    # doesn't look, such as a loop header) is declared at the top.
+    lines = [declare(slottype(sc, i), sc.names[i]) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden) && !(i in sc.declared)]
+    # Array parameters the function reassigns are worked on as copies, made here at
+    # the top in one block with the reason above it, so the copy doesn't look gratuitous.
+    if !isempty(sc.rebound)
+        copies = sort(collect(sc.rebound); by=last)
+        names = [sc.names[p] for (_, p) in copies]
+        listed = length(names) == 1 ? names[1] :
+                 length(names) == 2 ? names[1] * " and " * names[2] :
+                 join(names[1:end-1], ", ") * ", and " * names[end]
+        push!(lines, "// copy $listed to prevent modification within this function")
+        push!(sc.headers, "string.h")
+        for (s, p) in copies
+            push!(lines, declare(slottype(sc, s), sc.names[s]) * ";")
+            push!(lines, "memcpy($(sc.names[s]), $(sc.names[p]), sizeof $(sc.names[s]));")
+        end
+        push!(lines, "")
+    end
     append!(lines, body)
 
     params = [declare(slottype(sc, i), sc.names[i]; constant=isarray(slottype(sc, i)) && !(i in sc.mutated)) for i in 2:ci.nargs]
@@ -140,8 +183,11 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     comments, doc = sc.src === nothing ? (String[], String[]) : leading(sc.src)
     origin = "$(mi.def.name)($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
              (sc.src === nothing ? "" : ", $(sc.src.name):$(sc.src.first)")
-    block = doxygen(doc, origin, sc.names[2:ci.nargs], sc.resultparam ? sc.resultname : nothing)
-    return signature * ";", join([comments; block; signature * " {"; "    " .* lines; "}"], "\n") * "\n", sc.names
+    what(T) = isarray(T) ? describe(T) : T <: Number ? "scalar" : ""
+    params = [(i in sc.mutated ? "in,out" : "in", sc.names[i], what(slottype(sc, i))) for i in 2:ci.nargs]
+    sc.resultparam && push!(params, ("out", sc.resultname, describe(sc.rettype) * ", the return value"))
+    block = doxygen(doc, origin, params)
+    return signature * ";", join([comments; block; signature * " {"; [isempty(l) ? l : "    " * l for l in lines]; "}"], "\n") * "\n", sc.names
 end
 
 # Everything that has to be known before emission starts: the loops, the statements
@@ -159,7 +205,6 @@ function analyze!(sc::Scope)
         for i in F.machinery;        push!(sc.skipped, i); end
     end
     sc.whiles = findwhiles(ci, sc.fors)
-    markinlined!(sc, sc.fors)
     # Statements consumed by the one that uses them: the pieces of a broadcast, and
     # the tuples that group constructor arguments.
     for (i, st) in enumerate(code)
@@ -187,12 +232,42 @@ function analyze!(sc::Scope)
         st isa Expr && st.head === :(=) && push!(sc.hidden, st.args[1].id)
     end
     for st in code
-        st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.setindex! &&
-            st.args[2] isa Core.SlotNumber && push!(sc.mutated, st.args[2].id)
+        ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+        ex isa Expr && ex.head === :call || continue
+        f = callee_or_nothing(ci, ex.args[1])
+        f === Base.setindex! && ex.args[2] isa Core.SlotNumber && push!(sc.mutated, ex.args[2].id)
+        # A mutable array handed to a user function that writes somewhere: it may be
+        # written there, so it is not `const` here either.
+        f isa Function && !(nameof(Base.moduleroot(parentmodule(f))) in known) || continue
+        slots = [a.id for a in ex.args[2:end] if a isa Core.SlotNumber && ci.slottypes[a.id] isa Type &&
+                 ismutabletype(ci.slottypes[a.id]) && isarray(widen(ci.slottypes[a.id]))]
+        isempty(slots) && continue
+        r = userinstance!(sc, f, ex.args[2:end])
+        r === nothing && continue
+        isdisjoint(effects!(sc.prog, r[1]), (:write, :foreign, :unknown)) || push!(sc.mutated, slots...)
     end
     assigned = Dict{Int, Vector{Int}}()
     for (i, st) in enumerate(code)
         st isa Expr && st.head === :(=) && push!(get!(assigned, st.args[1].id, Int[]), i)
+    end
+    # A parameter that is reassigned: Julia copies it into a fresh slot of the same name
+    # at entry and reads that slot from then on. A scalar parameter is by value in C, so
+    # the slot simply *is* the parameter, reassigned in place. An array parameter is the
+    # caller's memory, so the slot is a working copy, `x_`, made at the top of the
+    # function (`cfunction`) — as Julia does, with a comment saying why.
+    for (s, at) in assigned
+        length(at) >= 2 && s > ci.nargs || continue
+        rhs = code[at[1]].args[2]
+        rhs isa Core.SSAValue && code[rhs.id] isa Core.SlotNumber && (rhs = code[rhs.id])
+        rhs isa Core.SlotNumber && 2 <= rhs.id <= ci.nargs && ci.slotnames[s] == ci.slotnames[rhs.id] || continue
+        push!(sc.skipped, at[1])
+        if isarray(slottype(sc, s))
+            sc.rebound[s] = rhs.id
+            push!(sc.declared, s)
+        else
+            sc.names[s] = sc.names[rhs.id]
+            push!(sc.declared, s)   # it is the parameter; nothing to declare
+        end
     end
     for (s, at) in assigned
         length(at) == 1 || continue
@@ -204,6 +279,7 @@ function analyze!(sc::Scope)
         push!(sc.hidden, s)
         push!(sc.skipped, at[1])
     end
+    markinlined!(sc)
 end
 
 callee_or_nothing(ci, x) = try callee(ci, x) catch; nothing end
@@ -211,16 +287,87 @@ callee_or_nothing(ci, x) = try callee(ci, x) catch; nothing end
 # Append a line at the current nesting depth.
 emit!(lines, sc::Scope, s::AbstractString) = push!(lines, "    "^sc.depth * s)
 
+# Emit `prefix * expr * ";"`, wrapped when it would run past the program's width: the
+# expression is split at the operators binding least tightly (outside parentheses and
+# strings), and each continuation line starts with an operator, aligned under the
+# expression's first operand.
+function emitexpr!(lines, sc::Scope, prefix::AbstractString, expr::AbstractString)
+    room = sc.prog.width - 4 * (sc.depth + 1)
+    length(prefix) + length(expr) + 1 <= room && return emit!(lines, sc, prefix * expr * ";")
+    pieces = splitexpr(expr)
+    length(pieces) == 1 && return emit!(lines, sc, prefix * expr * ";")
+    pad = " " ^ length(prefix)
+    line = prefix * pieces[1]
+    for k in 2:2:length(pieces)-1
+        more = " " * pieces[k] * " " * pieces[k+1]
+        if length(line) + length(more) + (k + 1 == length(pieces)) > room
+            emit!(lines, sc, line)
+            line = pad * pieces[k] * " " * pieces[k+1]
+        else
+            line *= more
+        end
+    end
+    emit!(lines, sc, line * ";")
+end
+
+# The top-level operands of `expr` interleaved with the operators between them, for
+# whichever class of operator present binds least tightly: `["a", "+", "b * c", "-", "d"]`.
+# Binary operators are rendered with a space on each side; nothing else in an
+# expression sits between two spaces.
+function splitexpr(expr::AbstractString)
+    level = Dict("||" => 1, "&&" => 2, "|" => 3, "^" => 4, "&" => 5, "==" => 6, "!=" => 6, "<" => 7, "<=" => 7, ">" => 7, ">=" => 7,
+                 "<<" => 8, ">>" => 8, "+" => 9, "-" => 9, "*" => 10, "/" => 10, "%" => 10)
+    c = collect(expr)
+    found = Tuple{Int, Int, String}[]     # (level, index of the operator's first character, operator)
+    depth, instring, j = 0, false, 1
+    while j <= length(c)
+        ch = c[j]
+        if instring
+            ch == '\\' && (j += 1)
+            ch == '"' && (instring = false)
+        elseif ch == '"'
+            instring = true
+        elseif ch in "([{"
+            depth += 1
+        elseif ch in ")]}"
+            depth -= 1
+        elseif ch == ' ' && depth == 0
+            k = something(findnext(==(' '), c, j + 1), length(c) + 1)
+            tok = String(c[j+1:k-1])
+            haskey(level, tok) && push!(found, (level[tok], j + 1, tok))
+        end
+        j += 1
+    end
+    isempty(found) && return [String(expr)]
+    lowest = minimum(f[1] for f in found)
+    pieces = String[]
+    start = 1
+    for (l, at, op) in found
+        l == lowest || continue
+        push!(pieces, String(c[start:at-2]))
+        push!(pieces, op)
+        start = at + length(op) + 1
+    end
+    push!(pieces, String(c[start:end]))
+    return pieces
+end
+
 # Carry the source's comments (and, if asked, code) forward through line `line`, so
 # they sit just ahead of the C for the statement on that line.
 function annotate!(lines, sc::Scope, line)
-    sc.src === nothing && return
     line > sc.cursor || return
-    for l in body(sc.src, sc.cursor + 1, line; code=sc.copycode)
-        emit!(lines, sc, l)
+    if sc.src !== nothing
+        for l in body(sc.src, sc.cursor + 1, line; code=sc.copycode)
+            emit!(lines, sc, l)
+        end
     end
     sc.cursor = line
 end
+
+# A blank line between the C of one Julia statement and the next, so that each
+# statement — often several C lines — reads as a paragraph. None right after an
+# opening brace; `cfunction` removes any left against a closing one.
+separate!(lines, sc::Scope) = isempty(lines) || isempty(last(lines)) || endswith(last(lines), "{") || push!(lines, "")
 
 # The type of a slot, shaped if it holds an array.
 slottype(sc::Scope, i) = get(sc.slotshapes, i, widen(sc.ci.slottypes[i]))
@@ -233,7 +380,7 @@ function statement!(lines, sc::Scope, i, st)
     st isa GlobalRef && return                    # constant load; resolved where it's used
     st isa Core.NewvarNode && return
     st isa Expr && st.head in (:meta, :code_coverage_effect) && return
-    i in sc.inlined && return                     # rendered inside a condition
+    i in sc.inlined && return                     # rendered inside the expression that consumes it
     T = widen(ci.ssavaluetypes[i])
     T === Union{} && return                       # unreachable
     if st isa Core.ReturnNode
@@ -252,7 +399,7 @@ function statement!(lines, sc::Scope, i, st)
             v == sc.resultname || copy!(lines, sc, v, valuetype(sc, st.val), sc.resultname, sc.rettype)
             i == length(ci.code) || emit!(lines, sc, "return;")
         else
-            emit!(lines, sc, "return $v;")
+            emitexpr!(lines, sc, "return ", v)
         end
     elseif st isa Expr && st.head === :foreigncall
         code = foreign!(sc, st)
@@ -319,6 +466,11 @@ function statement!(lines, sc::Scope, i, st)
             # range outside a `for` has no C.
             ci.ssavaluetypes[i] isa Core.Const && all(st -> iscall(st, Base.getindex) || iscall(st, Base.setindex!), (st for st in ci.code if uses(st, i))) && return
             throw(ArgumentError("ranges are only supported as the range of a for loop (statement $i)"))
+        elseif isarray(T) && foldable(sc, i, st)
+            # `-x` feeding `x * s` or `x / s`: the sign goes onto the scalar, exactly.
+            push!(sc.negated, i)
+            sc.expr[i] = value(sc, st.args[2])
+            sc.shapes[i] = valuetype(sc, st.args[2])
         elseif isarray(T)
             # A calculation whose only use is to be returned is the function's result.
             if onlyreturned(ci, i)
@@ -332,7 +484,7 @@ function statement!(lines, sc::Scope, i, st)
         else
             code, _ = render(sc, i, st)
             name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
-            emit!(lines, sc, "$(ctype(T)) $name = $code;")
+            emitexpr!(lines, sc, "$(ctype(T)) $name = ", code)
             haskey(sc.math, i) && step!(lines, sc, "$name = $(sc.math[i])")
         end
     elseif st isa Expr && st.head === :(=)
@@ -346,12 +498,21 @@ function statement!(lines, sc::Scope, i, st)
             sc.names[slot.id] = temp!(sc, nothing, String[])
         end
         x = sc.names[slot.id]
+        # A variable is declared at its first assignment. Inside an `if` or a loop that
+        # would scope it to the block, so there it is declared just before the construct.
+        fresh = !(slot.id in sc.declared) && !(slot.id in sc.hidden)
+        fresh && push!(sc.declared, slot.id)
+        here = fresh && sc.depth == 0
         if isarray(T)
-            store!(lines, sc, i, x, rhs)
+            store!(lines, sc, i, x, rhs; declaration=here)
         elseif rhs isa Expr && rhs.head === :call && (callee_or_nothing(ci, rhs.args[1]) === Core.tuple || (callee_or_nothing(ci, rhs.args[1]) isa Type && isstruct(T)))
-            compound!(lines, sc, i, T, rhs.args[2:end], x; declared=true)
+            compound!(lines, sc, i, T, rhs.args[2:end], x; declared=!here)
         else
-            emit!(lines, sc, "$x = $(rhs isa Expr ? first(render(sc, i, rhs)) : value(sc, rhs));")
+            emitexpr!(lines, sc, (here ? ctype(T) * " " : "") * "$x = ", rhs isa Expr ? first(render(sc, i, rhs)) : value(sc, rhs))
+        end
+        if fresh && !here
+            s = slot.id
+            push!(sc.inserts, (sc.blockstart, 0, () -> declare(slottype(sc, s), x) * ";"))
         end
         if stable(ci, i, slot.id)
             sc.expr[i] = x
@@ -391,8 +552,10 @@ compiletime(t) = t isa Core.Const && !(t.val isa Number) && !(t.val isa Abstract
 # Emit `x = rhs` for an array `x`: a helper writing straight into `x` when `x` isn't
 # also an operand, otherwise through a temp so the operation can't read what it's
 # overwriting.
-function store!(lines, sc::Scope, i, x, rhs)
+function store!(lines, sc::Scope, i, x, rhs; declaration::Bool=false)
     slot = sc.ci.code[i].args[1].id
+    # With `declaration`, `x` is declared here, at its first assignment: by the emitter
+    # that writes it when there is one, otherwise just before the copy into it.
     if rhs isa Expr
         f = callee_or_nothing(sc.ci, rhs.args[1])
         making = f in (Base.zeros, Base.ones, Base.fill, Base.zero, Base.one) || isconstruction(f) || f === Base.materialize
@@ -400,6 +563,7 @@ function store!(lines, sc::Scope, i, x, rhs)
             # An array field of a struct or tuple, copied out: `copy_3(t.a, p);`.
             T = slottype(sc, slot)
             src = isindexediterate(sc, rhs.args[2]) ? value(sc, rhs.args[2]) : fieldaccess(sc, rhs.args[2], rhs.args[3])
+            declaration && emit!(lines, sc, declare(T, x) * ";")
             copy!(lines, sc, src, T, x, T)
             sc.shapes[i] = T
         elseif (f === Base.adjoint || f === Base.transpose) && isarray(valuetype(sc, rhs.args[2]))
@@ -409,22 +573,26 @@ function store!(lines, sc::Scope, i, x, rhs)
             A = transposed(valuetype(sc, rhs.args[2]))
             R = slottype(sc, slot)
             shape(R) === nothing && (R = A)
+            declaration && emit!(lines, sc, declare(R, x) * ";")
             start = length(lines) + 1
             copy!(lines, sc, value(sc, rhs.args[2]), A, x, R)
             step!(lines, sc, "$x = $(value(sc, rhs.args[2]))ᵀ"; from=start)
             sc.shapes[i] = R
-        elseif any(a -> mentions(sc, x, a), rhs.args[2:end])
-            # `x` is also an operand: through a temp, so nothing reads what it's writing.
+        elseif any(a -> mentions(sc, x, a), rhs.args[2:end]) && !inplace(sc, rhs, slottype(sc, slot))
+            # `x` is also an operand of something that reads elements it has already
+            # written — a product, a solve, a transpose, a construction: through a temp.
             t = temp!(sc, nothing, parts(sc, rhs))
             making ? construct!(lines, sc, i, rhs, t; declaration=true) : arraycall!(lines, sc, i, rhs, t; declaration=true)
+            declaration && emit!(lines, sc, declare(valuetype(sc, Core.SSAValue(i)), x) * ";")
             copy!(lines, sc, t, valuetype(sc, Core.SSAValue(i)), x, valuetype(sc, Core.SSAValue(i)))
         elseif making
-            construct!(lines, sc, i, rhs, x)
+            construct!(lines, sc, i, rhs, x; declaration)
         else
-            arraycall!(lines, sc, i, rhs, x)
+            arraycall!(lines, sc, i, rhs, x; declaration)
         end
         sc.slotshapes[slot] = sc.shapes[i]
     else
+        declaration && emit!(lines, sc, declare(valuetype(sc, rhs), x) * ";")
         copy!(lines, sc, value(sc, rhs), valuetype(sc, rhs), x, valuetype(sc, rhs))
         sc.slotshapes[slot] = valuetype(sc, rhs)
     end
@@ -672,8 +840,12 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         R = result(types)
         out = last ? dest : temp!(sc, nothing, unique([contribution(sc, acc); contribution(sc, a)]))
         (last ? declaration : true) && emit!(lines, sc, declare(R, out) * ";")
-        emit!(lines, sc, "$(helper!(sc.helpers, op, types, R))($accname, $(value(sc, a)), $out);")
-        step!(lines, sc, "$out = $(spell(acctype, accname)) $(Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[op]) $(spell(valuetype(sc, a), value(sc, a)))")
+        # A folded negation (`foldable`) lands on the scalar operand.
+        aname = value(sc, a)
+        isnegated(sc, acc) && (aname = negate(aname))
+        isnegated(sc, a) && (accname = negate(accname))
+        emit!(lines, sc, "$(helper!(sc.helpers, op, types, R))($accname, $aname, $out);")
+        step!(lines, sc, "$out = $(spell(acctype, accname)) $(Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[op]) $(spell(valuetype(sc, a), aname))")
         accname, acctype = out, R
     end
     if length(args) == 1
@@ -879,6 +1051,29 @@ function stable(ci, i, slot)
     return true
 end
 
+# Is `%i = -x`, an array negation, consumed only by a scalar multiply or divide —
+# `-x / s`, `-x * s`, `s * -x`? Then the sign moves onto the scalar: `x / (-s)` is
+# bit-for-bit `(-x) / s`, since IEEE rounding is symmetric, and a helper call is saved.
+function foldable(sc::Scope, i, st::Expr)
+    st.head === :call && callee_or_nothing(sc.ci, st.args[1]) === Base.:- && length(st.args) == 2 || return false
+    users = [u for (u, s) in enumerate(sc.ci.code) if uses(s, i)]
+    length(users) == 1 || return false
+    use = sc.ci.code[users[1]]
+    use isa Expr && use.head === :(=) && (use = use.args[2])
+    use isa Expr && use.head === :call && length(use.args) == 3 || return false
+    f = callee_or_nothing(sc.ci, use.args[1])
+    scalar(a) = !isarray(valuetype(sc, a))
+    f === Base.:/ && return use.args[2] == Core.SSAValue(i) && scalar(use.args[3])
+    f === Base.:* && return use.args[2] == Core.SSAValue(i) ? scalar(use.args[3]) : scalar(use.args[2])
+    return false
+end
+
+isnegated(sc::Scope, a) = a isa Core.SSAValue && a.id in sc.negated
+
+# `-s` for a scalar C expression: a name or number takes the sign directly, anything
+# else in parentheses; a leading sign is cancelled rather than doubled.
+negate(s::AbstractString) = startswith(s, "-") ? s[2:end] : occursin(r"^[\w.]+(\[[^\]]*\])*$", s) ? "-" * s : "-(" * s * ")"
+
 uses(x, i) = x isa Core.SSAValue   ? x.id == i :
              x isa Expr            ? any(a -> uses(a, i), x.args) :
              x isa Core.ReturnNode ? isdefined(x, :val) && uses(x.val, i) :
@@ -900,8 +1095,19 @@ function render(sc::Scope, i, ex::Expr)
     args = ex.args[2:end]
     T = widen(ci.ssavaluetypes[i])
     n = length(args)
-    op(sym, prec) = (join([operand(sc, args[1], prec); [operand(sc, a, prec; right=true) for a in args[2:end]]], " $sym "), prec)
-    unary(sym) = (sym * operand(sc, args[1], UNARY), UNARY)
+    # `a + -b` is written `a - b`, and `a - -b` is `a + b`: exact, since a negation
+    # is, and what a person writes. A negation is what a right operand that starts
+    # with `-` is: anything binding less tightly than `*` has been parenthesised.
+    function op(sym, prec)
+        s = operand(sc, args[1], prec)
+        for a in args[2:end]
+            t = operand(sc, a, prec; right=true)
+            s *= sym in ("+", "-") && startswith(t, "-") ? (sym == "+" ? " - " : " + ") * t[2:end] : " $sym " * t
+        end
+        return s, prec
+    end
+    # `-(-x)` is `x`, exactly.
+    unary(sym) = (t = operand(sc, args[1], UNARY); sym == "-" && startswith(t, "-") ? (t[2:end], PRIMARY) : (sym * t, UNARY))
     fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$name(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
     floating = T <: AbstractFloat
 
@@ -957,12 +1163,17 @@ function render(sc::Scope, i, ex::Expr)
         p = ci.ssavaluetypes[args[3].id].val
         p isa Val || throw(ArgumentError("unsupported power (statement $i)"))
         e = typeof(p).parameters[1]
+        one = ctype(T) == "float" ? "1.0f" : floating ? "1.0" : "1"
+        e == 0 && return one, PRIMARY
+        e == 1 && return expression(sc, args[2])
+        floating || e > 0 || throw(ArgumentError("a negative power of an integer is a DomainError in Julia (statement $i)"))
         x = operand(sc, args[2], MUL)
+        # Squares, cubes and the reciprocal are written out; anything else is
+        # `powi(x, n)`, by squaring (`powhelper!`).
         e == 2 && return "$x * $x", MUL
         e == 3 && return "$x * $x * $x", MUL
-        e == -1 && floating && return "1.0 / $x", MUL
-        floating && (push!(sc.headers, "math.h"); return "pow($(expression(sc, args[2])[1]), $(Float64(e)))", PRIMARY)
-        throw(ArgumentError("integer power $e is not supported; only 2 and 3 (statement $i)"))
+        e == -1 && return "$one / $x", MUL
+        return "$(powhelper!(sc.helpers, T))($(expression(sc, args[2])[1]), $e)", PRIMARY
     end
     if f === Base.:^
         floating || throw(ArgumentError("integer ^ with a non-literal exponent is not supported (statement $i)"))
@@ -1154,19 +1365,37 @@ function steps!(lines, sc::Scope)
     end
     chosen = [s for s in sc.steps if counts[s[4]] >= 2]
     empty!(sc.steps)
-    # The trailing comments of one Julia line's steps line up with each other.
-    for l in unique(s[4] for s in chosen)
-        trailing = [s for s in chosen if s[4] == l && s[1] == s[2]]
-        isempty(trailing) && continue
-        width = maximum(length(lines[s[2]]) for s in trailing)
-        for (_, at, text, _) in trailing
-            lines[at] = rpad(lines[at], width) * "  // " * text
+    for (from, at, text, _) in chosen
+        if from == at
+            lines[at] *= "  // " * text
+        else
+            indent = lines[from][1:findfirst(!isspace, lines[from])-1]
+            push!(sc.inserts, (from, 2, indent * "// " * text))
         end
     end
-    for (from, _, text, _) in sort(filter(s -> s[1] < s[2], chosen); by=s -> -s[1])
-        indent = lines[from][1:findfirst(!isspace, lines[from])-1]
-        insert!(lines, from, indent * "// " * text)
+end
+
+# Whether `x = f(...)` with `x` among the operands can write straight into `x`: yes
+# for anything elementwise — `+`, `-`, a scalar multiple or quotient, a broadcast —
+# when every operand that is `x` lines up with the result element for element, since
+# each output element then depends only on the same elements of the inputs. A product,
+# a solve, an inverse, a cross product, a transposed operand or a construction reads
+# elements the output has already overwritten, so those go through a temp.
+function inplace(sc::Scope, rhs::Expr, R::Type)
+    f = callee_or_nothing(sc.ci, rhs.args[1])
+    args = rhs.args[2:end]
+    if f === Base.materialize
+        b = sc.ci.code[args[1].id]
+        b isa Expr && b.head === :call && callee_or_nothing(sc.ci, b.args[1]) === Base.broadcasted || return false
+        args = b.args[3:end]
+    elseif f === Base.:*
+        count(a -> isarray(valuetype(sc, a)), args) == 1 || return false
+    elseif f === Base.:/
+        isarray(valuetype(sc, args[2])) && return false
+    elseif !(f in (Base.:+, Base.:-))
+        return false
     end
+    return all(a -> !isarray(valuetype(sc, a)) || axis(valuetype(sc, a)) == axis(R) && shape(valuetype(sc, a)) == shape(R), args)
 end
 
 # ---- calls to other functions -------------------------------------------------------
@@ -1314,6 +1543,12 @@ function index(sc::Scope, A, idx)
     subs = map(idx) do k
         k isa Integer && return string(k - 1)
         text, p = expression(sc, k)
+        # The shift to 0-based folds into a literal offset the index already has:
+        # `v[i + 1]` is `v[i]`, `v[i - 1]` is `v[i - 2]`.
+        if p == ADD && (m = match(r"^(.*) ([+-]) (\d+)$", text)) !== nothing
+            off = (m[2] == "+" ? 1 : -1) * parse(Int, m[3]) - 1
+            return off == 0 ? m[1] : m[1] * (off > 0 ? " + $off" : " - $(-off)")
+        end
         return (p < ADD ? "($text)" : text) * " - 1"
     end
     return value(sc, A) * join("[$s]" for s in subs)

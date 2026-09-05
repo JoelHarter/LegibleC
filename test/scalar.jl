@@ -20,6 +20,9 @@ strictly(a::Float64, b::Float64) = a != b && !(a >= b)
 either(a::Bool, b::Bool) = !a || b
 ldiv(a::Float64, b::Float64) = a \ b
 cube(x::Float64) = x^3 + x^-1
+powers(x::Float64) = x^5 + x^-4 + x^7 * x^0 + x^1 + x^-2 + x^13
+intpow(a::Int64) = a^5 + a^4 + a^0
+pow32(x::Float32) = x^5 + x^-3
 bits(a::Int64, b::Int64) = (a & b) | (a << 2) ⊻ (b >> 1)
 special(x::Float64) = x + NaN + Inf - Inf
 special32(x::Float32) = x + NaN32 + Inf32
@@ -31,7 +34,7 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
                  Case(intint, 7, 2), Case(literal), Case(halfint, 7), Case(mixed, 7.0, 2), Case(narrow, Int32(7), Int32(2)),
                  Case(single, 7.0f0, Int32(2)), Case(smooth, 1.7), Case(intmath, 7, 3), Case(intmath, -7, 3),
                  Case(convert_, 3, 2.6), Case(strictly, 1.0, 2.0), Case(strictly, 2.0, 1.0), Case(either, true, false),
-                 Case(ldiv, 4.0, 1.0), Case(cube, 2.0), Case(bits, 12, 10),
+                 Case(ldiv, 4.0, 1.0), Case(cube, 2.0), Case(powers, 1.3), Case(intpow, 3), Case(pow32, 1.5f0), Case(bits, 12, 10),
                  Case(special, 1.0), Case(special32, 1.0f0), Case(classify, NaN), Case(classify, -Inf), Case(classify, -2.5), Case(classify, 3.0),
                  Case(limits), Case(biggest, 7.0)])
 end

@@ -854,3 +854,198 @@ them chain — the temp one step produces is the temp the next consumes —
 which is where a reader following an expression through temps actually
 gets lost. A single-step line would only repeat its source line, so it
 gets nothing.
+
+---
+
+## 2026-09-05 — Declare at first assignment; `x_new`; aliasing decided per operation
+
+**Decision.** Three rules, from a close reading of `sandbox/demo.c`.
+(1) A variable is declared at its first assignment: `double r = norm_3(x);`,
+`double a[3];` right above the call that fills it. When that assignment is
+inside an `if` or a loop, the declaration goes just ahead of the construct.
+Nothing is declared at the top of a function for its own sake.
+(2) A parameter that Julia reassigns is never copied at entry. It is read as
+the parameter until the reassignment; the new value is a second variable
+named `x_new`, declared there and written straight into. Inside a construct,
+`x_new` is declared ahead of it as a copy of `x`, and the construct reads
+`x_new` throughout. A Julia name that is itself `x_new` gets the usual `_`.
+(3) Whether `x = f(x, …)` may write into `x` is decided per operation.
+Elementwise operations (`+`, `-`, a scalar multiple or quotient, a broadcast
+of same-shaped arrays) write in place, and those helpers' `out` is no longer
+`restrict`. Products, solves, inverses, `pinv`, the cross product, a
+transposed operand and a construction keep the temp and the `restrict`.
+Also: step comments follow two spaces with no alignment; a whole local array
+is copied with `sizeof x`; the Doxygen tail reads `Julia signature:`,
+describes array parameters as `3-vector`, `4×2-matrix`, and ends
+`out  6-vector, the result; must not overlap an input`.
+
+**Why.** All three are what the Craft reader (`philosophy.md`) trips over.
+A declaration a dozen lines above the first use is a C habit from before
+C99 that no one coming from Julia has, and no one writing C today keeps.
+`memcpy(x_, x, …)` at the top of a function is a copy the program never
+asked for — the input is only ever read — and `x_` names nothing; `x_new`
+is what a physicist would write for the updated state. Applying the temp
+rule uniformly was simpler to state, but it cost an unneeded temp and copy
+on the most common line in numerical code, `v = v + dt * a`; the safety
+argument is local to each helper (an elementwise helper reads each input
+only where it writes), so the decision is made where the knowledge is. The
+price is that elementwise helpers give up `restrict`, which they never
+needed for their loops to vectorize. The earlier alternatives — `x_copy`, a
+copy at the top, hoisting everything — were each weighed and set aside in
+the conversation that led here, and the summary is the rule above.
+
+---
+
+## 2026-09-05 — Sign folding; Doxygen tags; `restrict` on `out` stays
+
+**Decision.** `-x / s` and `-x * s`, where `x` is an array and `s` a
+scalar, put the sign on the scalar: `div_3_s(x, -s, a)`, no `neg_3`, no
+temp. The Doxygen tail describes every parameter — `scalar`, `3-vector`,
+`3×3-matrix` — tags an array the function writes into `[in,out]`, and says
+of the result parameter only `6-vector, the return value`. The result
+parameter keeps `restrict` unconditionally.
+
+**Why.** The fold is exact — IEEE rounding is symmetric, so `x / (-s)` is
+bit-for-bit `(-x) / s` — and it is what anyone writes by hand; a helper
+call to negate three numbers is the kind of thing that makes generated code
+look generated. The old `@param[out] out  … must not overlap an input`
+restated `restrict` in English right after a name that already says `out`;
+the C reader knows the word, and the description a math reader wants is the
+shape. `[in,out]` is Doxygen's own tag for a mutated input, and the
+transpiler already knows which those are. Dropping `restrict` where a
+function finishes reading its inputs before writing was considered and set
+aside: it would buy a caller the freedom to pass overlapping buffers, which
+no one wants, and cost the vectorization of every write into `out`. Copying
+inputs to make aliasing safe was set aside for the same reason the entry
+copy of a rebound parameter was removed the same day.
+
+---
+
+## 2026-09-05 — Reassigned array parameters: copy at the top, with the reason written
+
+**Decision.** Reverses part of the morning's entry. A reassigned *scalar*
+parameter is reassigned in place — C passes it by value. A reassigned
+*array* parameter is worked on as a copy `x_`, made at the top of the
+function in one block, all such copies together, with a comment above:
+`// copy x and v to prevent modification within this function`, and a
+blank line after. One name reads `copy x to …`; three or more are listed
+with commas and an Oxford comma, `copy x, y, and z to …`. The body then uses `x_` throughout. The
+`x_new` scheme — no copy, read the parameter until the reassignment, hoist
+a copy ahead of a construct when the reassignment sits inside one — is
+withdrawn.
+
+**Why.** The copy was never the problem; the *unexplained* copy was. With
+the reason on the line above, the copy reads as a deliberate act — the same
+one Julia performs, a fresh slot initialized from the argument — and one
+rule with no cases replaces a scheme that had to know whether the
+reassignment was in a loop, a branch, or straight-line code, and in the
+construct case made the very copy it existed to avoid. For a scalar there
+is nothing to copy at all, and `a_new` for a by-value parameter was simply
+wrong. `x_` rather than `x_new` because, with the copy made at entry, the
+variable is the working copy of `x` from the first line, not a new value
+that appears partway through; the plain collision rule already gives that
+name, so nothing is added.
+
+---
+
+## 2026-09-05 — A blank line before each Julia statement's C
+
+**Decision.** Every Julia statement's C — its source comment, any comment
+lines above it, and the code — is preceded by one blank line, at every
+nesting depth, except directly after an opening brace; a blank never sits
+against a closing brace. Julia's own blank lines stay uncopied. The rule
+holds with `source=false`.
+
+**Why.** The output felt crammed, and the cause was not the lost blank
+lines of the Julia but the expansion: one Julia line becomes a comment,
+temps and a helper call, and consecutive paragraphs with no space between
+them read as one wall. So the break goes where the expansion is, one per
+statement, which is how a person comments C by hand — a comment introducing
+a small block, the block, a gap. Copying the author's spacing instead would
+have left a function with no blank lines, like `orbit`, exactly as dense as
+before. With `source=false` the blank is the only thing left marking where
+one statement's C ends and the next begins, which is the argument for
+keeping it there too. Implementation: `separate!` in `src/c.jl`, called
+from `block!` when a statement starts a new line; line numbers come from
+the IR, so it works without the source file.
+
+---
+
+## 2026-09-05 — Unnamed scalar values are written where they are used
+
+**Decision.** A scalar SSA value with one use is rendered inside the
+expression that consumes it: `double result = sqrt(sq(a) + sq(b));`, not
+three temps. The rule mirrors the author: a value they named in Julia is a
+named C variable; a value they didn't name is not. Three exceptions keep a
+temp — the consumer is a `return` (the result stays `result`), the consumer
+writes its operand twice (`x^2` as `x * x`, `mod`, integer `max`/`min`,
+struct `==`), or an effect stands between the value and its use (a print, a
+store, a `ccall`, a user function with any of those, found by reading the
+callee's IR). Conditions and loop bounds, which already inlined this way,
+follow the same code. Alongside: `-(-x)` is `x`, `a + -b` is `a - b`,
+`a - -b` is `a + b`; `v[i + 1]` is `v[i]`; and parentheses are added under
+shift and bitwise operators and around `&&` under `||`.
+
+**Why.** Named single-use temps for scalar arithmetic were the most
+generated-looking thing left in the output, and nobody writes C that way.
+The question "when is a temp more readable" has no heuristic answer that
+survives contact with real code; the author's own choice of what to name is
+the right one, and following it means a long Julia one-liner becomes a long
+C line, which is fair. The exceptions are about meaning, not taste:
+evaluating a call twice doubles its cost and its effects, and C's
+unspecified evaluation order would let two prints swap. Purity is read off
+the callee's IR because the transpiler already has it; the same reading
+fixed a real bug, a `const` parameter handed to a callee that writes it.
+Speed is neutral throughout; the compiler produces the same code either way.
+
+---
+
+## 2026-09-05 — `return` is a consumer too; long lines wrap
+
+**Decision.** Amends the entry above. An unnamed scalar value consumed by a
+`return` is written in the `return`: `return sqrt(sq(a) + sq(b));`. The
+name `result` remains only where the value can't be written there — a
+`ccall`'s result, a value returned from several places. Effects are handled
+more finely than "pure calls only": a call with an effect may be written
+where it is used when nothing that computes stands between, not even a
+read, while a pure value may move past any pure work. And a line that would
+run past the new `width` option (100 columns) wraps at its loosest
+operators, continuation lines led by the operator and aligned under the
+first operand.
+
+**Why.** With everything else inlined, `double result = …; return result;`
+was the last two-line form of a one-line thought, and `return expr;` is
+what everyone writes. Allowing effectful calls to inline, adjacent to their
+consumer only, gives `return shout(a);` and `x = f!(v) * 2;` without
+letting an effect slide past a read that would see it — the case
+`mutate!(v, 1.0) + mutate!(v, 2.0) + v[1]` makes concrete: Julia lowers the
+sum as one three-operand call, so the read of `v[1]` sits between the second
+write and the sum, and both writes stay pinned in order. Wrapping exists
+because mirroring the author's one-liners can produce a 150-column line;
+100 is the width the docs use, and an option rather than a constant because
+teams differ on it.
+
+---
+
+## 2026-09-05 — Integer powers beyond 2, 3 and -1: one `powi` helper by squaring
+
+**Decision.** `x^2`, `x^3`, `x^-1` stay written out. Any other literal
+integer exponent is `powi(x, n)`: one helper per base type (`powiF32`,
+`powiI64` off the double) holding the ordinary power-by-squaring loop, with
+the reciprocal taken at the end for a negative `n`. A negative power of an
+integer is a `DomainError` in Julia and an error here.
+
+**Why.** The exponent is a literal at every call, so an optimizing compiler
+inlines the helper, unrolls the loop over the exponent's bits, folds the
+`1.0` start away and drops the dead last squaring. Measured on clang 15 at
+`-O2`, `powi(x, 13)` is five multiplies and no branch — instruction for
+instruction the chain a person would write out — and `powi(x, -5)` is three
+multiplies and a divide. So a helper per exponent (`pow_5`, `pow_13`, …),
+which was built first the same day, bought nothing at `-O2` and cost a
+family of near-identical functions; one `powi` is what a C programmer
+expects to find. Below `-O2` the loop runs as a loop, which nobody
+benchmarks. Julia's own `Float64^Int` is a compensated squaring — nearly
+correctly rounded, at about three times the multiplications; here speed
+wins the conflict, and results agree to within a few units in the last
+place. `powi` is the established name: LLVM's intrinsic, GCC's builtin,
+Rust's `f64::powi`.

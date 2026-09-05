@@ -11,7 +11,7 @@ function blocked(a::Float64, b::Float64)
     temp3 = a - b
     temp4_joelwashere = a * b
     temp1001 = 1.0
-    (a + b) * (b + a) * (a + 1.0) + temp3 + temp4_joelwashere + temp1001
+    (a + b)^2 * (b + a)^2 * (a + 1.0)^2 + temp3 + temp4_joelwashere + temp1001
 end
 letter(ω::Float64, Ω::Float64, Δt::Float64) = ω * Ω + Δt
 marks(x̂::Float64, ẍ::Float64, x⃗::Float64, x′::Float64) = x̂ + ẍ + x⃗ + x′
@@ -25,7 +25,7 @@ end
 long(a::Float64) = a * 2.0
 named(a::Float64, c::Float64) = (x = a + c * c; return x)
 fun45(a::Float64, c::Float64) = a + c * c
-resulttaken(a::Float64, result::Float64) = a * result
+resulttaken(a::Float64, result::Float64) = ccall(:fabs, Float64, (Float64,), a * result)   # a ccall's value can't be inlined
 outtaken(out::SVector{3,Float64}, v::SVector{3,Float64}) = out + v
 helpertaken(u::SVector{3,Float64}, v::SVector{3,Float64}) = (add_3 = u + v; add_3 .* 2.0)
 underscored(_x::Float64, __Y::Float64) = _x + __Y
@@ -46,23 +46,39 @@ dotted(u::SVector{3,Float64}, v::SVector{3,Float64}) = dot(u, v)
 solve4(A::SMatrix{4,4,Float64,16}, b::SVector{4,Float64}) = A \ b
 inv3(A::SMatrix{3,3,Float64,9}) = inv(A)
 
-src = csource("name", square, bare, chain, blocked, letter, marks, scripts, fallback, keyword, long, named, fun45,
+looped(x::SVector{3,Float64}, n::Int64) = (for i in 1:n; x = x * 2.0; end; x)
+rebound(x::SVector{3,Float64}, v::SVector{3,Float64}, dt::Float64) = (v = v + dt * x; x = x + dt * v; x = x / 2.0; [x; v])
+squared(A::SMatrix{2,2,Float64,4}) = (A = A * A; A = A + A; A)
+branched(a::Float64, b::Float64) = (if a > b; c = a - b; a = c * 2.0; else; c = b - a; end; a + c)
+
+src = csource("name", looped, rebound, squared, branched, square, bare, chain, blocked, letter, marks, scripts, fallback, keyword, long, named, fun45,
               resulttaken, outtaken, helpertaken, underscored, borrowed, short, bump!, (poly, Float64, Float64), (poly, Int64, Int64),
               mixedarray, outer, nine, scaled32, crossed, crossed32, crossmixed, dotted)
 @testset "name" begin
-    @test occursin("double temp1_a = a * a;", src)
-    @test occursin("int64_t temp1 = 2 * 3;", src) && occursin("double result = temp1 + a;", src)   # a literal contributes nothing
-    @test occursin("double temp1_a = a * a;", src) && occursin("double result = temp1_a + b;", src)
-    @test occursin("temp5", src) && !occursin("double temp3 =", src) && !occursin("double temp4 =", src)   # user's temp3/temp4 block those numbers
-    @test occursin("double temp1_omega_Omega = omega * Omega;", src) && occursin("temp1_omega_Omega + Deltat", src)
+    # A reassigned array parameter is worked on as a copy `x_` made at the top under a
+    # comment; elementwise helpers then write it in place. A reassigned scalar is the parameter.
+    @test occursin("    // copy x and v to prevent modification within this function\n    double x_[3];\n    memcpy(x_, x, sizeof x_);\n    double v_[3];\n    memcpy(v_, v, sizeof v_);\n\n    // name.jl", src)
+    @test occursin("mul_s_3(dt, x_, temp1_dt_x);", src) && occursin("add_3(v_, temp1_dt_x, v_);", src) && occursin("div_3_s(x_, 2.0, x_);", src)   # temps are named from the Julia, not the copy
+    @test occursin("    // copy x to prevent modification within this function\n    double x_[3];\n    memcpy(x_, x, sizeof x_);\n\n", src) && occursin("mul_3_s(x_, 2.0, x_);", src)
+    @test occursin("mul_2x2_2x2(A_, A_, temp", src) && occursin("add_2x2(A_, A_, A_);", src)
+    @test occursin("a = c * 2.0;", src) && !occursin(r"\ba_\b", src)   # scalar: reassign the parameter itself
+    @test occursin("double out[2][2]) {", src) && occursin("double out[restrict 2][2]) {", src)   # elementwise helpers plain, products restrict
+    # Scalar work the author didn't name gets no name here either (inline.jl); a
+    # power's base does, and shows the temp naming.
+    @test occursin("return a * a + 1.0;", src)
+    @test occursin("return 2 * 3 + a;", src)
+    @test occursin("return a * a + b;", src)
+    @test occursin("double temp1_a_b = a + b;", src) && occursin("double temp5_a = a + 1.0;", src) && !occursin(r"temp[34]_[ab]\b", src)   # user's temp3/temp4 block those numbers; a literal contributes nothing
+    @test occursin("double temp3 = a - b;", src) && occursin("temp1_a_b * temp1_a_b * (temp2_b_a * temp2_b_a) * (temp5_a * temp5_a) + temp3", src)   # Julia's grouping, exactly
+    @test occursin("return omega * Omega + Deltat;", src)
     @test occursin("xhat + xddot + xvec + xprime", src)
     @test occursin("x1 * x2", src)
     @test occursin("U1F920 * mu", src)
     @test occursin("double keyword(double exp_, double long_)", src) && occursin("omega_", src)
     @test occursin("double long_(double a)", src)
     @test occursin("return x;", src)
-    @test occursin("double result = a + temp1_c;", src)
-    @test occursin("double result_ = a * result;", src)
+    @test occursin("return a + c * c;", src)
+    @test occursin("double result_ = fabs(a * result);", src) && occursin("return result_;", src)   # `result` is taken
     @test occursin("void outtaken(const double out[3], const double v[3], double out_[restrict 3])", src)
     @test occursin("double add_3_[3];", src) && occursin("add_3(u, v, add_3_);", src)
     @test occursin("double underscored(double x_, double Y__)", src)

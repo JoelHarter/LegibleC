@@ -20,8 +20,8 @@ For each array given by dimensions the transpiler first tries the static
 type; if the function has a method for it, inference does the rest. If not
 — the method says `::Matrix{Float64}` — it uses a regular `Array` and
 carries the size itself, propagating it through every operation by the same
-rules the helpers use, with declarations emitted after the body is walked.
-Either way the C is identical. That is what the `staticarray` option means:
+rules the helpers use; by the time the array is first assigned, and so
+declared, its size is known. Either way the C is identical. That is what the `staticarray` option means:
 a regular array *is* a static array. Runtime sizes are not supported yet;
 the design is in `dev/map.md`.
 
@@ -172,20 +172,53 @@ must match, as Julia requires. Not yet: a scalar or broadcast into a slice
 returning the scalar (`sum_3`, `maximum_2x3`, `norm_3`); `maximum` and
 `minimum` compare, so a NaN is passed over where Julia would return it.
 
+## Declarations
+
+A variable is declared where it is first assigned, as C is written today
+and as a reader who never declares anything expects: `double r = norm_3(x);`,
+or `double a[3];` right above the call that fills it. When that first
+assignment is inside an `if` or a loop, a declaration there would be scoped
+to the block, so the variable is declared just ahead of the construct — on
+the line above its source comment — and assigned inside. Nothing is declared
+at the top of a function for its own sake.
+
 ## Assignment and aliasing
 
-`B = -A` writes straight into `B`: `neg_2x2(A, B);`. But when the destination
-is also an operand — `A = A * A`, or `v = [v[3], v[1] + v[2], 0.0]` — writing
-into it directly would overwrite values still being read, so the result goes
-through a temp and is then copied: `mul_2x2_2x2(A, A, temp1_A);
-memcpy(A, temp1_A, sizeof(double[2][2]));`. Elementwise operations would survive aliasing;
-matrix multiplication wouldn't. The rule is applied uniformly rather than
-per operation, and it is what makes `restrict` on every `out` an honest
-promise.
+`B = -A` writes straight into `B`: `neg_2x2(A, B);`. When the destination is
+also an operand, it depends on the operation. Anything elementwise —
+`A = A + B`, `v = 2.0 * v`, `A = A ./ s`, a broadcast of same-shaped arrays
+— is safe in place, because each output element depends only on the same
+element of each input, so it writes into the destination directly:
+`add_3(v, temp1, v)`. A product, a solve, an inverse, a cross product, a
+transposed operand (`A = A + A'`) or a construction (`v = [v[3], v[1] + v[2],
+0.0]`) reads elements the output has already overwritten, so those go
+through a temp and are then copied: `mul_2x2_2x2(A, A, temp1_A);
+memcpy(A, temp1_A, sizeof temp1_A);`. The helpers say which they are: an
+elementwise helper's `out` is a plain array, the others' is `restrict`
+(`helper.md`).
 
-A Julia argument that's reassigned (`A = A * A` where `A` is a parameter) is a
-second variable in the IR with the same name; it comes out as `A_`, and the
-parameter stays `const`.
+A scalar parameter that is reassigned — `a = c * 2.0` where `a` is a
+parameter — is reassigned in place: C passes scalars by value, which is
+Julia's semantics exactly. An array parameter is the caller's memory, so
+one that is reassigned (`x = x + dt * v`) is worked on as a copy, made at
+the top of the function in one block with the reason written above it, and
+the parameter stays `const`:
+
+```c
+    // copy x and v to prevent modification within this function
+    double x_[3];
+    memcpy(x_, x, sizeof x_);
+    double v_[3];
+    memcpy(v_, v, sizeof v_);
+
+    // orbit.jl:9: r = norm(x)
+```
+
+This is what Julia itself does (the reassigned name is a fresh slot,
+initialized from the argument), and it is one rule with no cases: the body
+reads and writes `x_` throughout, whether the reassignment is in a loop, a
+branch, or straight-line code. The copy's name is the parameter's under the
+usual collision rule (`naming.md`), `x_`.
 
 ## Everything, in one table
 

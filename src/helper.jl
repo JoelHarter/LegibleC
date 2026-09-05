@@ -60,10 +60,16 @@ end
 # same way (the usual case, and the contiguous one); when one is transposed relative
 # to the others — `A + B'` — they walk the output's axes and let `access` place each
 # subscript.
+# Whether an input is laid out exactly like the output — the same storage, the same
+# axes — so that a caller may pass the same array as both, `add_3(v, w, v)`. Then the
+# output cannot be declared `restrict`; an elementwise helper is safe in place, since
+# each element it writes it has already read. Any other input can't be the output.
+alike(T::Type, R::Type) = isarray(T) && axis(T) == axis(R) && shape(T) == shape(R) && eltype(T) == eltype(R)
+
 function helpercode(name::AbstractString, op::Symbol, types, R::Type)
     names = inputs(types)
     params = [declare(T, n; constant=true) for (T, n) in zip(types, names)]
-    push!(params, declare(R, "out"; restrict=true))
+    push!(params, declare(R, "out"; restrict=!any(T -> alike(T, R), types)))
     aligned = all(T -> !(T <: AbstractArray) || axis(T) == axis(R), types)
     sub(T, var, idx) = aligned ? (T <: AbstractArray ? var * brackets(idx) : var) : access(T, var, idx)
     walk(line) = elementwise(aligned ? shape(R) : extents(R), idx -> "$(sub(R, "out", idx)) = $(line(idx));"; taken=names)
@@ -243,6 +249,29 @@ function scalarhelper!(helpers::Dict{String, String}, op::Symbol, types, E::Type
         helpers[name] = definition(ctype(E), name, [declare(a, an; constant=true), declare(b, bn; constant=true)], body;
                                    doc=[prose(op, types), op == :dot ? "returns $an ⋅ $bn" : "returns $(an)ᵀ * $bn"])
     end
+    return name
+end
+
+# `x^n` for an integer `n`, by squaring: `powi(x, 13)`, one helper per base type
+# (`powiF32`, `powiI64` off the double). The exponent is a literal at every call, so
+# an optimizing compiler inlines this, unrolls the loop over its bits and folds the
+# `1.0` start away, leaving exactly the multiply chain a person would write out —
+# five multiplies for the 13th power — with no loop and no branch. A negative exponent
+# is the reciprocal at the end; for an integer base Julia throws, so it isn't offered.
+# Julia's own `Float64^Int` is a compensated squaring, a little more accurate and
+# about three times the work; speed wins here.
+function powhelper!(helpers::Dict{String, String}, E::Type)
+    name = "powi" * (E === Float64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t = ctype(E)
+    one = E <: AbstractFloat ? (t == "float" ? "1.0f" : "1.0") : "1"
+    signed = E <: AbstractFloat
+    body = [signed ? ["bool neg = n < 0;", "if (neg) {", "    n = -n;", "}"] : String[];
+            "$t r = $one;"; "while (n > 0) {"; "    if (n & 1) {"; "        r *= x;"; "    }"; "    x *= x;"; "    n >>= 1;"; "}";
+            "return " * (signed ? "neg ? $one / r : r;" : "r;")]
+    helpers[name] = definition(t, name, ["$t x", "int n"], body;
+                               doc=["integer power of $(E === Float64 ? "a scalar" : E <: AbstractFloat ? "a float" : "an integer"), by squaring",
+                                    "returns x^n"])
     return name
 end
 
@@ -704,7 +733,7 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
                join(accesses, " " * Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[cfn] * " ")
         body = nest(pairs, ["$(access(R, "out", idx)) = $expr;"])
         params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
-        push!(params, declare(R, "out"; restrict=true))
+        push!(params, declare(R, "out"; restrict=!any(T -> alike(T, R), types)))
         spelled = [istransposed(T) ? n * "ᵀ" : n for (T, n) in zip(types, argnames)]
         dotted = Dict(:add => ".+", :sub => ".-", :mul => ".*", :div => "./", :pow => ".^")
         formula = length(types) == 1 ? (cfn == :neg ? "out = .-$(spelled[1])" : "out = $op.($(spelled[1]))") :

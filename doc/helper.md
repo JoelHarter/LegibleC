@@ -35,7 +35,7 @@ read. Helpers that call other helpers — `det_4x4` calls `det_3x3`,
 order, so no prototypes are needed.
 
 A helper is `static inline` when it is straight-line code or plain loops —
-`add_2x2`, `dot_3`, `cross`, `copy_3`, `zero_3x4`, `row_2x3`, `sum_3`, the
+`add_2x2`, `dot_3`, `cross`, `copy_3`, `zero_3x4`, `row_2x3`, `sum_3`, `powi`, the
 written-out `det_3x3`, `solve_3x3_3`, `inv_3x3` — the small things a C
 programmer marks `inline`. It is plain `static` when it calls other helpers,
 searches, or can abort: `det_4x4` and up, `pivot`, `lu`, `solve` and `inv`
@@ -160,13 +160,21 @@ Loop indices are `i`, `j`, `k` for up to three nested loops; past three,
 glance. One that would collide with an input (the ninth input is `i`) gets
 `_` appended: `i_`.
 
-Every output array is declared `restrict` — `double out[restrict 3]` —
-because a Julia result is always a fresh array, so `out` never overlaps an
-input; saying so lets the compiler keep loads in registers across the
-stores. It's a promise the transpiler keeps internally (a result that is
-also an operand goes through a temp; `array.md`) and one a C caller must
-keep too: the Doxygen line on every `out` says so. Implementation:
-`inputs`, `indices`, `declare` in `src/helper.jl` and `src/type.jl`.
+An output array is declared `restrict` — `double out[restrict 3]` — when
+no input could be the same array as the output: a product, a solve, an
+inverse, a cross product, anything whose output element reads inputs at
+other indices. Saying so lets the compiler keep loads in registers across
+the stores, and it is a promise the transpiler keeps (such a result that is
+also an operand goes through a temp; `array.md`). An elementwise helper —
+`add_3`, `mul_3_s`, `neg_2x2`, a pointwise `addP_…` with an input of the
+output's shape — reads each input only at the index it writes, so it is
+correct with `out` the same array as an input, and its `out` is left plain
+so that callers may do exactly that. A user function's `out` is always
+`restrict`, even when the function happens to finish reading its inputs
+before it writes: the transpiler passes it a fresh array, a C caller must
+too, and the promise is what lets the compiler vectorize the writes into it
+without a runtime overlap check. Implementation: `inputs`, `indices`,
+`alike`, `declare` in `src/helper.jl` and `src/type.jl`.
 
 ## Comments
 

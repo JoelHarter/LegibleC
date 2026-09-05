@@ -9,10 +9,12 @@ transpiler does today is in [doc/](doc/), starting with
 [syntax.md](doc/syntax.md).
 
 ⬜ Readability (philosophy.md, Craft)
-    ⬜ Collapse single-use temps into expressions: `d = (a + b) * c / 2;` instead of three temps — the can of worms in `copy.md`
-        ⬜ Precedence and parenthesisation for every operator in `render` (the condition inliner already has the table)
-        ⬜ Decide when an expression is long enough that a named temp reads *better*
-        ⬜ Store straight into a variable instead of through a temp (`d = temp3;`), for scalars and arrays alike
+    ✅ Collapse single-use temps into expressions: `d = (a + b) * c / 2;` instead of three temps — done 2026-09-05, `doc/copy.md` item 5
+        ✅ Precedence and parenthesisation for every operator in `render` — the condition inliner's table, now used everywhere
+        ✅ Decide when an expression is long enough that a named temp reads *better* — resolved by mirroring the author: what they named is named, what they didn't isn't
+        ✅ Store straight into a variable instead of through a temp (`d = temp3;`) — falls out of the same rule
+        ✅ Wrap a very long expression line at its loosest operators — done 2026-09-05, the `width` option (100)
+        ✅ `return sqrt(…);` instead of `double result = sqrt(…); return result;` — done 2026-09-05; `result` remains for a `ccall`'s value and a value returned from several places
     ⬜ Rebinding is free: `A, B = B, A` on immutable values should swap which C variable each name refers to and emit nothing, instead of the three-copy swap (correct today, but five `copy_2x2` calls where a person writes none). Same idea as forwarding an SSA copy, applied to a slot whose old value is dead
     ⬜ Rewrite loop variables used only as indices to the C idiom: `for (i = 0; i < n; i++) v[i]` instead of `v[i - 1]`
     ⬜ `return a > b && b > c;` when both branches of a value-`&&`/`||` just return
@@ -20,13 +22,25 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ Continuation lines of a multi-line expression land after its C; put them before it (`comment.md`)
     ✅ One-line `///` Doxygen comment on each generated helper — done 2026-09-03, `src/prose.jl`
     ⬜ `Δt` → `Deltat`: decide whether Greek-then-letter gets a separator
+    ⬜ From the magnifying glass on `sandbox/demo.c` (2026-09-05), each with its reasoning in the conversation that raised it:
+        ✅ Declare a named local at its first assignment — done 2026-09-05, `doc/array.md` *Declarations*: at the assignment at the top level of the body; a variable first assigned inside an `if` or a loop is declared just ahead of that construct
+        ✅ A reassigned parameter — done 2026-09-05, after a round trip: a scalar is reassigned in place; an array is copied at the top of the function, in a block under a comment giving the reason, as `x_`. The no-copy `x_new` scheme was built and then set aside the same day (decision entry)
+        ✅ Per-operation aliasing: elementwise helpers write in place and lose `restrict`; products, solves, inverses, cross, transposed operands and constructions keep the temp — done 2026-09-05, `doc/array.md`, `doc/helper.md`, decision entry
+        ✅ `memcpy(out, x_new, sizeof x_new)` for a whole local array; `sizeof(double[3])` where the source is a parameter or a partial row — done 2026-09-05
+        ✅ Step comments: two spaces and no alignment — done 2026-09-05
+        ✅ `-x / r^3` — the sign folds onto the scalar, `div_3_s(x, -temp2_r, a)` — done 2026-09-05; the general fusion into one loop stays under Language coverage
+        ⬜ Result placement: a variable whose value ends up in `out` (`return [x; v]` after `x = …`, `v = …`) should be computed in `out` from the start, so the final `memcpy`s vanish. Parked by request 2026-09-05 — to be discussed
+        ✅ Collapse a single-use scalar temp into its use: `div_3_s(x, -(r * r * r), a)` — done 2026-09-05 with the general item above; `-x / -s` now cancels to `div_3_s(x, s, d)`
+        ✅ A blank line before each Julia statement's C, none against a brace — done 2026-09-05, `doc/comment.md` *Spacing*
+        ✅ Doxygen tail: `Julia signature:`, `@param[in]  x    3-vector`, `@param[out] out  6-vector, the result; must not overlap an input` — done 2026-09-05
 
 ⬜ Language coverage (`doc/flow.md`; the wider catalogue of what could map, both ways, is `doc/dev/map.md`)
     ✅ Slicing and slice assignment in any dimension — done 2026-09-05, inline; still open: a range held in a variable, `A[:, 1] .= 0`
     ✅ Reductions: `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all` — done 2026-09-04; `maximum`/`minimum` skip a NaN where Julia returns it
     ⬜ `for` over the elements of an array (`for x in v`), and ranges with a non-literal step
     ⬜ `while` whose header can't be inlined — the `while (true) { …; if (!c) break; }` fallback is written but untested
-    ⬜ Integer `^` beyond 2 and 3 (a `power` helper), `mod` on floats, `Float32` math (`sqrtf` and friends)
+    ✅ Integer `^` beyond 2 and 3 — done 2026-09-05, `powi(x, n)` by squaring, `doc/scalar.md`
+    ⬜ `mod` on floats, `Float32` math (`sqrtf` and friends)
     ✅ Tuples as values, multiple return values — done 2026-09-04, `struct.md`
     ✅ Structs → C structs — done 2026-09-04, `struct.md`: by value, mutable through a pointer, parametric, nested
     ✅ Printing (`print`, `println`, `@printf`, `@show`) — done 2026-09-05, `doc/io.md`
@@ -66,6 +80,7 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ Signed integer overflow: Julia wraps, C says undefined — pick the one fixed compiler flag (`-fwrapv`) or emit unsigned arithmetic
     ⬜ `Int64(x)` on a non-integer float: Julia throws, the C cast truncates — decide whether to reproduce the check
     ⬜ A loop variable reassigned inside its own `for` body (Julia: affects that iteration only; the C `for` would drift)
+    ✅ A mutable array passed to a user function that writes it kept its `const` here — fixed 2026-09-05 through the callee's effects (`effects!`)
     ⬜ A *mutable* array parameter that is rebound and then mutated (`a, b = b, a; a[1] = 0.0` with `MVector`s): Julia mutates the caller's `b`, the C mutates a local copy, because a reassigned parameter becomes a fresh variable. Exactly right for immutable arrays; a divergence for mutable ones. Needs the parameter to stay a pointer to the caller's storage when it's mutable
 
 ⬜ Project
