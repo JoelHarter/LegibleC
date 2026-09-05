@@ -151,6 +151,40 @@ block per helper would mostly restate a signature the name already
 transcribes; the user's functions, which are the C interface, get the full
 `/** … */` block described above.
 
+## Steps
+
+When one Julia line becomes several C operations, a reader has to follow
+the temps to see what happened. So each operation of such a line gets a
+*step* comment: at the end of the statement when the step is one statement,
+on the line above when it is a loop or several — and the trailing ones of a
+line are aligned with each other:
+
+```c
+// f.jl:12: f(A, b, c, D) = (A .+ b) \ c + D
+double temp1[3][3];
+addP_3x3_3(A, b, temp1);         // temp1 = A .+ b
+double temp2_c[3];
+solve_3x3_3(temp1, c, temp2_c);  // temp2_c = temp1 \ c
+add_3(temp2_c, D, out);          // out = temp2_c + D
+```
+
+The text is the step as a textbook would write it, in the spelling the
+helper comments use — `A * Bᵀ`, `a ⋅ b`, `a × b`, `A \ b`, `A⁻¹`, `det(A)`,
+`norm(a)`, `.+` and friends for a broadcast, `[C A; B C]` for a block
+construction, `A[2, :]` for a slice, `.= 0` for zeroing — with the C names
+of the operands, temps included. That's what lets the comments chain: the
+name a step produces is the name the next step consumes.
+
+A Julia line that became a single operation gets no step comment: its
+source line is right above it and says the same thing. A step is an
+operation on arrays — a helper call, a data movement, a scalar-returning
+helper such as `dot` or `det`; plain scalar arithmetic is its own comment.
+The steps stay on when `source=false`, since they are then the only Julia
+in sight.
+
+Implementation: `step!` and `steps!` in `src/c.jl`; every array emitter
+records its step.
+
 ## Placement details
 
 - A line's comment goes ahead of the first C statement produced by that line.

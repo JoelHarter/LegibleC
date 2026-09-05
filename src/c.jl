@@ -62,6 +62,10 @@ mutable struct Scope
     fors::Dict{Int, Any}
     whiles::Dict{Int, Any}
     prog::Program
+    # Step comments (see `step!`): each is (first line, last line, text, Julia line).
+    steps::Vector{Tuple{Int, Int, String, Int}}
+    current::Int                        # the statement being emitted
+    math::Dict{Int, String}             # SSA id -> the math a rendered helper call computes
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, prog::Program, copycode::Bool, blocked)
@@ -81,7 +85,8 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
     stmtline = src === nothing ? zeros(Int, length(ci.code)) : statementlines(mi, length(ci.code))
     return Scope(ci, names, result, result, false, staticarray, limit, blocked, 0, Dict{Int, String}(), prog.helpers, prog.headers,
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
-                 0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog)
+                 0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
+                 Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}())
 end
 
 include("flow.jl")
@@ -116,6 +121,7 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     body = String[]
     block!(body, sc, 1, length(ci.code))
     sc.src === nothing || annotate!(body, sc, sc.src.last)   # whatever follows the last statement
+    steps!(body, sc)
 
     # Declarations come after the walk: a regular array's size is only known once
     # something has been stored in it.
@@ -222,6 +228,7 @@ slottype(sc::Scope, i) = get(sc.slotshapes, i, widen(sc.ci.slottypes[i]))
 # Emit the C for one IR statement, appending to `lines`.
 function statement!(lines, sc::Scope, i, st)
     ci = sc.ci
+    sc.current = i
     st === nothing && return
     st isa GlobalRef && return                    # constant load; resolved where it's used
     st isa Core.NewvarNode && return
@@ -326,6 +333,7 @@ function statement!(lines, sc::Scope, i, st)
             code, _ = render(sc, i, st)
             name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
             emit!(lines, sc, "$(ctype(T)) $name = $code;")
+            haskey(sc.math, i) && step!(lines, sc, "$name = $(sc.math[i])")
         end
     elseif st isa Expr && st.head === :(=)
         # `%i = (x = rhs)`: the SSA value is the value assigned. Refer to it as `x`
@@ -401,7 +409,9 @@ function store!(lines, sc::Scope, i, x, rhs)
             A = transposed(valuetype(sc, rhs.args[2]))
             R = slottype(sc, slot)
             shape(R) === nothing && (R = A)
+            start = length(lines) + 1
             copy!(lines, sc, value(sc, rhs.args[2]), A, x, R)
+            step!(lines, sc, "$x = $(value(sc, rhs.args[2]))ᵀ"; from=start)
             sc.shapes[i] = R
         elseif any(a -> mentions(sc, x, a), rhs.args[2:end])
             # `x` is also an operand: through a temp, so nothing reads what it's writing.
@@ -432,7 +442,9 @@ function construct!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         # `SMatrix{3,3}(I)`: the identity matrix.
         literal(sc, args[1]).λ == 1 || throw(ArgumentError("only `I` itself can be made into a matrix, not a multiple of it (statement $i)"))
         declaration && emit!(lines, sc, declare(T, dest) * ";")
+        start = length(lines) + 1
         identity!(lines, sc, dest, T)
+        step!(lines, sc, "$dest = I"; from=start)
         sc.shapes[i] = T
         return
     end
@@ -443,9 +455,12 @@ function construct!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         # the result's type.
         shape(T) === nothing && throw(ArgumentError("$f needs a static array type (statement $i)"))
         declaration && emit!(lines, sc, declare(T, dest) * ";")
+        x = f === Base.fill ? value(sc, args[1]) : eltype(T) <: AbstractFloat ? "1.0" : "1"
+        start = length(lines) + 1
         f === Base.one ? identity!(lines, sc, dest, T) :
         f in (Base.zero, Base.zeros) ? zero!(lines, sc, dest, T) :
-        fill!(lines, sc, dest, T, f === Base.fill ? value(sc, args[1]) : eltype(T) <: AbstractFloat ? "1.0" : "1")
+        fill!(lines, sc, dest, T, x)
+        step!(lines, sc, f === Base.one ? "$dest = I" : f in (Base.zero, Base.zeros) ? "$dest .= 0" : "$dest .= $x"; from=start)
         sc.shapes[i] = T
         return
     end
@@ -455,7 +470,9 @@ function construct!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     R = shaped(eltype(T), Tuple(dims))
     eltype(T) <: AbstractFloat || f !== Base.ones || (x = "1")
     declaration && emit!(lines, sc, declare(R, dest) * ";")
+    start = length(lines) + 1
     f === Base.zeros ? zero!(lines, sc, dest, R) : fill!(lines, sc, dest, R, x)
+    step!(lines, sc, f === Base.zeros ? "$dest .= 0" : "$dest .= $x"; from=start)
     sc.shapes[i] = R
 end
 
@@ -520,8 +537,19 @@ function concatenate!(lines, sc::Scope, i, f, args, dest; declaration::Bool=fals
     R = shape(T) !== nothing ? T : shaped(E, Tuple(ndims(T) == 1 ? size[1:1] : size))
     ndims(R) == 1 && any(!=(1), size[2:end]) && throw(ArgumentError("a vector can't hold $(join(size, "×")) (statement $i)"))
     declaration && emit!(lines, sc, declare(R, dest) * ";")
+    start = length(lines) + 1
     construct!(lines, sc, tree, blocks, dest, R)
+    step!(lines, sc, "$dest = $(catnotation(sc, tree, blocks, f))"; from=start)
     sc.shapes[i] = R
+end
+
+# A block construction in Julia's bracket notation, with the C names: `[A B; C D]` for
+# the `hvcat` family, the `;;` form for `hvncat`.
+function catnotation(sc::Scope, tree, blocks, f)
+    hv = f === Base.hvncat
+    text(node) = node isa Integer ? spell(valuetype(sc, blocks[node]), value(sc, blocks[node])) :
+                 join((text(c) for c in node[2]), hv ? ";"^node[1] * " " : node[1] == 1 ? "; " : " ")
+    return "[" * text(tree) * "]"
 end
 
 # A broadcast tree, from its `broadcasted` root, into `dest`. Julia fuses nested
@@ -562,6 +590,10 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     name = broadcasthelper!(sc.helpers, op, cfn, types, R)
     emit!(lines, sc, "$name($(join((value(sc, a) for a in inputs), ", ")), $dest);")
+    spelled = [spell(valuetype(sc, a), value(sc, a)) for a in inputs]
+    dotted = Dict(:add => ".+", :sub => ".-", :mul => ".*", :div => "./", :pow => ".^")
+    step!(lines, sc, "$dest = " * (length(inputs) == 1 ? (cfn == :neg ? ".-$(spelled[1])" : "$op.($(spelled[1]))") :
+                                    haskey(dotted, op) ? "$(spelled[1]) $(dotted[op]) $(spelled[2])" : "$op.($(spelled[1]), $(spelled[2]))"))
     sc.shapes[i] = R
 end
 
@@ -596,6 +628,7 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         R = retype(types[1], E)
         declaration && emit!(lines, sc, declare(R, dest) * ";")
         emit!(lines, sc, "$(crosshelper!(sc.helpers, types, R))($(value(sc, args[1])), $(value(sc, args[2])), $dest);")
+        step!(lines, sc, "$dest = $(value(sc, args[1])) × $(value(sc, args[2]))")
         sc.shapes[i] = R
         return
     end
@@ -603,7 +636,9 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     if f === Base.copy
         R = valuetype(sc, args[1])
         declaration && emit!(lines, sc, declare(R, dest) * ";")
+        start = length(lines) + 1
         copy!(lines, sc, value(sc, args[1]), R, dest, R)
+        step!(lines, sc, "$dest = $(value(sc, args[1]))"; from=start)
         sc.shapes[i] = R
         return
     end
@@ -615,6 +650,7 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         R = widen(sc.ci.ssavaluetypes[i])
         declaration && emit!(lines, sc, declare(R, dest) * ";")
         emit!(lines, sc, "$name($(callargs(sc, args)), $dest);")
+        step!(lines, sc, "$dest = $name($(callargs(sc, args)))")
         sc.shapes[i] = R
         return
     end
@@ -637,12 +673,14 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         out = last ? dest : temp!(sc, nothing, unique([contribution(sc, acc); contribution(sc, a)]))
         (last ? declaration : true) && emit!(lines, sc, declare(R, out) * ";")
         emit!(lines, sc, "$(helper!(sc.helpers, op, types, R))($accname, $(value(sc, a)), $out);")
+        step!(lines, sc, "$out = $(spell(acctype, accname)) $(Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[op]) $(spell(valuetype(sc, a), value(sc, a)))")
         accname, acctype = out, R
     end
     if length(args) == 1
         R = result((acctype,))
         declaration && emit!(lines, sc, declare(R, dest) * ";")
         emit!(lines, sc, "$(helper!(sc.helpers, op, (acctype,), R))($accname, $dest);")
+        step!(lines, sc, "$dest = -$(spell(acctype, accname))")
     end
     sc.shapes[i] = R
 end
@@ -670,6 +708,7 @@ function solve!(lines, sc::Scope, i, f, args, dest; declaration::Bool=false)
         shape(A)[1] >= 4 && union!(sc.headers, ("stdio.h", "stdlib.h", "math.h"))
         declaration && emit!(lines, sc, declare(R, dest) * ";")
         emit!(lines, sc, "$(rsolvehelper!(sc.helpers, B, A, R))($(value(sc, args[1])), $(value(sc, args[2])), $dest);")
+        step!(lines, sc, "$dest = $(spell(B, value(sc, args[1]))) / $(spell(A, value(sc, args[2])))")
         sc.shapes[i] = R
         return
     end
@@ -680,6 +719,7 @@ function solve!(lines, sc::Scope, i, f, args, dest; declaration::Bool=false)
     if f === LinearAlgebra.pinv
         declaration && emit!(lines, sc, declare(R, dest) * ";")
         emit!(lines, sc, "$(pinvhelper!(sc.helpers, T, R))($(value(sc, x)), $dest);")
+        step!(lines, sc, "$dest = pinv($(spell(T, value(sc, x))))")
         sc.shapes[i] = R
         return
     end
@@ -687,11 +727,13 @@ function solve!(lines, sc::Scope, i, f, args, dest; declaration::Bool=false)
         name = method == :llt ? invLLThelper!(sc.helpers, T, R) : invhelper!(sc.helpers, T, R)
         declaration && emit!(lines, sc, declare(R, dest) * ";")
         emit!(lines, sc, "$name($(value(sc, x)), $dest);")
+        step!(lines, sc, "$dest = $(spell(T, value(sc, x)))⁻¹")
     else
         B = valuetype(sc, args[2])
         name = method == :llt ? solveLLThelper!(sc.helpers, T, B, R) : solvehelper!(sc.helpers, T, B, R)
         declaration && emit!(lines, sc, declare(R, dest) * ";")
         emit!(lines, sc, "$name($(value(sc, x)), $(value(sc, args[2])), $dest);")
+        step!(lines, sc, "$dest = $(spell(T, value(sc, x))) \\ $(spell(B, value(sc, args[2])))")
     end
     sc.shapes[i] = R
 end
@@ -707,8 +749,19 @@ function slice!(lines, sc::Scope, i, args, dest; declaration::Bool=false)
     R = widen(sc.ci.ssavaluetypes[i])
     shape(R) === nothing && (R = shaped(eltype(T), Tuple(s.extent for s in spans if !s.scalar)))
     declaration && emit!(lines, sc, declare(R, dest) * ";")
+    start = length(lines) + 1
     slice!(lines, sc, value(sc, A), T, spans, dest, R)
+    step!(lines, sc, "$dest = $(value(sc, A))[$(join((indexnotation(sc, k) for k in idx), ", "))]"; from=start)
     sc.shapes[i] = R
+end
+
+# One index as the Julia wrote it — `:`, `2:3`, or the expression — for a step comment.
+function indexnotation(sc::Scope, k)
+    x = literal(sc, k)
+    x isa Colon && return ":"
+    x isa AbstractUnitRange && return "$(first(x)):$(last(x))"
+    k isa Integer && return string(k)
+    return first(expression(sc, k))
 end
 
 # One index of a slice, as the 0-based C offset it starts at and the extent it covers
@@ -737,7 +790,9 @@ function setslice!(lines, sc::Scope, i, A, src, idx)
         copy!(lines, sc, source, S, t, S)
         source = t
     end
+    start = length(lines) + 1
     setslice!(lines, sc, value(sc, A), T, spans, source, S)
+    step!(lines, sc, "$(value(sc, A))[$(join((indexnotation(sc, k) for k in idx), ", "))] = $source"; from=start)
 end
 
 # A Julia index as a 0-based C expression.
@@ -854,10 +909,12 @@ function render(sc::Scope, i, ex::Expr)
     if f in (Base.sum, Base.prod, Base.maximum, Base.minimum, Base.any, Base.all, LinearAlgebra.norm) && n == 1 && isarray(valuetype(sc, args[1]))
         op = f === LinearAlgebra.norm ? :norm : Symbol(nameof(f))
         op == :norm && push!(sc.headers, "math.h")
+        sc.math[i] = "$op($(value(sc, args[1])))"
         return "$(reducehelper!(sc.helpers, op, valuetype(sc, args[1]), T))($(value(sc, args[1])))", PRIMARY
     end
     # The determinant: a helper that returns the scalar.
     if f === LinearAlgebra.det && n == 1 && isarray(valuetype(sc, args[1]))
+        sc.math[i] = "det($(spell(valuetype(sc, args[1]), value(sc, args[1]))))"
         return "$(dethelper!(sc.helpers, valuetype(sc, args[1]), T))($(value(sc, args[1])))", PRIMARY
     end
     # A dot product, or a row times a column: a helper that returns the scalar.
@@ -866,6 +923,7 @@ function render(sc::Scope, i, ex::Expr)
         types = (valuetype(sc, args[1]), valuetype(sc, args[2]))
         f === Base.:* && !(isrow(types[1]) && !isrow(types[2])) && throw(ArgumentError("vector * vector is only defined for a row times a column (statement $i)"))
         name = scalarhelper!(sc.helpers, f === LinearAlgebra.dot ? :dot : :mul, types, T)
+        sc.math[i] = f === LinearAlgebra.dot ? "$(value(sc, args[1])) ⋅ $(value(sc, args[2]))" : "$(spell(types[1], value(sc, args[1]))) * $(value(sc, args[2]))"
         return "$name($(value(sc, args[1])), $(value(sc, args[2])))", PRIMARY
     end
 
@@ -1069,6 +1127,46 @@ function consumed(ci, i)
         (f !== nothing && (isconstruction(f) || f === Base.materialize)) || return false
     end
     return true
+end
+
+# ---- step comments ------------------------------------------------------------------
+
+# Record that the C just emitted — everything from line `from` to the last line —
+# computes `text`, one step of the current Julia line, in the spelling the helper
+# comments use and with the C names: `temp2_A_b_c = temp1_A_b \\ c`. `steps!` turns
+# these into comments once the function is built.
+function step!(lines, sc::Scope, text; from::Int=length(lines))
+    push!(sc.steps, (from, length(lines), text, sc.stmtline[sc.current]))
+end
+
+# A value's name in a step comment: `Aᵀ` when it's transposed.
+spell(T::Type, name::AbstractString) = istransposed(T) ? name * "ᵀ" : name
+
+# Write the step comments in. On a Julia line that became more than one step, each
+# step gets its text — at the end of the line when the step is one statement, on the
+# line above when it's a loop or several — so a reader can follow the temps. A line
+# that became a single step already has its source comment and needs no more.
+function steps!(lines, sc::Scope)
+    isempty(sc.steps) && return
+    counts = Dict{Int, Int}()
+    for (_, _, _, l) in sc.steps
+        counts[l] = get(counts, l, 0) + 1
+    end
+    chosen = [s for s in sc.steps if counts[s[4]] >= 2]
+    empty!(sc.steps)
+    # The trailing comments of one Julia line's steps line up with each other.
+    for l in unique(s[4] for s in chosen)
+        trailing = [s for s in chosen if s[4] == l && s[1] == s[2]]
+        isempty(trailing) && continue
+        width = maximum(length(lines[s[2]]) for s in trailing)
+        for (_, at, text, _) in trailing
+            lines[at] = rpad(lines[at], width) * "  // " * text
+        end
+    end
+    for (from, _, text, _) in sort(filter(s -> s[1] < s[2], chosen); by=s -> -s[1])
+        indent = lines[from][1:findfirst(!isspace, lines[from])-1]
+        insert!(lines, from, indent * "// " * text)
+    end
 end
 
 # ---- calls to other functions -------------------------------------------------------

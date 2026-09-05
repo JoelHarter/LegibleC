@@ -830,3 +830,27 @@ clean: computation (arithmetic, products, solves, reductions) has an
 algorithm worth a name and a comment; movement has neither. The earlier
 grid layout was also wrong for Julia — it demanded that blocks tile — and
 the tree is both correct and simpler.
+
+---
+
+## 2026-09-05 — Step comments: the math of each operation, in C names
+
+**Decision.** When a Julia line becomes several C operations, each gets a
+comment giving that step as a textbook writes it, with the C names
+including temps: `addP_3x3_3(A, b, temp1);  // temp1 = A .+ b`, then
+`// temp2_c = temp1 \\ c`, then `// out = temp2_c + D`. A step that is a
+loop gets the comment above it; a line that became one operation gets
+none, since its source comment already says it. The spelling is the one
+the helper comments use: `ᵀ`, `⋅`, `×`, `\\`, `⁻¹`, `.+`, `[C A; B C]`,
+`A[2, :]`.
+
+**Why.** This is the second paragraph of Craft (`philosophy.md`) made
+concrete: the reader is someone strong in math who may not know C, and
+when the helpers for data movement went inline that reader lost the name
+that told them what a block of `memcpy`s was. A C programmer helping such a
+reader would write exactly these comments. Using the C names rather than
+re-spelling the Julia sub-expression keeps each comment short and makes
+them chain — the temp one step produces is the temp the next consumes —
+which is where a reader following an expression through temps actually
+gets lost. A single-step line would only repeat its source line, so it
+gets nothing.

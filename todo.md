@@ -54,7 +54,8 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ `Cstring`, function-pointer targets, and pointer results in `ccall`
     ⬜ In-place zeroing and filling: `fill!(A, 0)`, `A .= 0`, `A .= x` on a mutable array → the same `zero_`/`fill_` helper called on the existing variable (there's no separate C: "make a zero array" is a declaration plus `zero_3x4(A)`, "wipe this one" is just `zero_3x4(A)`)
     ⬜ Hardcode sizes 1–3 wherever a general algorithm would be slower or read worse than the written-out form (as `det` does), and say so in each helper's comment
-    ⬜ `SMatrix{3,3}(2I)` — a multiple of the identity; only `I` itself is accepted
+    ⬜ `SMatrix{3,3}(2I)` — a multiple of the identity; only `I` itself is accepted — and `A + 2I`, which adds to the diagonal
+    ⬜ A numeric literal coefficient, `5.3A` or `-3A`: an integer literal times a `Float64` array today produces `mul_sI64_2x2F64` and an `Int64` scalar in C; the literal should take the array's element type, giving `mul_s_2x2` and `-3.0`
     ⬜ `zero(x)`, `one(x)` on scalars
     ⬜ Loop order in `mul` when an operand is transposed: `mul_2x3_T2x3` walks `b[j][k]` with `j` inside, which strides; hand-written C would sum over `k` innermost there
 

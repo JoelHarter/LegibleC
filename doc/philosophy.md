@@ -18,8 +18,17 @@ needs one flag here and a different flag there.
 The C should look **as if an experienced C programmer wrote it by hand** —
 like the best C code looks. Not terse to the point of gibberish; quite the
 opposite: expressive names, helpful comments, and an arrangement that makes
-logical sense to a human, especially one who knows C. Nothing should betray
-a machine's bookkeeping.
+logical sense to a human. Nothing should betray a machine's bookkeeping.
+
+And the human it is written for is not only a C programmer. It is someone
+good at math, physics, or engineering who may know Julia, MATLAB, or Python
+and not C. **The C should invite that reader in**: a matrix product should
+read as a matrix product, a solve as a solve, with the mathematics visible in
+the names and the comments, so that someone who has never written a line of
+C can follow what the program does and see their own formulas in it. That
+doesn't mean bending the C toward those languages — it stays the best C it
+can be — only presenting it so a reader arriving from a higher language is
+welcomed rather than shut out.
 
 The same idea applies on the Julia side, where we control nothing but owe
 the author something: **if the source was written in a very Julian way, we
