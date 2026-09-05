@@ -804,3 +804,29 @@ that's the right trade — it's the `print_matrix(a, rows, cols)` every C
 programmer has written, generalized. The stream-first signature is what
 lets files arrive later without touching any of this, and printing is a
 different kind of thing from arithmetic, so it gets a file of its own.
+
+---
+
+## 2026-09-05 — Moving data is written inline; a helper is for computation
+
+**Decision.** Copies, block construction, slices and slice assignment,
+`zeros`, `fill`, and the identity are written where they happen — `memcpy`
+for a contiguous run, `memset` to zero, a loop otherwise — and the helpers
+that did them (`copy_2x2`, `hvcat2x2_…`, `row_2x3`, `set_2x4_2x2`,
+`zero_3x4`, `fill_3x4`, `identity_3x3`) are gone. Block construction
+follows Julia's real rule, a tree of concatenations whose pieces need only
+agree in the dimensions they don't join along, so `[A; B;; B; A]` with a
+scalar and a vector, `[A B; B A]` with a scalar and a row, and `[B;; C;;;
+D;; E]` all work. One primitive, `move!` in `src/move.jl`, does every
+movement.
+
+**Why.** A C programmer doesn't write a function called
+`hvcat2x2_2x2_2x2_2x2_2x2`; they write `memcpy(&out[i][2], B[i], …)` where
+it happens, and the source line above already says `[A B; C D]`. The names
+were unreadable and hard to design, the same construction rarely recurs
+enough to earn one, and copying an array through a function call was the
+least C thing the output did. The line between the two kinds of thing is
+clean: computation (arithmetic, products, solves, reductions) has an
+algorithm worth a name and a comment; movement has neither. The earlier
+grid layout was also wrong for Julia — it demanded that blocks tile — and
+the tree is both correct and simpler.

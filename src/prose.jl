@@ -49,26 +49,3 @@ function prose(op::Symbol, types, R=nothing; pointwise::Bool=false)
     left, right = shared ? (sizeword(a), sizeword(b)) : (d[1], d[2])
     return left * (all(isletter, sym) ? " and " : " $sym ") * right * " " * (shared ? noun(a) * " " : "") * kind * verb
 end
-
-# The comment for a block construction: "vertical concatenation of two 3-vectors",
-# "2×2 block matrix of four 2×2-matrices", "horizontal concatenation of a 3-vector and
-# a scalar". Runs of the same kind of block are counted.
-function blockprose(grid, types)
-    several(n) = n == 1 ? "a" : get(Dict(2 => "two", 3 => "three", 4 => "four", 5 => "five", 6 => "six",
-                                         7 => "seven", 8 => "eight", 9 => "nine"), n, string(n))
-    items = String[]
-    i = 1
-    while i <= length(types)
-        j = i
-        while j < length(types) && describe(types[j + 1]) == describe(types[i]); j += 1; end
-        push!(items, several(j - i + 1) * " " * describe(types[i]; plural=j > i))
-        i = j + 1
-    end
-    list = length(items) == 1 ? items[1] : join(items[1:end-1], ", ") * " and " * items[end]
-    # `grid` is the grid's dimensions, or the row lengths of a ragged `[A B; C]`.
-    d = grid isa Tuple ? collect(grid) : allequal(grid) ? [length(grid), grid[1]] : nothing
-    d !== nothing && length(d) == 2 && d[2] == 1 && return "vertical concatenation of $list"
-    d !== nothing && length(d) == 2 && d[1] == 1 && return "horizontal concatenation of $list"
-    d === nothing && return "$(length(grid))-row block matrix of $list"
-    return "$(join(d, "×")) block $(length(d) <= 2 ? "matrix" : "array") of $list"
-end

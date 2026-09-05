@@ -73,8 +73,6 @@ function helpercode(name::AbstractString, op::Symbol, types, R::Type)
         walk(idx -> "$(sub(a, names[1], idx)) $(op == :add ? "+" : "-") $(sub(b, names[2], idx))")
     elseif op == :neg
         walk(idx -> "-" * sub(types[1], names[1], idx))
-    elseif op == :copy
-        walk(idx -> sub(types[1], names[1], idx))
     elseif op == :mul && !all(T -> T <: AbstractArray, types)
         # A scalar times an array: elementwise, whichever side the scalar is on.
         a, b = types
@@ -90,7 +88,12 @@ function helpercode(name::AbstractString, op::Symbol, types, R::Type)
     else
         throw(ArgumentError("unsupported array operation: $op"))
     end
-    return definition("void", name, params, body; doc=prose(op, types, R))
+    spelled = [istransposed(T) ? n * "ᵀ" : n for (T, n) in zip(types, names)]
+    formula = op in (:add, :sub) ? "out = $(spelled[1]) $(op == :add ? "+" : "-") $(spelled[2])" :
+              op == :neg ? "out = -$(spelled[1])" :
+              op == :div ? "out = $(spelled[1]) / $(spelled[2])" :
+              "out = $(spelled[1]) * $(spelled[2])"
+    return definition("void", name, params, body; doc=[prose(op, types, R), formula])
 end
 
 # ---- the primitives every generator is built from ----------------------------------
@@ -238,47 +241,12 @@ function scalarhelper!(helpers::Dict{String, String}, op::Symbol, types, E::Type
         row = isrow(a) ? a : Transposed{eltype(a), shape(a), 1}
         body = contraction(row, b, an, bn, nothing, E)
         helpers[name] = definition(ctype(E), name, [declare(a, an; constant=true), declare(b, bn; constant=true)], body;
-                                   doc=prose(op, types))
+                                   doc=[prose(op, types), op == :dot ? "returns $an ⋅ $bn" : "returns $(an)ᵀ * $bn"])
     end
     return name
 end
 
 # ---- the rest ----------------------------------------------------------------------
-
-# The helper that fills an array of type `R` with one value: `fill_3`, `fill_2x2`. Its
-# only input is a scalar, which says nothing about the size, so the output's goes in
-# the name — the same reason `hvcat2x2_…` carries its grid.
-function fillhelper!(helpers::Dict{String, String}, R::Type)
-    name = "fill_" * outname(R)
-    if !haskey(helpers, name)
-        body = elementwise(shape(R), idx -> "out$(brackets(idx)) = a;")
-        helpers[name] = definition("void", name, ["$(ctype(eltype(R))) a", declare(R, "out"; restrict=true)], body; doc="$(describe(R)) fill")
-    end
-    return name
-end
-
-# The all-zero array of type `R`: `zero_3x4`. One `memset` — all-zero bytes are zero in
-# every C type the transpiler emits.
-function zerohelper!(helpers::Dict{String, String}, R::Type)
-    name = "zero_" * outname(R)
-    haskey(helpers, name) || (helpers[name] = definition("void", name, [declare(R, "out"; restrict=true)], [zeroing(R)]; doc="zero $(describe(R))"))
-    return name
-end
-
-# The identity matrix of type `R`: `identity_3x3`. Zeroed as a block, then ones down the
-# diagonal — `min(m, n)` of them if it isn't square.
-function identityhelper!(helpers::Dict{String, String}, R::Type)
-    ndims(R) == 2 || throw(ArgumentError("the identity is a matrix, not a $(describe(R))"))
-    name = "identity_" * outname(R)
-    if !haskey(helpers, name)
-        d = minimum(shape(R))
-        one = ctype(eltype(R)) == "float" ? "1.0f" : eltype(R) <: AbstractFloat ? "1.0" : "1"
-        i = d > 1 ? "i" : "0"
-        body = [zeroing(R); nest(live([("i", d)]), ["out[$i][$i] = $one;"])]
-        helpers[name] = definition("void", name, [declare(R, "out"; restrict=true)], body; doc="identity $(describe(R))")
-    end
-    return name
-end
 
 # The determinant of a square matrix of type `T`, returned as `E`: `det_3x3`. Sizes 1–3
 # are written out, the way a person writes them. From 4 on it's cofactor expansion along
@@ -306,7 +274,7 @@ function dethelper!(helpers::Dict{String, String}, T::Type, E::Type)
         loop = nest([("j", n)], [cut; "det += sign * $(access(T, A, ["0", "j"])) * $(dethelper!(helpers, S, E))(M);"; "sign = -sign;"])
         ["$(ctype(E)) det = $zero;"; "$(ctype(E)) sign = $one;"; declare(S, "M") * ";"; loop; "return det;"]
     end
-    helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc="$(describe(T)) determinant", inline=n <= 3)
+    helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc=["$(describe(T)) determinant", "returns det($(istransposed(T) ? A * "ᵀ" : A))"], inline=n <= 3)
     return name
 end
 
@@ -330,28 +298,7 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
            op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
            op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a * $a;"]); "return $(ctype(E) == "float" ? "sqrtf" : "sqrt")(sum);"] :
            throw(ArgumentError("unsupported reduction: $op"))
-    helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc=prose(op, (T,)))
-    return name
-end
-
-# A slice of an array into a smaller one: a row or a column of a matrix, or a run of a
-# vector. The position is a parameter, 0-based, so one helper serves every position.
-function slicehelper!(helpers::Dict{String, String}, kind::Symbol, T::Type, R::Type)
-    m = kind == :row ? "row" : kind == :col ? "col" : "slice"
-    name = m * "_" * dims(T) * (kind == :slice ? "_" * dims(R) : "")
-    haskey(helpers, name) && return name
-    A = inputs((T,))[1]
-    body, param, doc = if kind == :row
-        nest([("j", shape(R)[1])], ["out[j] = $(access(T, A, ["i", "j"]));"]), "int i",
-        ["row of a $(describe(T))", "@param i  the row, 0-based"]
-    elseif kind == :col
-        nest([("i", shape(R)[1])], ["out[i] = $(access(T, A, ["i", "j"]));"]), "int j",
-        ["column of a $(describe(T))", "@param j  the column, 0-based"]
-    else
-        nest([("i", shape(R)[1])], ["out[i] = $(A)[from + i];"]), "int from",
-        ["$(shape(R)[1])-element slice of a $(describe(T))", "@param from  where the slice starts, 0-based"]
-    end
-    helpers[name] = definition("void", name, [declare(T, A; constant=true), param, declare(R, "out"; restrict=true)], body; doc)
+    helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc=[prose(op, (T,)), "returns $op($A)"])
     return name
 end
 
@@ -430,7 +377,7 @@ function luhelper!(helpers::Dict{String, String}, T::Type)
             "    }",
             "}"]
     helpers[name] = definition("void", name, [declare(T, A; constant=true), "$(ctype(E)) LU[restrict $n][$n]", "int p[restrict $n]"], body;
-                               doc=["LU decomposition of a $(describe(T)) with partial pivoting",
+                               doc=["LU decomposition of a $(describe(T)) with partial pivoting", "L * U = $A[p, :]",
                                     "@param LU  L below the diagonal (unit diagonal implied), U on and above it",
                                     "@param p   the row permutation: row i of LU is row p[i] of $A"], inline=false)
     return name
@@ -474,14 +421,14 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
                     "$(helper!(helpers, :mul, (AT, T), G))($A, $A, G);",
                     "$(helper!(helpers, :mul, (AT, B), c))($A, $b, c);",
                     "$(solveLLThelper!(helpers, G, c, R))(G, c, out);"]
-            doc = "$(describe(T)) \\ $(describe(B)) least squares by the normal equations"
+            doc = ["$(describe(T)) \\ $(describe(B)) least squares by the normal equations", "out = $A \\ $b, least squares"]
         else
             G, y = shaped(E, (m, m)), shaped(E, (m,))
             body = ["$(ctype(E)) G[$m][$m];", "$(ctype(E)) y[$m];",
                     "$(helper!(helpers, :mul, (T, AT), G))($A, $A, G);",
                     "$(solveLLThelper!(helpers, G, B, y))(G, $b, y);",
                     "$(helper!(helpers, :mul, (AT, y), R))($A, y, out);"]
-            doc = "$(describe(T)) \\ $(describe(B)) minimum-norm solve through A Aᵀ"
+            doc = ["$(describe(T)) \\ $(describe(B)) minimum-norm solve through A Aᵀ", "out = $A \\ $b, minimum norm"]
         end
         helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=false)
         return name
@@ -501,7 +448,7 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
                 "    }",
                 "}"]
         helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
-                                   doc="$(describe(T)) \\ $(describe(B)) solve, column by column", inline=false)
+                                   doc=["$(describe(T)) \\ $(describe(B)) solve, column by column", "out = $A \\ $b"], inline=false)
         return name
     end
     a(i, j) = access(T, A, [string(i), string(j)])
@@ -526,7 +473,8 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
     else
         vcat(["$(ctype(E)) LU[$n][$n];", "int p[$n];", "$(luhelper!(helpers, T))($A, LU, p);"], lusolve(n, "out", access(B, b, ["p[i]", "0"])))
     end
-    doc = n <= 3 ? "$(describe(T)) \\ $(describe(B)) solve by Cramer's rule" : "$(describe(T)) \\ $(describe(B)) solve by LU with partial pivoting"
+    doc = [n <= 3 ? "$(describe(T)) \\ $(describe(B)) solve by Cramer's rule" : "$(describe(T)) \\ $(describe(B)) solve by LU with partial pivoting",
+           "out = $(istransposed(T) ? A * "ᵀ" : A) \\ $b"]
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=n <= 3)
     return name
 end
@@ -549,7 +497,7 @@ function rsolvehelper!(helpers::Dict{String, String}, B::Type, A::Type, R::Type)
                                             ["$inner($An, row, x);"],
                                             nest([("j", n)], ["$(access(R, "out", [i, "j"])) = x[j];"]))))
     helpers[name] = definition("void", name, [declare(B, Bn; constant=true), declare(A, An; constant=true), declare(R, "out"; restrict=true)], body;
-                               doc="$(describe(B)) / $(describe(A)) solve, row by row through the transpose", inline=false)
+                               doc=["$(describe(B)) / $(describe(A)) solve, row by row through the transpose", "out = $Bn / $An"], inline=false)
     return name
 end
 
@@ -566,19 +514,19 @@ function pinvhelper!(helpers::Dict{String, String}, T::Type, R::Type)
     A = inputs((T,))[1]
     AT = transposed(T)
     body, doc = if m == n
-        ["$(invhelper!(helpers, T, R))($A, out);"], "pseudoinverse of a square $(describe(T)): the inverse"
+        ["$(invhelper!(helpers, T, R))($A, out);"], ["pseudoinverse of a square $(describe(T)): the inverse", "out = $(A)⁻¹"]
     elseif m > n
         G = shaped(E, (n, n))
         ["$(ctype(E)) G[$n][$n];", "$(ctype(E)) Ginv[$n][$n];",
          "$(helper!(helpers, :mul, (AT, T), G))($A, $A, G);",
          "$(invLLThelper!(helpers, G, G))(G, Ginv);",
-         "$(helper!(helpers, :mul, (G, AT), R))(Ginv, $A, out);"], "pseudoinverse of a tall $(describe(T)), (AᵀA)⁻¹Aᵀ"
+         "$(helper!(helpers, :mul, (G, AT), R))(Ginv, $A, out);"], ["pseudoinverse of a tall $(describe(T))", "out = ($(A)ᵀ$A)⁻¹$(A)ᵀ"]
     else
         G = shaped(E, (m, m))
         ["$(ctype(E)) G[$m][$m];", "$(ctype(E)) Ginv[$m][$m];",
          "$(helper!(helpers, :mul, (T, AT), G))($A, $A, G);",
          "$(invLLThelper!(helpers, G, G))(G, Ginv);",
-         "$(helper!(helpers, :mul, (AT, G), R))($A, Ginv, out);"], "pseudoinverse of a short $(describe(T)), Aᵀ(AAᵀ)⁻¹"
+         "$(helper!(helpers, :mul, (AT, G), R))($A, Ginv, out);"], ["pseudoinverse of a short $(describe(T))", "out = $(A)ᵀ($A$(A)ᵀ)⁻¹"]
     end
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=false)
     return name
@@ -616,7 +564,7 @@ function invhelper!(helpers::Dict{String, String}, T::Type, R::Type)
              "    " .* lusolve(n, "x", "p[i] == j ? $one : $zero"),
              ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
     end
-    doc = n <= 3 ? "$(describe(T)) inverse by the adjugate" : "$(describe(T)) inverse by LU with partial pivoting"
+    doc = [n <= 3 ? "$(describe(T)) inverse by the adjugate" : "$(describe(T)) inverse by LU with partial pivoting", "out = $(A)⁻¹"]
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=n <= 3)
     return name
 end
@@ -673,7 +621,7 @@ function llthelper!(helpers::Dict{String, String}, T::Type)
                 "}"]
     end
     helpers[name] = definition("void", name, [declare(T, A; constant=true), "$(ctype(E)) L[restrict $n][$n]"], body;
-                               doc="Cholesky factor of a $(describe(T)), A = L Lᵀ", inline=false)
+                               doc=["Cholesky factor of a $(describe(T))", "$A = L Lᵀ"], inline=false)
     return name
 end
 
@@ -705,7 +653,7 @@ function solveLLThelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Typ
     A, b = inputs((T, B))
     body = vcat(["$(ctype(E)) L[$n][$n];", "$(llthelper!(helpers, T))($A, L);"], lltsolve(n, "out", access(B, b, ["i", "0"])))
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
-                               doc="$(describe(T)) \\ $(describe(B)) solve by Cholesky", inline=false)
+                               doc=["$(describe(T)) \\ $(describe(B)) solve by Cholesky", "out = $A \\ $b, $A symmetric positive definite"], inline=false)
     return name
 end
 
@@ -722,52 +670,9 @@ function invLLThelper!(helpers::Dict{String, String}, T::Type, R::Type)
                 "    " .* lltsolve(n, "x", "i == j ? $one : $zero"),
                 ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body;
-                               doc="$(describe(T)) inverse by Cholesky", inline=false)
+                               doc=["$(describe(T)) inverse by Cholesky", "out = $(A)⁻¹, $A symmetric positive definite"], inline=false)
     return name
 end
-
-# A block of a matrix copied out: `block_3x4_2x2(A, i0, j0, out)`, the corner 0-based.
-function blockhelper!(helpers::Dict{String, String}, T::Type, R::Type)
-    name = "block_" * dims(T) * "_" * dims(R)
-    haskey(helpers, name) && return name
-    A = inputs((T,))[1]
-    body = nest([("i", shape(R)[1]), ("j", shape(R)[2])], ["out[i][j] = $(access(T, A, ["i0 + i", "j0 + j"]));"])
-    helpers[name] = definition("void", name, [declare(T, A; constant=true), "int i0", "int j0", declare(R, "out"; restrict=true)], body;
-                               doc=["$(describe(R)) block of a $(describe(T))", "@param i0  the block's first row, 0-based", "@param j0  the block's first column, 0-based"])
-    return name
-end
-
-# A whole array assigned into part of a mutable one: `setrow_2x4_4(A, i, v)`,
-# `setcol_2x4_2(A, j, v)`, `set_2x4_2x2(A, i0, j0, B)` for a block, `set_5_2(v, from, w)`
-# for a run of a vector — the mirror images of `row_`, `col_`, `block_`, `slice_`. Named
-# for the target and the source; the position is 0-based.
-function sethelper!(helpers::Dict{String, String}, kind::Symbol, T::Type, S::Type)
-    name = (kind == :row ? "setrow" : kind == :col ? "setcol" : "set") * "_" * dims(T) * "_" * dims(S)
-    haskey(helpers, name) && return name
-    A, b = inputs((T, S))
-    body, params, doc = if kind == :run
-        nest([("i", extent(S, 1))], ["$A[from + i] = $(access(S, b, ["i"]));"]), ["int from"],
-        ["run of a $(describe(T)) set from a $(describe(S))", "@param from  where the run starts, 0-based"]
-    elseif kind == :row
-        nest([("j", extent(S, 1))], ["$A[i][j] = $(access(S, b, ["j"]));"]), ["int i"],
-        ["row of a $(describe(T)) set from a $(describe(S))", "@param i  the row, 0-based"]
-    elseif kind == :col
-        nest([("i", extent(S, 1))], ["$A[i][j] = $(access(S, b, ["i"]));"]), ["int j"],
-        ["column of a $(describe(T)) set from a $(describe(S))", "@param j  the column, 0-based"]
-    else
-        nest([("i", extent(S, 1)), ("j", extent(S, 2))], ["$A[i0 + i][j0 + j] = $(access(S, b, ["i", "j"]));"]), ["int i0", "int j0"],
-        ["block of a $(describe(T)) set from a $(describe(S))", "@param i0  the block's first row, 0-based", "@param j0  the block's first column, 0-based"]
-    end
-    helpers[name] = definition("void", name, [declare(T, A; restrict=true); params; declare(S, b; constant=true)], body; doc)
-    return name
-end
-
-# The output's description for a helper named by what it makes: `3x4`, `2x2I64` — the
-# type appears by the same rule as for inputs, only when it isn't Float64.
-outname(R::Type) = dims(R) * (eltype(R) === Float64 ? "" : abbrev(eltype(R)))
-
-# The line that zeroes `out` of type `R`.
-zeroing(R::Type) = "memset(out, 0, sizeof($(ctype(eltype(R)))$(join("[$n]" for n in shape(R)))));"
 
 # The cross product. Only ever 3-vectors, which the name therefore leaves out: `cross`.
 function crosshelper!(helpers::Dict{String, String}, types, R::Type)
@@ -777,7 +682,7 @@ function crosshelper!(helpers::Dict{String, String}, types, R::Type)
         (a, b), (an, bn) = types, inputs(types)
         helpers[name] = definition("void", name, [declare(a, an; constant=true), declare(b, bn; constant=true), declare(R, "out"; restrict=true)],
                                    ["out[0] = $an[1] * $bn[2] - $an[2] * $bn[1];", "out[1] = $an[2] * $bn[0] - $an[0] * $bn[2];",
-                                    "out[2] = $an[0] * $bn[1] - $an[1] * $bn[0];"]; doc=prose(:cross, types, R))
+                                    "out[2] = $an[0] * $bn[1] - $an[1] * $bn[0];"]; doc=[prose(:cross, types, R), "out = $an × $bn"])
     end
     return name
 end
@@ -800,7 +705,11 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
         body = nest(pairs, ["$(access(R, "out", idx)) = $expr;"])
         params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
         push!(params, declare(R, "out"; restrict=true))
-        helpers[name] = definition("void", name, params, body; doc=prose(op, types, R; pointwise=true))
+        spelled = [istransposed(T) ? n * "ᵀ" : n for (T, n) in zip(types, argnames)]
+        dotted = Dict(:add => ".+", :sub => ".-", :mul => ".*", :div => "./", :pow => ".^")
+        formula = length(types) == 1 ? (cfn == :neg ? "out = .-$(spelled[1])" : "out = $op.($(spelled[1]))") :
+                  haskey(dotted, op) ? "out = $(spelled[1]) $(dotted[op]) $(spelled[2])" : "out = $op.($(spelled[1]), $(spelled[2]))"
+        helpers[name] = definition("void", name, params, body; doc=[prose(op, types, R; pointwise=true), formula])
     end
     return name
 end
@@ -819,117 +728,3 @@ function broadcastshape(types)
     return Tuple(out)
 end
 
-# Block construction of any dimension: each block copied into place by one loop over
-# its own dimensions, with its offsets added. `[A B; C D]`, `[u; v]`, `[A;; B]`, and
-# `[B;; C;;; D;; E]` all come here; only the offsets differ. A scalar block takes one
-# cell. Named for the form and the blocks: `hvcat2x2_2x2_2x2_2x2_2x2`, `vcat_3_3`,
-# `hvncat1x2x2_…`.
-function cathelper!(helpers::Dict{String, String}, form::AbstractString, types, offsets, R::Type; grid)
-    descs = [T <: AbstractArray ? dims(T) : abbrev(T) for T in types]
-    name = form * "_" * join(descs, "_")
-    haskey(helpers, name) && return name
-    argnames = inputs(types)
-    N = ndims(R)
-    lines = String[]
-    for (k, T) in enumerate(types)
-        idx, pairs = loopindices(Tuple(extent(T, d) for d in 1:N); taken=argnames)
-        place(o, x) = x == "0" ? string(o) : o == 0 ? x : "$o + $x"
-        subs = [place(offsets[k][d], idx[d]) for d in 1:N]
-        inner = "$(access(R, "out", subs)) = $(access(T, argnames[k], idx));"
-        append!(lines, nest(pairs, [inner]))
-    end
-    params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
-    push!(params, declare(R, "out"; restrict=true))
-    helpers[name] = definition("void", name, params, lines; doc=blockprose(grid, types))
-    return name
-end
-
-
-# The line that zeroes `out` of type `R`.
-zeroing(R::Type) = "memset(out, 0, sizeof($(ctype(eltype(R)))$(join("[$n]" for n in shape(R)))));"
-
-# The cross product. Only ever 3-vectors, which the name therefore leaves out: `cross`.
-function crosshelper!(helpers::Dict{String, String}, types, R::Type)
-    all(T -> shape(T) == (3,), types) || throw(ArgumentError("cross: both arguments must be 3-vectors"))
-    name = helpername(:cross, types)
-    if !haskey(helpers, name)
-        (a, b), (an, bn) = types, inputs(types)
-        helpers[name] = definition("void", name, [declare(a, an; constant=true), declare(b, bn; constant=true), declare(R, "out"; restrict=true)],
-                                   ["out[0] = $an[1] * $bn[2] - $an[2] * $bn[1];", "out[1] = $an[2] * $bn[0] - $an[0] * $bn[2];",
-                                    "out[2] = $an[0] * $bn[1] - $an[1] * $bn[0];"]; doc=prose(:cross, types, R))
-    end
-    return name
-end
-
-# A broadcast: `f` applied elementwise over `types`, with Julia's rules — dimensions
-# line up from the left, and a size of 1 stretches to match. An operand with no
-# dimension on some axis just contributes nothing there; `access` does the stretching
-# by indexing a dimension of extent 1 with `0`.
-function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types, R::Type)
-    name = helpername(op, types; pointwise=true)
-    if !haskey(helpers, name)
-        argnames = inputs(types)
-        idx, pairs = loopindices(extents(R); taken=argnames)
-        accesses = [access(T, n, idx) for (T, n) in zip(types, argnames)]
-        expr = cfn isa String ? "$cfn($(join(accesses, ", ")))" :
-               cfn == :neg ? "-" * accesses[1] :
-               cfn == :div && all(T -> (T <: AbstractArray ? eltype(T) : T) <: Integer, types) ?
-                   "($(ctype(eltype(R))))$(accesses[1]) / ($(ctype(eltype(R))))$(accesses[2])" :
-               join(accesses, " " * Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[cfn] * " ")
-        body = nest(pairs, ["$(access(R, "out", idx)) = $expr;"])
-        params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
-        push!(params, declare(R, "out"; restrict=true))
-        helpers[name] = definition("void", name, params, body; doc=prose(op, types, R; pointwise=true))
-    end
-    return name
-end
-
-# The shape of a broadcast over `types`: one extent per axis up to the last axis any
-# operand reaches, every dimension the operands brought kept (extent-1 ones included).
-# Nothing if the extents don't line up.
-function broadcastshape(types)
-    nd = maximum(T -> isempty(axis(T)) ? 0 : maximum(axis(T)), types)
-    out = Int[]
-    for d in 1:nd
-        big = unique(filter(!=(1), [extent(T, d) for T in types]))
-        length(big) <= 1 || return nothing
-        push!(out, isempty(big) ? 1 : big[1])
-    end
-    return Tuple(out)
-end
-
-# Block construction: `[A B; C D]` (`rows` gives the blocks per row), `[u; v]`, `[u v]`.
-# Each block is copied into place by one loop over its own dimensions; a scalar takes
-# one cell.
-function cathelper!(helpers::Dict{String, String}, kind::Symbol, rows, types, R::Type)
-    descs = [T <: AbstractArray ? dims(T) : abbrev(T) for T in types]
-    name = (kind == :hvcat ? "hvcat" * join(rows, "x") : string(kind)) * "_" * join(descs, "_")
-    if !haskey(helpers, name)
-        argnames = inputs(types)
-        ii, jj = indices(2; taken=argnames)
-        lines = String[]
-        offset(base, x) = x == "0" ? string(base) : base == 0 ? x : "$base + $x"
-        r0 = 0
-        k = 1
-        for nblocks in rows
-            c0 = 0
-            height = 0
-            for _ in 1:nblocks
-                T = types[k]
-                h, w = extent(T, 1), extent(T, 2)
-                height == 0 || height == h || throw(ArgumentError("$kind: blocks in a row have different heights"))
-                height = h
-                i, j = h > 1 ? ii : "0", w > 1 ? jj : "0"
-                inner = "$(access(R, "out", [offset(r0, i), offset(c0, j)])) = $(access(T, argnames[k], [i, j]));"
-                append!(lines, nest(live([(ii, h), (jj, w)]), [inner]))
-                c0 += w
-                k += 1
-            end
-            r0 += height
-        end
-        params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
-        push!(params, declare(R, "out"; restrict=true))
-        helpers[name] = definition("void", name, params, lines; doc=blockprose(kind, rows, types))
-    end
-    return name
-end

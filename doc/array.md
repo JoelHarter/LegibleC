@@ -115,13 +115,31 @@ functions in `scalar.md`.
 
 ## Construction
 
-`[A B; C D]`, `[u; v]`, `[u v]`, and the `;;` forms — `[A; B;; C; D]` for
-the same grid listed down each column, `[A;; B]`, and `[B;; C;;; D;; E]` for
-a 2×4×2 array — are all one rule: a grid of blocks of any dimension, each
-copied into place at its offsets by one loop over its own dimensions. The
-helpers are `hvcat2x2_…`, `vcat_…`, `hcat_…`, `hvncat1x2x2_…`, with the
-grid in the name since the blocks alone don't say how they're arranged. A
-scalar among the blocks takes one cell; a ragged `[A B; C]` works too.
+`[A B; C D]`, `[u; v]`, `[u v]`, and the `;;` forms — `[A; B;; C; D]`,
+`[A;; B]`, `[B;; C;;; D;; E]` for a 2×4×2 array — are all one rule, Julia's
+own: a construction is a tree of concatenations, each `;`-group stacked
+along the first dimension, the results joined along the second, `;;;` along
+the third, and so on. The pieces of one group only have to agree in the
+dimensions it doesn't join along, so `[A; B;; B; A]` with a scalar `A` and a
+2-vector `B` is a 3×2, `[A B; B A]` with a 1×2 `B` is a 2×3, and a ragged
+`[A B; C]` works. From the tree come every block's offsets.
+
+There is no helper for any of this. Each block is copied into place where
+the construction happens, one `memcpy` per contiguous row when the block's
+storage lines up with the result's, a loop when it doesn't (a vector into a
+column, a transposed block), a single assignment for a scalar. That's what
+a C programmer writes, and the `file:line:` comment above says which
+construction it is:
+
+```c
+// matrix.jl:9: blocks(A::M2, B::M2, C::M2, D::M2) = [A B; C D]
+for (int i = 0; i < 2; i++) {
+    memcpy(&out[i][0], A[i], sizeof(double[2]));
+    memcpy(&out[i][2], B[i], sizeof(double[2]));
+}
+…
+```
+
 A literal with no arrays in it — `[1.0 2.0; 3.0 4.0]`,
 `[1.0, 2.0, 3.0]`, `SVector(1.0, 2.0, 3.0)`, `@SMatrix […]`, `SA[…]` — is
 assigned element by element, no helper:
@@ -133,23 +151,23 @@ out[1][0] = 3.0;
 out[1][1] = 4.0;
 ```
 
-`zeros`, `zeros(T)`, and `zero(A)` are one `memset` (`zero_3x4`); `ones` and
-`fill` assign every element (`fill_3x4`); `one(A)` and `SMatrix{3,3}(I)` are
-the `memset` and then ones down the diagonal (`identity_3x3`).
+`zeros`, `zeros(T)`, and `zero(A)` are one `memset`, inline; `ones` and
+`fill` are a loop; `one(A)` and `SMatrix{3,3}(I)` are the `memset` and then
+ones down the diagonal. `copy(A)` and `B = A` are one `memcpy`; a copy that
+changes layout (`B = A'` where Julia makes a real matrix) is a loop.
 
 ## Slices and reductions
 
-`A[i, :]`, `A[:, j]`, `v[2:4]`, and a block `A[1:2, 2:3]` or `A[:, 2:end]`
-are copies, as in Julia, through `row_2x3(A, i - 1, out)`, `col_2x3`,
-`slice_5_3(v, 1, out)`, and `block_3x4_2x2(A, 0, 1, out)`, with the position
-a 0-based parameter so one helper serves every position. `end` is the size,
-which inference already knows.
+`A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[:, 2:end]`, `A[i, 2:3]`, in
+any dimension, are copies, as in Julia, written inline: a row or a run is
+one `memcpy`, a block a `memcpy` per row, a column a loop. Each index is a
+scalar (that dimension is dropped), a colon, or a literal range; `end` is
+the size, which inference already knows.
 
 Assigning the other way into a mutable array — `A[2, :] = v`, `A[:, 1] = v`,
-`A[:, 3:end] = B`, `v[2:3] = w` — is the mirror image: `setrow_2x4_4(A, 1,
-v)`, `setcol_2x4_2`, `set_2x4_2x2(A, 0, 2, B)`, `set_5_2(v, 1, w)`. The
-shapes must match, as Julia requires. Not yet: part of a row or column
-(`A[i, 2:3] = v`), and a scalar or broadcast into a slice (`A[:, 1] .= 0`). `sum`,
+`A[:, 3:end] = B`, `v[2:3] = w` — is the same movement reversed. The shapes
+must match, as Julia requires. Not yet: a scalar or broadcast into a slice
+(`A[:, 1] .= 0`), and a range held in a variable. `sum`,
 `prod`, `maximum`, `minimum`, `any`, `all`, and `norm` are one loop each,
 returning the scalar (`sum_3`, `maximum_2x3`, `norm_3`); `maximum` and
 `minimum` compare, so a NaN is passed over where Julia would return it.
@@ -160,7 +178,7 @@ returning the scalar (`sum_3`, `maximum_2x3`, `norm_3`); `maximum` and
 is also an operand — `A = A * A`, or `v = [v[3], v[1] + v[2], 0.0]` — writing
 into it directly would overwrite values still being read, so the result goes
 through a temp and is then copied: `mul_2x2_2x2(A, A, temp1_A);
-copy_2x2(temp1_A, A);`. Elementwise operations would survive aliasing;
+memcpy(A, temp1_A, sizeof(double[2][2]));`. Elementwise operations would survive aliasing;
 matrix multiplication wouldn't. The rule is applied uniformly rather than
 per operation, and it is what makes `restrict` on every `out` an honest
 promise.
@@ -176,7 +194,7 @@ The meaning of each follows Julia's definition.
 | Julia | helper | note |
 |---|---|---|
 | `A + B`, `A - B`, `-A` | `add_2x2`, `sub_2x2`, `neg_2x2` | same-shaped arrays of any dimension |
-| `copy(A)`, `B = A` | `copy_2x2` | |
+| `copy(A)`, `B = A` | inline `memcpy` | |
 | `s * A`, `A * s`, `A / s`, `s \ A` | `mul_s_2x2`, `div_2x2_s` | elementwise |
 | `A * B`, `A * v`, `v' * A`, `v * w'`, `A * B'` | `mul_2x2_2x3`, `mul_2x2_2`, `mul_T3_3x2`, `mul_3_T3`, `mul_2x3_T2x3` | one contraction for all; `linear.md` |
 | `v' * w`, `dot(v, w)` | `mul_T3_3`, `dot_3` | return the scalar |
@@ -184,10 +202,10 @@ The meaning of each follows Julia's definition.
 | `det(A)`, `A \ b`, `B / A`, `inv(A)`, `pinv(A)`, `cholesky(A) \ b` | `det_3x3`, `solve_3x3_3`, `rsolve_2x3_3x3`, `inv_3x3`, `pinv_4x3`, `solveLLT_3x3_3` | `linear.md` |
 | `A .+ B`, `v .* M`, `exp.(A)` | `addP_2x2_2x2`, `mulP_3_3x2`, `expP_2x2` | every input listed: broadcasting leaves the shapes open |
 | `A'`, `transpose(A)` | nothing | the same storage |
-| `[A B; C D]`, `[u; v]`, `[u v]`, `[A;; B]`, `[B;; C;;; D;; E]` | `hvcat2x2_…`, `vcat_3_3`, `hcat_3_3`, `hvncat1x2x2_…` | any dimension |
-| `zeros`, `zero(A)`; `ones`, `fill`; `one(A)`, `SMatrix{3,3}(I)` | `zero_3x4`, `fill_3x4`, `identity_3x3` | |
-| `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]` | `row_2x3`, `col_2x3`, `slice_5_3`, `block_3x4_2x2` | |
-| `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:4] = B`, `v[2:3] = w` | `setrow_2x4_4`, `setcol_2x4_2`, `set_2x4_2x2`, `set_5_2` | into a mutable array |
+| `[A B; C D]`, `[u; v]`, `[u v]`, `[A;; B]`, `[B;; C;;; D;; E]` | inline `memcpy` per row, or a loop | any dimension, any pieces that line up |
+| `zeros`, `zero(A)`; `ones`, `fill`; `one(A)`, `SMatrix{3,3}(I)` | inline `memset`; a loop; both | |
+| `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[i, 2:3]` | inline `memcpy` or a loop | any dimension |
+| `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:4] = B`, `v[2:3] = w` | inline `memcpy` or a loop | into a mutable array |
 | `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm` | `sum_3`, `maximum_2x3`, `norm_3` | |
 
 Shape mismatches are errors at transpile time, as they'd be at run time in

@@ -22,7 +22,7 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ `Δt` → `Deltat`: decide whether Greek-then-letter gets a separator
 
 ⬜ Language coverage (`doc/flow.md`; the wider catalogue of what could map, both ways, is `doc/dev/map.md`)
-    ✅ Slicing: `v[2:3]`, `A[i, :]`, `A[:, j]`, blocks `A[1:2, 2:3]`, and assignment into all of them — done 2026-09-05; still open: `A[i, 2:3]` (part of a row), a range held in a variable, N-D slices, `A[:, 1] .= 0`
+    ✅ Slicing and slice assignment in any dimension — done 2026-09-05, inline; still open: a range held in a variable, `A[:, 1] .= 0`
     ✅ Reductions: `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all` — done 2026-09-04; `maximum`/`minimum` skip a NaN where Julia returns it
     ⬜ `for` over the elements of an array (`for x in v`), and ranges with a non-literal step
     ⬜ `while` whose header can't be inlined — the `while (true) { …; if (!c) break; }` fallback is written but untested

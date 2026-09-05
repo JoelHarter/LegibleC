@@ -142,7 +142,7 @@ function printarray!(lines, sc::Scope, io, a)
         R = plain(juliatype(T))
         t = temp!(sc, nothing, contribution(sc, a))
         emit!(lines, sc, declare(R, t) * ";")
-        emit!(lines, sc, "$(copyhelper(sc, a, R))($x, $t);")
+        copy!(lines, sc, x, T, t, R)
         T, x = R, t
     end
     pointer = ndims(T) == 1 ? x : "&" * x * "[0]"^ndims(T)

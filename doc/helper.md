@@ -1,12 +1,20 @@
 # Helper
 
-Every operation on arrays is a call to a *helper*: a `static` C function
-generated for that operation at those argument types, written once, ahead of
-the functions that use it. This is what they look like, how they're built,
-and how they're named.
+Every *computation* on arrays is a call to a *helper*: a `static` C
+function generated for that operation at those argument types, written
+once, ahead of the functions that use it. This is what they look like, how
+they're built, and how they're named.
+
+A helper is for computation; *moving* data is written inline where it
+happens, as a C programmer writes it — `memcpy` for a contiguous run,
+`memset` to zero, a loop otherwise. Copies, block construction, slices and
+slice assignment, `zeros`, `fill`, and the identity have no helpers and no
+names; the `file:line:` comment above them says what they are. See
+`array.md`, and `src/move.jl`.
 
 ```c
 /// 2×2-matrix * 2-vector multiplication
+/// out = A * b
 static inline void mul_2x2_2(const double A[2][2], const double b[2], double out[restrict 2]) {
     for (int i = 0; i < 2; i++) {
         out[i] = 0.0;
@@ -58,13 +66,11 @@ vector, a transposed matrix, a 7-D array — and:
 - every elementwise operation walks the output in storage order with plain
   subscripts when every operand lines up the same way, and through `access`
   when one is transposed relative to the others (`A + B'`);
-- every block in `[A B; C D]` is placed by one loop over its own dimensions
-  with offsets added;
 - every reduction is one loop in storage order.
 
 Loops of extent 1 are not emitted; their index is `0`. Implementation:
 `access`, `nest`, `loopindices`, `contraction`, `helpercode`,
-`broadcasthelper!`, `cathelper!`, `reducehelper!` in `src/helper.jl`.
+`broadcasthelper!`, `reducehelper!` in `src/helper.jl`.
 
 ## Names
 
@@ -109,11 +115,9 @@ isn't. The abbreviations are in `scalar.md`.
   lists in full as `add_2x3_T3x2`: the shapes agree but the storage doesn't.)
 - `cross` fixes the shapes entirely — always two 3-vectors — so only the
   types remain: `cross`, `cross_F32`, `cross_F64F32`.
-- When the inputs don't determine the **output** — `fill`'s only input is a
-  scalar, `hvcat`'s blocks don't say how they're arranged, a slice's length
-  isn't in its inputs — the output's description goes in: `fill_3`,
-  `zero_2x2I64`, `hvcat2x2_…`, `slice_5_3`, `block_3x4_2x2`; and a slice
-  assignment names its target and its source, `setrow_2x4_4`, `set_5_2`.
+- When the inputs don't determine the **output**, the output's description
+  goes in. Today that is only `printarray`'s element type (`io.md`); the
+  block, slice, and fill helpers that used to need it are inline now.
 - Unary operations have one input: `neg_2x2`, `copy_3`, `det_3x3`, `sum_3`.
 - **Algorithms** carry their method: `solve_4x4_4` and `inv_4x4` (LU),
   `solveLLT_3x3_3` and `invLLT_3x3` (Cholesky), `rsolve_2x3_3x3` (`B / A`),
@@ -166,7 +170,10 @@ keep too: the Doxygen line on every `out` says so. Implementation:
 
 ## Comments
 
-Every helper gets a one-line `///` comment saying what it does the way a
+Every helper gets a `///` comment: a line saying what it does the way a
 person would say it — `2×3 * 3×3 matrix multiplication`, `3-vector + scalar
 broadcast addition`, `LU decomposition of a 4×4-matrix with partial
-pivoting`. The rules for those words are in `comment.md`.
+pivoting` — and a line giving its defining equation in the parameter names:
+`out = A * b`, `out = a .+ bᵀ`, `returns a ⋅ b`, `out = A \ b`,
+`out = [A B; C D]`, `L * U = A[p, :]`. The rules for the words are in
+`comment.md`.

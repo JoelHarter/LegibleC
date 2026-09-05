@@ -93,7 +93,7 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `A * B`, `A * v`, `v' * A`, `v' * w`, `v * w'`, `A * B'`, `A' * B` | yes |
 | `dot(v, w)`, `cross(v, w)`, `det(A)` | yes |
 | `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm` | yes |
-| `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[:, 2:end]` (literal ranges) | yes |
+| `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[:, 2:end]`, `A[i, 2:3]`, any dimension (literal ranges) | yes |
 | `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:end] = B`, `v[2:3] = w` into a mutable array | yes |
 | `A \ b`, `A \ B`, `B / A`, `A / s`, `inv(A)`, `cholesky(A) \ b`, `inv(cholesky(A))`, `lu(A) \ b` | yes; 1–3 written out, LU with partial pivoting beyond |
 | `A \ b` with a non-square `A`, `pinv(A)` | yes: least squares / minimum norm through the Gram matrix and Cholesky (full rank only) |
@@ -101,9 +101,9 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | broadcasting: `.+ .- .* ./ .^`, unary `.-`, `f.(A)` for the `math.h` functions above, any shapes Julia allows | yes |
 | `zeros`, `ones`, `fill`, `zero(A)`, `one(A)`, `SMatrix{n,n}(I)` | yes |
 | `[1.0 2.0; 3.0 4.0]`, `[1.0, 2.0]`, `SVector(…)`, `@SMatrix […]`, `SA[…]` | yes |
-| `[A B; C D]`, `[u; v]`, `[u v]`, `[A; B;; C; D]`, `[A;; B]`, `[B;; C;;; D;; E]`, with scalars among the blocks | yes, any dimension |
+| `[A B; C D]`, `[u; v]`, `[u v]`, `[A; B;; C; D]`, `[A;; B]`, `[B;; C;;; D;; E]`, with scalars among the blocks, ragged rows and columns | yes, any dimension |
 | `B = A`, `B = A'`, `A = A * A` | yes (copies, and a temp when the destination is an operand) |
-| `A[i, 2:3]`, a range in a variable, N-D slices, `A[:, 1] .= 0` | not yet |
+| a range in a variable, `A[:, 1] .= 0` | not yet |
 | `.==`, `.<`, `ifelse.` | not yet |
 | runtime-sized `Array` arguments (`staticarray=false`) | not yet — see `dev/map.md` §3.4 for the VLA design |
 | a multiple of the identity (`2I`) | not yet |

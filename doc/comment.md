@@ -104,18 +104,22 @@ like blank lines *except* that a comment on the end of them still counts.
 
 ## On the helpers
 
-Every generated helper gets a one-line `///` comment saying what it does the
-way a person would say it:
+Every generated helper gets a `///` comment of two lines: what it does the
+way a person would say it, then its defining equation in the parameter
+names — operators where an operator exists (`+`, `.+`, `*`, `\`, `/`),
+`ᵀ` for a transpose, and `returns` for a helper that returns a scalar:
 
 ```c
 /// 2×3 * 3×3 matrix multiplication
-/// 2×2-matrix addition
-/// 3-vector + scalar broadcast addition
-/// 2×2-matrix negation
-/// 3×2-matrix element-wise exponential
-/// transposed 3-vector * 3-vector multiplication
-/// vertical concatenation of two 3-vectors
+/// out = A * B
+/// 3-vector + transposed 2-vector broadcast addition
+/// out = a .+ bᵀ
+/// 3-vector dot product
+/// returns a ⋅ b
+/// 4×4-matrix \ 4-vector solve by LU with partial pivoting
+/// out = A \ b
 /// LU decomposition of a 4×4-matrix with partial pivoting
+/// L * U = A[p, :]
 ```
 
 The words are deliberately ones the transpiler itself never uses. To it

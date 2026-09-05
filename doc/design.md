@@ -33,10 +33,13 @@ transpile time, never C that compiles and does the wrong thing.
    have no C. Then every statement is emitted: scalar calls become
    expressions or temps, array operations become helper calls, control flow
    is emitted as the construct it came from.
-4. **Helpers on demand** (`src/helper.jl`). The first time an operation is
+4. **Helpers on demand** (`src/helper.jl`). The first time a computation is
    needed at some argument types — `add` of two 2×2 matrices, `solve` of a
    4×4 against a vector — its C function is generated and remembered by
-   name: `static inline` for the small ones, `static` for the solvers. A helper can ask for other helpers (`det_4x4` needs `det_3x3`).
+   name: `static inline` for the small ones, `static` for the solvers.
+   Moving data is not a computation and gets no helper: a copy, a block
+   construction, a slice is written inline as `memcpy`, `memset`, or a loop
+   (`src/move.jl`). A helper can ask for other helpers (`det_4x4` needs `det_3x3`).
    Each carries a one-line English comment (`src/prose.jl`).
 5. **Callees on demand**. A call to another user function registers that
    function's instance; the loop continues until nothing new is needed.
@@ -59,6 +62,7 @@ transpile time, never C that compiles and does the wrong thing.
 | `type.jl` | scalar types, the shaped stand-in for regular arrays, the transposed tag, the axis model's `axis`/`extent`, structs and tuples, C declarations |
 | `source.jl` | reading the Julia file for comments, docstrings, and code lines |
 | `io.jl` | printing (`print`, `println`, `@printf`) and, later, files — `printf` as a C programmer writes it, and the one `printarray` helper |
+| `move.jl` | data movement written inline: copies, block construction, slices and slice assignment, `zeros`/`fill`/identity — `memcpy`, `memset`, or a loop |
 
 ## Shapes of things in C
 
