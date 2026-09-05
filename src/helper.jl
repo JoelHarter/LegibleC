@@ -806,10 +806,10 @@ end
 # line up from the left, and a size of 1 stretches to match. An operand with no
 # dimension on some axis just contributes nothing there; `access` does the stretching
 # by indexing a dimension of extent 1 with `0`.
-# The C operator behind a pointwise operation, and its dotted Julia spelling.
+# The C operator behind a pointwise operation, and its dotspelling Julia spelling.
 const csymbol = Dict(:add => "+", :sub => "-", :mul => "*", :div => "/", :lt => "<", :le => "<=", :gt => ">", :ge => ">=",
                      :eq => "==", :ne => "!=", :and => "&", :or => "|")
-const dotted = Dict(:add => ".+", :sub => ".-", :mul => ".*", :div => "./", :pow => ".^", :lt => ".<", :le => ".<=", :gt => ".>",
+const dotspelling = Dict(:add => ".+", :sub => ".-", :mul => ".*", :div => "./", :pow => ".^", :lt => ".<", :le => ".<=", :gt => ".>",
                     :ge => ".>=", :eq => ".==", :ne => ".!=", :and => ".&", :or => ".|")
 
 function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types, R::Type)
@@ -830,7 +830,7 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
         push!(params, declare(R, "out"; restrict=!any(T -> alike(T, R), types)))
         spelled = [istransposed(T) ? n * "ᵀ" : n for (T, n) in zip(types, argnames)]
         formula = length(types) == 1 ? (cfn == :neg ? "out = .-$(spelled[1])" : cfn == :not ? "out = .!$(spelled[1])" : "out = $op.($(spelled[1]))") :
-                  length(types) == 2 && haskey(dotted, op) ? "out = $(spelled[1]) $(dotted[op]) $(spelled[2])" : "out = $op.($(join(spelled, ", ")))"
+                  length(types) == 2 && haskey(dotspelling, op) ? "out = $(spelled[1]) $(dotspelling[op]) $(spelled[2])" : "out = $op.($(join(spelled, ", ")))"
         helpers[name] = definition("void", name, params, body; doc=[prose(op, types, R; pointwise=true), formula])
     end
     return name

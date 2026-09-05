@@ -780,7 +780,7 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     emit!(lines, sc, "$name($(join((value(sc, a) for a in inputs), ", ")), $dest);")
     spelled = [spell(valuetype(sc, a), value(sc, a)) for a in inputs]
     step!(lines, sc, "$dest = " * (length(inputs) == 1 ? (cfn == :neg ? ".-$(spelled[1])" : cfn == :not ? ".!$(spelled[1])" : "$op.($(spelled[1]))") :
-                                    length(inputs) == 2 && haskey(dotted, op) ? "$(spelled[1]) $(dotted[op]) $(spelled[2])" : "$op.($(join(spelled, ", ")))"))
+                                    length(inputs) == 2 && haskey(dotspelling, op) ? "$(spelled[1]) $(dotspelling[op]) $(spelled[2])" : "$op.($(join(spelled, ", ")))"))
     sc.shapes[i] = R
 end
 
