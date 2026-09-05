@@ -44,6 +44,9 @@ include("src/transpile.jl")
 transpile(f, g, (h, Float64, 3, Float64, 2, 3); outfile="name", outpath=dir)
 ```
 
+Everything is in the module `Newt`; the `include` also brings `transpile`
+into scope, and nothing else, so your own functions can be named anything.
+
 A target is a function with one concrete method, or a tuple of a function
 and its argument types, where a type followed by integers is an array of
 that element type and size. One `.c` file comes out with prototypes, the

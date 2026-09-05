@@ -1070,3 +1070,20 @@ on the name and not in the suffix. A vector has one dimension, and saying so
 would only make `diff_4` read as "diff along the 4th". The keyword call is
 the first `kwcall` the transpiler handles; its keyword tuple is a constant,
 so the statements that build it are no more C than a type parameter is.
+
+---
+
+## 2026-09-06 — The transpiler is a module
+
+**Decision.** `src/transpile.jl` wraps everything in `module Newt`, exports
+`transpile`, and ends with `using .Newt`, so `include("src/transpile.jl")`
+followed by `transpile(…)` works exactly as before. The test harness imports
+the dozen internals it uses by name.
+
+**Why.** The transpiler defined some two hundred functions and constants in
+`Main`, with ordinary names — `shape`, `index`, `value`, `literal`,
+`dotted` — and a user's function of the same name either failed to define
+("already has a value") or silently added a method to the transpiler's own.
+The sandbox tripped over it twice in one day. A module makes the user's
+namespace theirs. The trailing `using .Newt` keeps the one-line usage in the
+README, and is the whole of what a user sees.

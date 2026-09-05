@@ -1,7 +1,14 @@
+# Everything lives in the module `Newt`, so that a user's own `shape` or `index` — or
+# a function of theirs named like any of the transpiler's internals — is a different
+# name. `include`-ing this file also brings `transpile` into scope, which is the one
+# name a user needs.
+module Newt
 
 using StaticArrays
 using LinearAlgebra
 using Printf
+
+export transpile
 
 include("c.jl")
 
@@ -222,3 +229,7 @@ function concretemethod(f::Function, T::DataType...)
     T_return = only(Base.return_types(f, T))
     return mi, T_return
 end
+
+end # module Newt
+
+using .Newt
