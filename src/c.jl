@@ -252,7 +252,7 @@ function analyze!(sc::Scope)
         ex = st isa Expr && st.head === :(=) ? st.args[2] : st
         ex isa Expr && ex.head === :call || continue
         f = callee_or_nothing(ci, ex.args[1])
-        f === Base.setindex! && ex.args[2] isa Core.SlotNumber && push!(sc.mutated, ex.args[2].id)
+        f in (Base.setindex!, Base.fill!, Base.materialize!) && ex.args[2] isa Core.SlotNumber && push!(sc.mutated, ex.args[2].id)
         # A mutable array handed to a user function that writes somewhere: it may be
         # written there, so it is not `const` here either.
         f isa Function && !(nameof(Base.moduleroot(parentmodule(f))) in known) || continue
@@ -430,6 +430,8 @@ function statement!(lines, sc::Scope, i, st)
         print!(lines, sc, st.args[2:end], callee(ci, st.args[1]) === Base.println)
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Printf.format && !(T <: AbstractString)
         printf!(lines, sc, st.args[2:end])
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.fill!, Base.materialize!)
+        inplace!(lines, sc, i, st)
     elseif st isa Expr && st.head === :call && (T === Nothing || T === Any) && userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end]) !== nothing
         # A call for its effect, or whose result goes unused (Julia then types it `Any`
         # and the callee's own return type says what C needs).
@@ -624,12 +626,12 @@ function construct!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     f === Base.materialize && return broadcast!(lines, sc, i, args[1], dest; declaration)
     T = widen(sc.ci.ssavaluetypes[i])
     if isconstruction(f) && length(args) == 1 && literal(sc, args[1]) isa LinearAlgebra.UniformScaling
-        # `SMatrix{3,3}(I)`: the identity matrix.
-        literal(sc, args[1]).λ == 1 || throw(ArgumentError("only `I` itself can be made into a matrix, not a multiple of it (statement $i)"))
+        # `SMatrix{3,3}(I)`, `SMatrix{3,3}(2I)`: the identity matrix, or a multiple of it.
+        λ = literal(sc, args[1]).λ
         declaration && emit!(lines, sc, declare(T, dest) * ";")
         start = length(lines) + 1
-        identity!(lines, sc, dest, T)
-        step!(lines, sc, "$dest = I"; from=start)
+        identity!(lines, sc, dest, T; diagonal=λ == 1 ? nothing : value(sc, eltype(T)(λ)))
+        step!(lines, sc, "$dest = $(λ == 1 ? "" : value(sc, λ))I"; from=start)
         sc.shapes[i] = T
         return
     end
@@ -772,18 +774,22 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     end
     op, cfn = broadcastop(f, length(inputs), E)
     cfn isa String && push!(sc.headers, cfn == "llabs" ? "stdlib.h" : "math.h")
+    cfn isa String && cfn != "llabs" && E === Float32 && (cfn *= "f")   # the `f` family on floats
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     name = broadcasthelper!(sc.helpers, op, cfn, types, R)
     emit!(lines, sc, "$name($(join((value(sc, a) for a in inputs), ", ")), $dest);")
     spelled = [spell(valuetype(sc, a), value(sc, a)) for a in inputs]
-    dotted = Dict(:add => ".+", :sub => ".-", :mul => ".*", :div => "./", :pow => ".^")
-    step!(lines, sc, "$dest = " * (length(inputs) == 1 ? (cfn == :neg ? ".-$(spelled[1])" : "$op.($(spelled[1]))") :
-                                    haskey(dotted, op) ? "$(spelled[1]) $(dotted[op]) $(spelled[2])" : "$op.($(spelled[1]), $(spelled[2]))"))
+    step!(lines, sc, "$dest = " * (length(inputs) == 1 ? (cfn == :neg ? ".-$(spelled[1])" : cfn == :not ? ".!$(spelled[1])" : "$op.($(spelled[1]))") :
+                                    length(inputs) == 2 && haskey(dotted, op) ? "$(spelled[1]) $(dotted[op]) $(spelled[2])" : "$op.($(join(spelled, ", ")))"))
     sc.shapes[i] = R
 end
 
 # The helper name and C form of a broadcast's function.
 function broadcastop(f, n, E)
+    for (g, op) in ((Base.:<, :lt), (Base.:<=, :le), (Base.:>, :gt), (Base.:>=, :ge), (Base.:(==), :eq), (Base.:!=, :ne),
+                    (Base.:&, :and), (Base.:|, :or), (Base.:!, :not), (Base.ifelse, :ifelse))
+        f === g && return op, op
+    end
     f === Base.:+ && return :add, :add
     f === Base.:- && return n == 1 ? (:neg, :neg) : (:sub, :sub)
     f === Base.:* && return :mul, :mul
@@ -850,6 +856,9 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
          f === Base.:* ? :mul :
          f === Base.:/ ? :div :
          throw(ArgumentError("unsupported array operation: $f"))
+    # `A + 2I`, `A - I`, `2I - A`: a multiple of the identity on the diagonal.
+    op in (:add, :sub) && length(args) == 2 && any(a -> literal(sc, a) isa LinearAlgebra.UniformScaling, args) &&
+        return scaling!(lines, sc, i, op, args, dest; declaration)
     # The result's element type comes from Julia's promotion; its size from the IR if
     # the type carries one, otherwise from the operation's own rule.
     result(types) = (R = widen(sc.ci.ssavaluetypes[i]); shape(R) === nothing ? resulttype(op, types, E) : R)
@@ -1143,9 +1152,12 @@ function render(sc::Scope, i, ex::Expr)
     f in (Base.zero, Base.one) && n == 1 && T <: Number && return value(sc, f === Base.zero ? zero(T) : one(T)), PRIMARY
 
     # A reduction: a helper that returns the scalar.
-    if f in (Base.sum, Base.prod, Base.maximum, Base.minimum, Base.any, Base.all, LinearAlgebra.norm) && n == 1 && isarray(valuetype(sc, args[1]))
+    if f in (Base.sum, Base.prod, Base.maximum, Base.minimum, Base.any, Base.all, LinearAlgebra.norm, Base.count, Base.argmax, Base.argmin, Base.extrema) &&
+       n == 1 && isarray(valuetype(sc, args[1]))
         op = f === LinearAlgebra.norm ? :norm : Symbol(nameof(f))
         op == :norm && push!(sc.headers, "math.h")
+        op in (:argmax, :argmin) && ndims(valuetype(sc, args[1])) != 1 && throw(ArgumentError("$op of a $(describe(valuetype(sc, args[1]))) is a CartesianIndex in Julia; not supported (statement $i)"))
+        op == :extrema && structdef!(sc.prog, T)   # a (min, max) tuple, returned as a struct
         sc.math[i] = "$op($(value(sc, args[1])))"
         return "$(reducehelper!(sc.helpers, op, valuetype(sc, args[1]), T))($(value(sc, args[1])))", PRIMARY
     end
@@ -1325,6 +1337,44 @@ function along!(lines, sc::Scope, i, f, args, kw, dest; declaration::Bool=false)
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     emit!(lines, sc, "$name($(value(sc, args[1])), $dest);")
     step!(lines, sc, "$dest = $op($(value(sc, args[1]))$(ndims(T) == 1 ? "" : "; dims=$d"))")
+    sc.shapes[i] = R
+end
+
+# `fill!(A, x)`, `A .= 0`, `A .= x`, `A .= B .* 2`: written into the existing array.
+function inplace!(lines, sc::Scope, i, st::Expr)
+    f = callee(sc.ci, st.args[1])
+    dest, D = value(sc, st.args[2]), valuetype(sc, st.args[2])
+    isarray(D) || throw(ArgumentError("$f into a $D (statement $i)"))
+    x = st.args[3]
+    if f === Base.materialize!
+        node = sc.ci.code[x.id]                   # broadcasted(g, args...)
+        if callee(sc.ci, node.args[2]) === Base.identity && length(node.args) == 3 && !isarray(valuetype(sc, node.args[3]))
+            x = node.args[3]                      # `A .= x`: a fill
+        else
+            return broadcast!(lines, sc, i, x, dest)
+        end
+    end
+    start = length(lines) + 1
+    literal(sc, x) == 0 ? zero!(lines, sc, dest, D) : fill!(lines, sc, dest, D, value(sc, eltype(D) <: AbstractFloat && x isa Integer ? eltype(D)(x) : x))
+    step!(lines, sc, "$dest .= $(value(sc, x))"; from=start)
+end
+
+# `A + λI`, `A - λI`, `λI - A`: the matrix with λ on its diagonal added or subtracted,
+# through `addI_3x3(A, λ, out)` and friends (`scalinghelper!`).
+function scaling!(lines, sc::Scope, i, op, args, dest; declaration::Bool=false)
+    k = findfirst(a -> literal(sc, a) isa LinearAlgebra.UniformScaling, args)
+    λ = literal(sc, args[k]).λ
+    A = args[3 - k]
+    T = valuetype(sc, A)
+    isarray(T) && ndims(T) == 2 && allequal(shape(T)) || throw(ArgumentError("I can only be added to a square matrix, not a $(describe(T)) (statement $i)"))
+    R = widen(sc.ci.ssavaluetypes[i])
+    shape(R) === nothing && (R = T)
+    E = eltype(R)
+    lam = value(sc, E <: AbstractFloat ? E(λ) : λ)
+    mode = op == :add ? :addI : k == 2 ? :subI : :rsubI
+    declaration && emit!(lines, sc, declare(R, dest) * ";")
+    emit!(lines, sc, "$(scalinghelper!(sc.helpers, mode, T, R))($(value(sc, A)), $lam, $dest);")
+    step!(lines, sc, "$dest = " * (mode == :rsubI ? "$(lam)I - $(value(sc, A))" : "$(value(sc, A)) $(op == :add ? "+" : "-") $(lam)I"))
     sc.shapes[i] = R
 end
 

@@ -2,7 +2,7 @@
 # literals, odd shapes, regular arrays given a size.
 module Array_
 using Test, StaticArrays, LinearAlgebra
-import Main: Case, check
+import Main: Case, check, csource
 
 const M2 = SMatrix{2,2,Float64,4}
 const V3 = SVector{3,Float64}
@@ -96,6 +96,32 @@ cases = [Case(add, A, B), Case(mulmv, A, SVector(1.0, 2.0)), Case(mulmm, A, A23)
          Case(pt, A23, B32), Case(stored, A23), Case(rowstored, u, A32),
          Case(zeroed, SMatrix{3,4}(1.0:12.0...)), Case(zeroes), Case(zeroint), Case(oned, A33), Case(eye), Case(tallI), Case(ones34),
          Case(filled, 2.5), Case(divs, A, 4.0), Case(sdiv, 4.0, A), Case(permute, MVector(1.0, 2.0, 3.0))]
+coef(A::M2) = -3A + 2 * A
+zer(A::MMatrix{2,2,Float64,4}) = (A .= 0; A)
+fil(A::MMatrix{2,2,Float64,4}, x::Float64) = (fill!(A, x); A)
+filint(A::MMatrix{2,2,Float64,4}) = (A .= 1; A)
+into(A::MMatrix{2,2,Float64,4}, B::M2) = (A .= B .* 2.0 .+ A; A)
+addI(A::M2) = A + 2I
+subI(A::M2) = A - I
+rsubI(A::M2) = 2I - A
+twoI() = SMatrix{2,2}(2I)
+lt(v::V3, w::V3) = v .< w
+ge0(v::V3) = v .>= 0.0
+sel(c::SVector{3,Bool}, a::V3, b::V3) = ifelse.(c, a, b)
+both(c::SVector{3,Bool}, d::SVector{3,Bool}) = c .& .!d
+append!(cases, [Case(coef, A), Case(zer, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0)), Case(fil, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0), 2.5),
+                Case(filint, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0)), Case(into, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0), A),
+                Case(addI, A), Case(subI, A), Case(rsubI, A), Case(twoI), Case(lt, SVector(1.0, 5.0, 3.0), SVector(2.0, 4.0, 3.0)),
+                Case(ge0, SVector(-1.0, 0.0, 1.0)), Case(sel, SVector(true, false, true), SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0)),
+                Case(both, SVector(true, true, false), SVector(true, false, false))])
+@testset "array text" begin
+    src = csource("arraytext", coef, zer, addI, lt, sel)
+    @test occursin("mul_s_2x2(-3.0, A, temp", src) && occursin("mul_s_2x2(2.0, A, temp", src)   # an integer coefficient takes the element type
+    @test occursin("memset(A, 0, sizeof(double[2][2]));", src)
+    @test occursin("addI_2x2(A, 2.0, out);", src) && occursin("out[i][i] += s;", src)
+    @test occursin("ltP_3_3(v, w, out);", src) && occursin("out[i] = a[i] < b[i];", src) && occursin("bool out[restrict 3]", src)
+    @test occursin("ifelseP_3B_3F64_3F64(c, a, b, out);", src) && occursin("out[i] = a[i] ? b[i] : c[i];", src)
+end
 targets = Any[f for f in unique(c.f for c in cases) if !(f in (regmul, regchain, regvec))]
 append!(targets, [(regmul, Float64, 2, 3, Float64, 3, 3), (regchain, Float64, 2, 2, Float64), (regvec, Float64, 3, 3, Float64, 3)])
 check("array", cases; targets)

@@ -2,7 +2,7 @@
 # continue, early return, and loops over arrays.
 module Flow
 using Test, StaticArrays
-import Main: Case, check
+import Main: Case, check, csource
 
 smaller(a::Float64, b::Float64) = (if a < b; x = a; else; x = b; end; x)
 sign_(a::Float64) = (if a < 0.0; y = -1.0; elseif a == 0.0; y = 0.0; else; y = 1.0; end; y)
@@ -36,7 +36,17 @@ cases = [Case(smaller, 1.0, 2.0), Case(smaller, 3.0, 2.0), Case(sign_, -3.0), Ca
          Case(squares, 5), Case(stepped, 11), Case(skipper, 10), Case(total, v3), Case(totalvec, [1.0, 2.0, 3.0, 4.0]),
          Case(trace, A3), Case(gridsum, A23), Case(double1, MVector(1.0, 2.0, 3.0)), Case(basis, 2.5),
          Case(outer, SVector(1.0, 2.0), v3), Case(sizes, v3, A23)]
+each(v::SVector{3,Float64}) = (s = 0.0; for x in v; s += x * x; end; s)
+eachbreak(v::SVector{4,Float64}) = (s = 0.0; for x in v; x > 2.0 && break; s += x; end; s)
+halve(x::SVector{3,Float64}) = (n = 0; while sum(x .* x) > 1.0; x = x / 2.0; n += 1; end; n)
+append!(cases, [Case(each, v3), Case(eachbreak, SVector(1.0, 2.0, 3.0, 4.0)), Case(halve, SVector(4.0, 0.0, 0.0)), Case(halve, SVector(0.5, 0.0, 0.0))])
+@testset "flow text" begin
+    src = csource("flowtext", each, halve)
+    @test occursin("for (int64_t i = 0; i < 3; i++) {\n        double x = v[i];", src)   # `for x in v`: an index Julia never named
+    @test occursin("while (true) {", src) && occursin("if (!(sum_3(temp1) > 1.0)) {\n            break;", src)   # a header with array work
+end
 append!(cases, [Case(looped, v3, 3), Case(looped, v3, 0), Case(branched, 3.0, 1.0), Case(branched, 1.0, 3.0), Case(rebound, v3, v3, 0.5)])
 check("flow", cases; targets=[smaller, sign_, larger, quadrant, bothpos, guard, triangle, oddsum, squares, stepped, skipper,
-                              total, (totalvec, Float64, 4), trace, gridsum, double1, basis, outer, sizes, looped, branched, rebound])
+                              total, (totalvec, Float64, 4), trace, gridsum, double1, basis, outer, sizes, looped, branched, rebound,
+                              each, eachbreak, halve])
 end

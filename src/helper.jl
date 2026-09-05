@@ -341,6 +341,12 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
            op == :any     ? [nest(pairs, ["if ($a) {", "    return true;", "}"]); "return false;"] :
            op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
            op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a * $a;"]); "return $(ctype(E) == "float" ? "sqrtf" : "sqrt")(sum);"] :
+           op == :count   ? ["int64_t count = 0;"; nest(pairs, ["if ($a) {", "    count++;", "}"]); "return count;"] :
+           # `argmax`, `argmin`: Julia's 1-based index of the first extreme element.
+           op == :argmax  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) max = $first;"; nest(pairs, ["if ($a > max) {", "    max = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :
+           op == :argmin  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) min = $first;"; nest(pairs, ["if ($a < min) {", "    min = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :
+           op == :extrema ? ["$(ctype(eltype(T))) min = $first;"; "$(ctype(eltype(T))) max = $first;";
+                             nest(pairs, ["if ($a < min) {", "    min = $a;", "}", "if ($a > max) {", "    max = $a;", "}"]); "return ($(ctype(E))){min, max};"] :
            throw(ArgumentError("unsupported reduction: $op"))
     helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc=[prose(op, (T,)), "returns $op($A)"])
     return name
@@ -390,6 +396,24 @@ function dimhelper!(helpers::Dict{String, String}, op::Symbol, d::Integer, T::Ty
     along = ndims(T) == 1 ? "" : " along dimension $d"
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out")], body;
                                doc=["$(describe(T; typed)) $what$along", "out = $op($A$(ndims(T) == 1 ? "" : "; dims=$d"))"])
+    return name
+end
+
+# `A + λI`, `A - λI`, `λI - A` for a square matrix: `addI_3x3(A, s, out)`, `subI_3x3`,
+# `rsubI_3x3` — the matrix copied (negated, for `rsubI`), then `s` on the diagonal.
+function scalinghelper!(helpers::Dict{String, String}, mode::Symbol, T::Type, R::Type)
+    name = helpername(mode, (T,))
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    n = shape(T)[1]
+    idx, pairs = loopindices(shape(T))
+    a = access(T, A, idx)
+    copy = nest(pairs, ["out$(brackets(idx)) = $(mode == :rsubI ? "-" : "")$a;"])
+    diag = nest(live([("i", n)]), ["out[$(n > 1 ? "i" : "0")][$(n > 1 ? "i" : "0")] $(mode == :subI ? "-=" : "+=") s;"])
+    what = mode == :addI ? "plus" : mode == :subI ? "minus" : "subtracted from"
+    formula = mode == :addI ? "out = $A + s I" : mode == :subI ? "out = $A - s I" : "out = s I - $A"
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), "$(ctype(eltype(R))) s", declare(R, "out")], [copy; diag];
+                               doc=["$(describe(T)) $what a multiple of the identity", formula])
     return name
 end
 
@@ -782,6 +806,12 @@ end
 # line up from the left, and a size of 1 stretches to match. An operand with no
 # dimension on some axis just contributes nothing there; `access` does the stretching
 # by indexing a dimension of extent 1 with `0`.
+# The C operator behind a pointwise operation, and its dotted Julia spelling.
+const csymbol = Dict(:add => "+", :sub => "-", :mul => "*", :div => "/", :lt => "<", :le => "<=", :gt => ">", :ge => ">=",
+                     :eq => "==", :ne => "!=", :and => "&", :or => "|")
+const dotted = Dict(:add => ".+", :sub => ".-", :mul => ".*", :div => "./", :pow => ".^", :lt => ".<", :le => ".<=", :gt => ".>",
+                    :ge => ".>=", :eq => ".==", :ne => ".!=", :and => ".&", :or => ".|")
+
 function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types, R::Type)
     name = helpername(op, types; pointwise=true)
     if !haskey(helpers, name)
@@ -790,16 +820,17 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
         accesses = [access(T, n, idx) for (T, n) in zip(types, argnames)]
         expr = cfn isa String ? "$cfn($(join(accesses, ", ")))" :
                cfn == :neg ? "-" * accesses[1] :
+               cfn == :not ? "!" * accesses[1] :
+               cfn == :ifelse ? "$(accesses[1]) ? $(accesses[2]) : $(accesses[3])" :
                cfn == :div && all(T -> (T <: AbstractArray ? eltype(T) : T) <: Integer, types) ?
                    "($(ctype(eltype(R))))$(accesses[1]) / ($(ctype(eltype(R))))$(accesses[2])" :
-               join(accesses, " " * Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[cfn] * " ")
+               join(accesses, " " * csymbol[cfn] * " ")
         body = nest(pairs, ["$(access(R, "out", idx)) = $expr;"])
         params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
         push!(params, declare(R, "out"; restrict=!any(T -> alike(T, R), types)))
         spelled = [istransposed(T) ? n * "ᵀ" : n for (T, n) in zip(types, argnames)]
-        dotted = Dict(:add => ".+", :sub => ".-", :mul => ".*", :div => "./", :pow => ".^")
-        formula = length(types) == 1 ? (cfn == :neg ? "out = .-$(spelled[1])" : "out = $op.($(spelled[1]))") :
-                  haskey(dotted, op) ? "out = $(spelled[1]) $(dotted[op]) $(spelled[2])" : "out = $op.($(spelled[1]), $(spelled[2]))"
+        formula = length(types) == 1 ? (cfn == :neg ? "out = .-$(spelled[1])" : cfn == :not ? "out = .!$(spelled[1])" : "out = $op.($(spelled[1]))") :
+                  length(types) == 2 && haskey(dotted, op) ? "out = $(spelled[1]) $(dotted[op]) $(spelled[2])" : "out = $op.($(join(spelled, ", ")))"
         helpers[name] = definition("void", name, params, body; doc=[prose(op, types, R; pointwise=true), formula])
     end
     return name

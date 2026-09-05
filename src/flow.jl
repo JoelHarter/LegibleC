@@ -24,6 +24,7 @@ struct For
     next::Int       # the `iterate(range, state)` statement: where `continue` goes
     exit::Int       # first statement after the loop
     machinery::NTuple{3, Int}   # inside the body: the state read and the two getfields
+    array          # `for x in v`: the IR value iterated, and `var` is its element; else nothing
 end
 
 # A `while`.
@@ -46,7 +47,14 @@ function findfors(ci)
         r = st.args[2].args[2]
         r isa Core.SSAValue || continue
         range = rangebounds(ci, r.id)
-        range === nothing && continue
+        array = nothing
+        if range === nothing
+            # `for x in v`: over the elements, in storage order.
+            T = widen(valuetype_ir(ci, r))
+            isarray(T) || continue
+            ndims(T) == 1 || throw(ArgumentError("`for x in A` over a $(describe(T)) is not supported; iterate its indices"))
+            range, array = (1, Expr(:length, r), nothing), r
+        end
         s = st.args[1].id
         k + 7 <= length(code) || continue
         test = code[k+4]
@@ -67,7 +75,7 @@ function findfors(ci)
         next += d + 2
         code[next+4] isa Core.GotoIfNot && code[next+5] isa Core.GotoNode && code[next+5].label == k + 5 || continue
         start = r.id - (code[r.id-1] isa GlobalRef ? 1 : 0)
-        fors[start] = For(start, var, range..., k + 5, next - 1, next, next + 6, (d, d + 1, d + 2))
+        fors[start] = For(start, var, range..., k + 5, next - 1, next, next + 6, (d, d + 1, d + 2), array)
     end
     return fors
 end
@@ -170,6 +178,20 @@ function forloop!(lines, sc::Scope, F::For)
     T = ctype(widen(sc.ci.slottypes[F.var]))
     lo = bound(sc, F.lo)
     hi = bound(sc, F.hi)
+    if F.array !== nothing
+        # `for x in v`: a 0-based index the Julia never named, then the element.
+        k = indices(1; taken=sc.names)[1]
+        push!(sc.names, k)
+        emit!(lines, sc, "for (int64_t $k = 0; $k < $hi; $k++) {")
+        push!(sc.loops, (F.exit, F.next))
+        sc.depth += 1
+        emit!(lines, sc, "$T $var = $(value(sc, F.array))[$k];")
+        sc.depth -= 1
+        nested!(lines, sc, F.bodylo, F.bodyhi)
+        pop!(sc.loops)
+        emit!(lines, sc, "}")
+        return F.exit
+    end
     if F.step === nothing
         emit!(lines, sc, "for ($T $var = $lo; $var <= $hi; $var++) {")
     else
@@ -207,7 +229,11 @@ function whileloop!(lines, sc::Scope, W::While)
         emit!(lines, sc, "while (true) {")
         push!(sc.loops, (W.exit, W.backedge))
         sc.depth += 1
+        # The header's statements, emitted as a block — with this loop taken out of the
+        # table meanwhile, or `block!` would start the loop again at its header.
+        delete!(sc.whiles, W.header)
         block!(lines, sc, W.header, W.test - 1)
+        sc.whiles[W.header] = W
         emit!(lines, sc, "if (!($(condition(sc, [(code[W.test].cond, false)], "&&")))) {")
         emit!(lines, sc, "    break;")
         emit!(lines, sc, "}")

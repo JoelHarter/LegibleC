@@ -69,9 +69,9 @@ end
 fill!(lines, sc::Scope, dst, D::Type, x) = move!(lines, sc, eltype(D), dst, whole(D), x, [], [extent(D, a) for a in 1:ndims(D)])
 
 # `dst = I`: zero, then ones down the diagonal — `min(m, n)` of them if it isn't square.
-function identity!(lines, sc::Scope, dst, D::Type)
+function identity!(lines, sc::Scope, dst, D::Type; diagonal=nothing)
     zero!(lines, sc, dst, D)
-    one = eltype(D) <: AbstractFloat ? (ctype(eltype(D)) == "float" ? "1.0f" : "1.0") : "1"
+    one = diagonal !== nothing ? diagonal : eltype(D) <: AbstractFloat ? (ctype(eltype(D)) == "float" ? "1.0f" : "1.0") : "1"
     d = minimum(shape(D))
     i = indices(1; taken=sc.names)[1]
     for line in nest(live([(i, d)]), ["$dst[$(d > 1 ? i : "0")][$(d > 1 ? i : "0")] = $one;"])

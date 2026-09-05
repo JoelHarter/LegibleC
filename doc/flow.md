@@ -24,6 +24,7 @@ never a `goto`.
 | `for i in a:b` | the `iterate`/`getfield` idiom around a body | `for (int64_t i = a; i <= b; i++)` |
 | `for i in a:s:b` | same, with a literal step | `for (…; i <= b; i += s)` (`>=` for a negative step) |
 | `for i in eachindex(v)`, `1:length(v)`, `axes(A, d)` | same; the bound comes from the array's size | `for (int64_t i = 1; i <= 3; i++)` |
+| `for x in v` over a vector's elements | the same idiom on the array itself | `for (int64_t i = 0; i < 3; i++) { double x = v[i]; …` — a 0-based index Julia never named; over a matrix, not supported (Julia's order is column-major) |
 | `for i in 1:2, j in 1:3` | nested loops; the inner loop re-binds `i` | nested `for`s, one `i` |
 | `break`, `continue` | jumps to the loop's exit or its next-iteration point | `break;`, `continue;` |
 | `return x` anywhere | a `ReturnNode` | `return x;` (`return;` in a void function) |
@@ -44,7 +45,7 @@ be inlined, the loop becomes `while (true) { …; if (!(c)) break; … }`.
 (`v[2:4]`); a range stored in a variable is an error, and a step must be a
 literal.
 
-Not yet: `for x in v` over the elements, `try`/`catch`, comprehensions,
+Not yet: `for x in A` over a matrix's elements, `try`/`catch`, comprehensions,
 closures, `do` blocks, `@goto`.
 
 Implementation: `findfors`, `findwhiles`, `markinlined!`, `block!` in

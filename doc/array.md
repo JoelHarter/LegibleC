@@ -246,12 +246,16 @@ The meaning of each follows Julia's definition.
 | `cross(v, w)` | `cross` | |
 | `det(A)`, `A \ b`, `B / A`, `inv(A)`, `pinv(A)`, `cholesky(A) \ b` | `det_3x3`, `solve_3x3_3`, `rsolve_2x3_3x3`, `inv_3x3`, `pinv_4x3`, `solveLLT_3x3_3` | `linear.md` |
 | `A .+ B`, `v .* M`, `exp.(A)` | `addP_2x2_2x2`, `mulP_3_3x2`, `expP_2x2` | every input listed: broadcasting leaves the shapes open |
+| `v .< w`, `v .>= 0.0`, `.==`, `.!=`, `c .& d`, `.!c`, `ifelse.(c, a, b)` | `ltP_3_3`, `andP_3B_3B`, `ifelseP_3B_3F64_3F64` | a `bool` array out; `ifelse.` is `c[i] ? a[i] : b[i]` |
+| `fill!(A, x)`, `A .= 0`, `A .= x`, `A .= B .* 2` | inline `memset` or a loop, or the pointwise helper writing into `A` | into a mutable array; it loses `const` |
+| `A + 2I`, `A - I`, `2I - A`, `SMatrix{3,3}(2I)` | `addI_3x3(A, 2.0, out)`, `subI_3x3`, `rsubI_3x3`; `memset` and a diagonal loop | square only |
 | `A'`, `transpose(A)` | nothing | the same storage |
 | `[A B; C D]`, `[u; v]`, `[u v]`, `[A;; B]`, `[B;; C;;; D;; E]` | inline `memcpy` per row, or a loop | any dimension, any pieces that line up |
 | `zeros`, `zero(A)`; `ones`, `fill`; `one(A)`, `SMatrix{3,3}(I)` | inline `memset`; a loop; both | |
 | `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[i, 2:3]` | inline `memcpy` or a loop | any dimension |
 | `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:4] = B`, `v[2:3] = w` | inline `memcpy` or a loop | into a mutable array |
-| `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm` | `sum_3`, `maximum_2x3`, `norm_3` | to a scalar |
+| `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm`, `count` | `sum_3`, `maximum_2x3`, `norm_3`, `count_3` | to a scalar |
+| `argmax`, `argmin`, `extrema` | `argmax_4` (Julia's 1-based index), `extrema_4` (a `(min, max)` tuple, as a struct) | vectors only for `argmax`/`argmin`; a matrix gives a `CartesianIndex` in Julia |
 | `sum(A; dims=1)`, `prod`, `maximum`, `minimum` with `dims` | `sum1_2x3(A, out)`, a 1×3 | the dimension is on the operation's name |
 | `diff(v)`, `diff(A; dims=2)` | `diff_4`, `diff2_2x3` | one shorter along that dimension |
 | `cumsum(v)`, `cumsum(A; dims=1)`, `cumprod` | `cumsum_4`, `cumsum1_2x3`, `cumprod_4` | |
