@@ -52,7 +52,8 @@ and its argument types, where a type followed by integers is an array of
 that element type and size. One `.c` file comes out with prototypes, the
 helpers it needs, and the functions; anything a listed function calls is
 transpiled too. Options: `outfile`, `outpath`, `source` (copy each Julia
-line into the C as a comment, on by default), `templimit`, `staticarray`.
+line into the C as a comment, on by default), `precise` (print every digit
+of a floating value), `templimit`, `staticarray`.
 
 Sizes are static: arrays are `StaticArrays` types, or `Array`s given a size
 in the call. Every generated function is C11 and compiles clean under
@@ -65,7 +66,8 @@ the transpiler accepts. In short: scalar arithmetic and `math.h`, control
 flow, static arrays of any dimension with `+ - * / \` and broadcasting,
 transposes, block construction, `det`, `inv`, `pinv`, solves through
 Cramer's rule or pivoted LU or Cholesky, reductions and slices, structs
-and tuples, calls between functions and into C via `ccall`, and comments.
+and tuples, calls between functions and into C via `ccall`, printing, and
+comments.
 Anything not on the list is an error at transpile time, never silently
 wrong C.
 

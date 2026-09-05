@@ -1,6 +1,7 @@
 
 using StaticArrays
 using LinearAlgebra
+using Printf
 
 include("c.jl")
 
@@ -34,6 +35,8 @@ Options:
 - `source`: copy each line of the Julia body into the C as a comment, prefixed
   `file:line:`, where that line's work happens. Comments are carried over
   regardless; this controls the code. See `doc/comment.md`.
+- `precise`: print every digit of a floating value (`%.17g`, `%.9g` for
+  `Float32`) instead of `%g`. See `doc/io.md`.
 
 Each function keeps its Julia name in C. If the same function is transpiled at more
 than one signature in a single call, those get the argument types appended
@@ -45,7 +48,8 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    # On by default only until dynamic arrays are supported; then it flips
                    # to off, and static becomes something you opt into.
                    staticarray::Bool=true,
-                   source::Bool=true)
+                   source::Bool=true,
+                   precise::Bool=false)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
@@ -73,7 +77,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
     unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
     names = cnames(instances)
-    prog = Program()
+    prog = Program(; precise)
     union!(prog.names, names)
     for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
     generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source, blocked)
@@ -97,7 +101,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
     end
     path = joinpath(outpath, endswith(outfile, ".c") ? outfile : outfile * ".c")
     open(path, "w") do io
-        for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "stdio.h", "math.h")
+        for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "stdio.h", "float.h", "math.h")
             h in prog.headers && println(io, "#include <", h, ">")
         end
         println(io)

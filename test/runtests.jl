@@ -5,7 +5,7 @@ using Test
 include("check.jl")
 
 @testset "newt" begin
-    for file in ("scalar", "flow", "array", "linear", "reduce", "call", "struct", "name", "comment")
+    for file in ("scalar", "flow", "array", "linear", "reduce", "call", "struct", "name", "comment", "print")
         include("$file.jl")
     end
 end

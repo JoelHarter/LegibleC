@@ -844,9 +844,6 @@ function cathelper!(helpers::Dict{String, String}, form::AbstractString, types, 
     return name
 end
 
-# The output's description for a helper named by what it makes: `3x4`, `2x2I64` — the
-# type appears by the same rule as for inputs, only when it isn't Float64.
-outname(R::Type) = dims(R) * (eltype(R) === Float64 ? "" : abbrev(eltype(R)))
 
 # The line that zeroes `out` of type `R`.
 zeroing(R::Type) = "memset(out, 0, sizeof($(ctype(eltype(R)))$(join("[$n]" for n in shape(R)))));"
@@ -936,4 +933,3 @@ function cathelper!(helpers::Dict{String, String}, kind::Symbol, rows, types, R:
     end
     return name
 end
-

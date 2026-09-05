@@ -55,7 +55,11 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `atan(y, x)` | `atan2(y, x)` | |
 | `Float64(a)`, `Int64(x)`, … | `(double)a`, `(int64_t)x` | a cast |
 | `round(Int64, x)`, `floor(Int64, x)`, … | `(int64_t)rint(x)`, … | |
-| `pi`, `ℯ`, `Inf`, `NaN` | `M_PI`, `M_E`, `INFINITY`, `NAN` | from `math.h` |
+| `pi`, `ℯ`, `Inf`, `NaN`, `Inf32`, `NaN32` | `M_PI`, `M_E`, `INFINITY`, `NAN` | from `math.h`; the macros serve both widths. `M_PI` and `M_E` are POSIX rather than ISO C — see the todo |
+| `isnan`, `isinf`, `isfinite`, `signbit` | the same | `math.h` |
+| `typemax(Int64)`, `typemin(Int32)`, `typemax(UInt8)` | `INT64_MAX`, `INT32_MIN`, `UINT8_MAX` | `stdint.h`; `typemin` of an unsigned type is `0` |
+| `typemax(Float64)`, `typemin(Float64)` | `INFINITY`, `-INFINITY` | |
+| `floatmax`, `floatmin`, `eps` of `Float64` / `Float32` | `DBL_MAX`, `DBL_MIN`, `DBL_EPSILON` / `FLT_…` | `float.h`; `eps(x)` of a value is not yet |
 | `length(v)`, `size(A, d)` | the number, since sizes are known | |
 
 Headers are included only when something needs them.

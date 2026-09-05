@@ -21,10 +21,17 @@ either(a::Bool, b::Bool) = !a || b
 ldiv(a::Float64, b::Float64) = a \ b
 cube(x::Float64) = x^3 + x^-1
 bits(a::Int64, b::Int64) = (a & b) | (a << 2) ⊻ (b >> 1)
+special(x::Float64) = x + NaN + Inf - Inf
+special32(x::Float32) = x + NaN32 + Inf32
+classify(x::Float64) = (isnan(x) ? 1 : 0) + (isinf(x) ? 2 : 0) + (isfinite(x) ? 4 : 0) + (signbit(x) ? 8 : 0)
+limits() = Float64(typemax(Int64)) + Float64(typemin(Int32)) + Float64(typemax(UInt8)) + eps(Float64) + Float64(eps(Float32)) + floatmin(Float64)
+biggest(x::Float64) = min(floatmax(Float64), x) + (typemax(Float64) == Inf ? 1.0 : 0.0)
 
 check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0, 3.0, 4.0), Case(reassign, 2.0),
                  Case(intint, 7, 2), Case(literal), Case(halfint, 7), Case(mixed, 7.0, 2), Case(narrow, Int32(7), Int32(2)),
                  Case(single, 7.0f0, Int32(2)), Case(smooth, 1.7), Case(intmath, 7, 3), Case(intmath, -7, 3),
                  Case(convert_, 3, 2.6), Case(strictly, 1.0, 2.0), Case(strictly, 2.0, 1.0), Case(either, true, false),
-                 Case(ldiv, 4.0, 1.0), Case(cube, 2.0), Case(bits, 12, 10)])
+                 Case(ldiv, 4.0, 1.0), Case(cube, 2.0), Case(bits, 12, 10),
+                 Case(special, 1.0), Case(special32, 1.0f0), Case(classify, NaN), Case(classify, -Inf), Case(classify, -2.5), Case(classify, 3.0),
+                 Case(limits), Case(biggest, 7.0)])
 end

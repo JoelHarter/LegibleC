@@ -29,7 +29,9 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ Integer `^` beyond 2 and 3 (a `power` helper), `mod` on floats, `Float32` math (`sqrtf` and friends)
     ✅ Tuples as values, multiple return values — done 2026-09-04, `struct.md`
     ✅ Structs → C structs — done 2026-09-04, `struct.md`: by value, mutable through a pointer, parametric, nested
-    ⬜ Strings and printing (`println` → `printf`)
+    ✅ Printing (`print`, `println`, `@printf`, `@show`) — done 2026-09-05, `doc/io.md`
+    ⬜ Strings as values: `@sprintf`, `string(…)` stored or returned, `length`, concatenation — needs buffers and an owner
+    ⬜ Files: `open`, `close`, `print(io, …)`, `read`, `readline`, `eachline` — into `src/io.jl`, the stream-first helpers already take a `FILE *`
     ⬜ `try`/`catch`, comprehensions, closures — decide which of these have any C meaning at all
     ⬜ Anonymous functions bound to a name: `f = x -> …` currently emits `U2329`; use the binding name
     ⬜ Broadcast: comparison operators (`.==`, `.<`) and `ifelse.`
@@ -55,6 +57,9 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ `SMatrix{3,3}(2I)` — a multiple of the identity; only `I` itself is accepted
     ⬜ `zero(x)`, `one(x)` on scalars
     ⬜ Loop order in `mul` when an operand is transposed: `mul_2x3_T2x3` walks `b[j][k]` with `j` inside, which strides; hand-written C would sum over `k` innermost there
+
+⬜ Portability
+    ⬜ `M_PI` and `M_E` are POSIX, not ISO C: a compiler in strict `-std=c11` mode without POSIX extensions may not define them. Investigate; the fallback is not to type the number into the code but to define our own macros once at the top of the file, under a prefix unlikely to step on anyone's toes (`NEWT_PI`, `NEWT_E`), and emit those
 
 ⬜ Correctness
     ⬜ Signed integer overflow: Julia wraps, C says undefined — pick the one fixed compiler flag (`-fwrapv`) or emit unsigned arithmetic

@@ -58,6 +58,7 @@ transpile time, never C that compiles and does the wrong thing.
 | `reserved.jl` | the names the output must never take |
 | `type.jl` | scalar types, the shaped stand-in for regular arrays, the transposed tag, the axis model's `axis`/`extent`, structs and tuples, C declarations |
 | `source.jl` | reading the Julia file for comments, docstrings, and code lines |
+| `io.jl` | printing (`print`, `println`, `@printf`) and, later, files — `printf` as a C programmer writes it, and the one `printarray` helper |
 
 ## Shapes of things in C
 

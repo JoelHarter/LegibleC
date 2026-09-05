@@ -775,3 +775,32 @@ than by judgment per helper keeps it one rule. Header-only helpers would
 pay off only when two outputs share them, which is also when the companion
 `.h` on the todo becomes necessary; marking the small ones `inline` now is
 exactly what that header will need, so this leaves that step open.
+
+---
+
+## 2026-09-05 — Printing is `printf`, the way a C programmer writes it
+
+**Decision.** `print`/`println` become one `printf` per run of strings and
+scalars: `%g` for a floating value (`%.17g` under the `precise` option),
+`%lld` for an integer, `%d` for a boolean; `fprintf(stderr, …)` when the
+stream is given. Arrays go through one helper per element type,
+`printarray(f, a, ndims, dims)`, which prints one row per line in
+right-aligned `%12g` fields, a blank line between 2-D slices, two between
+3-D blocks, and so on for any dimension, nothing after the last element.
+`@printf` passes its format through with 64-bit widening. All of it lives
+in `src/io.jl`, apart from the rest of the emitter.
+
+**Why.** A first version reproduced Julia's output character for character
+— shortest round-trip digits, `3.0`, `[1.0 3.0; 2.0 4.0]`, `Bool[1, 0]` —
+with a helper per floating type and per array shape. That was the wrong
+goal: the C isn't trying to grow up to be Julia, it's trying to be the best
+C it can be, and a C programmer prints a number with `%g` and a matrix as an
+aligned block. `%g` differs from Julia's `3.0` and six digits from
+seventeen; `precise` exists for when the digits matter, and the difference
+is documented rather than papered over. The one helper is the one place a
+shape is passed at run time instead of baked into a name; it bends the
+sizes-in-names convention, not the no-allocation rule, and for printing
+that's the right trade — it's the `print_matrix(a, rows, cols)` every C
+programmer has written, generalized. The stream-first signature is what
+lets files arrive later without touching any of this, and printing is a
+different kind of thing from arithmetic, so it gets a file of its own.

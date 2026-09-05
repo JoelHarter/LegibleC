@@ -16,6 +16,7 @@ suggested order for a first read:
 11. [naming.md](naming.md) — how every name in the output is chosen.
 12. [comment.md](comment.md) — comments and docstrings carried into the C.
 13. [copy.md](copy.md) — why the C has the temps it has, and no more.
+14. [io.md](io.md) — printing, and later files.
 
 What's still to be decided is in [dev/](dev/); what's open is in the repo's
 `todo.md`.

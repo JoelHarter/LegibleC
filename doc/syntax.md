@@ -33,6 +33,8 @@ prototypes, the helpers it needs, and the functions.
 | calling another user function | yes; brought in on demand if not listed, recursion included (`call.md`) |
 | `ccall`, `@ccall` | yes: the call itself, with a header or a prototype (`call.md`) |
 | docstrings and comments | carried into the C (see `comment.md`) |
+| `print`, `println`, to `stdout` or `stderr`; `"x = $x"`; `@show`; `@printf` | yes, as `printf` and one array helper (`io.md`) |
+| `@sprintf`, `string(…)` as a value, `show`, `display`, `printstyled`, files | not yet |
 
 ## Scalar types
 
@@ -53,7 +55,8 @@ yet: complex, `Char`, strings, `Int128`, `Float16`, `Rational`, `BigInt`,
 | `&&`, `\|\|`, `c ? x : y` | yes, in conditions and as values |
 | `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc round hypot copysign abs max min atan(y, x)` | yes |
 | `Float64(a)`, `Int64(x)`, `round(Int64, x)`, `floor(Int64, x)`, … | yes, as casts |
-| `pi`, `ℯ`, `Inf`, `NaN`, numeric literals | yes |
+| `pi`, `ℯ`, `Inf`, `NaN`, `Inf32`, `NaN32`, numeric literals | yes |
+| `isnan`, `isinf`, `isfinite`, `signbit`; `typemax`, `typemin`, `floatmax`, `floatmin`, `eps` of a type | yes, as the `math.h`, `stdint.h`, `float.h` names |
 | `length(v)`, `size(A, d)` | yes, as the number |
 | integer overflow | Julia wraps, C doesn't define it: not yet reconciled |
 

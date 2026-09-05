@@ -22,9 +22,10 @@ mutable struct Program
     names::Set{String}                                             # C function names taken so far
     foreign::Dict{String, String}                                  # a `ccall`ed symbol -> its prototype
     structs::Vector{Pair{Type, String}}                            # struct typedefs, dependencies first
+    precise::Bool                                                  # print every digit of a floating value, not `%g`
 end
-Program() = Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
-                    Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[])
+Program(; precise::Bool=false) = Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
+                    Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise)
 
 # Per-function state.
 mutable struct Scope
@@ -84,6 +85,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
 end
 
 include("flow.jl")
+include("io.jl")
 
 """
     cfunction(name, mi, sig, helpers, headers; templimit=40, staticarray=true, source=true) -> (prototype, definition)
@@ -163,6 +165,9 @@ function analyze!(sc::Scope)
         (f === Base.cconvert || f === Base.unsafe_convert) && push!(sc.skipped, i)
         # A factorization only ever feeds `\` or `inv`; the solver helper does both steps.
         (f === LinearAlgebra.cholesky || f === LinearAlgebra.lu) && push!(sc.skipped, i)
+        # A `string(…)` or `repr(…)` that only feeds a print is printed piece by piece.
+        (f === Base.string || f === Base.repr) && all(u -> u isa Expr && u.head === :call && callee_or_nothing(ci, u.args[1]) in (Base.print, Base.println, Base.string, Base.repr),
+                                                      (u for u in code if uses(u, i))) && push!(sc.skipped, i)
     end
     # The iterator state of `x, y = t` — `getfield(indexed_iterate(...), 2)`, usually
     # assigned to a hidden slot — has no C.
@@ -248,6 +253,10 @@ function statement!(lines, sc::Scope, i, st)
             name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, foreignargs(sc, st)))
             emit!(lines, sc, "$(ctype(T)) $name = $code;")
         end
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.print, Base.println)
+        print!(lines, sc, st.args[2:end], callee(ci, st.args[1]) === Base.println)
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Printf.format && !(T <: AbstractString)
+        printf!(lines, sc, st.args[2:end])
     elseif st isa Expr && st.head === :call && (T === Nothing || T === Any) && userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end]) !== nothing
         # A call for its effect, or whose result goes unused (Julia then types it `Any`
         # and the callee's own return type says what C needs).
@@ -320,6 +329,12 @@ function statement!(lines, sc::Scope, i, st)
         # `%i = (x = rhs)`: the SSA value is the value assigned. Refer to it as `x`
         # where that's safe; otherwise keep a temp copy.
         slot, rhs = st.args
+        if slot.id in sc.hidden
+            # A slot Julia left unnamed that really holds a value — the result of a
+            # `c ? x : y` used as a value — is a local like any other, named as a temp.
+            delete!(sc.hidden, slot.id)
+            sc.names[slot.id] = temp!(sc, nothing, String[])
+        end
         x = sc.names[slot.id]
         if isarray(T)
             store!(lines, sc, i, x, rhs)
@@ -1059,6 +1074,25 @@ function render(sc::Scope, i, ex::Expr)
         end
     end
 
+    # Classification of a floating value: the same names, from math.h.
+    f in (Base.isnan, Base.isinf, Base.isfinite, Base.signbit) && n == 1 && return fn(string(nameof(f)))
+
+    # The limits of a type: the macros C names them by.
+    if f in (Base.typemax, Base.typemin, Base.floatmax, Base.floatmin, Base.eps) && (n == 0 || literal(sc, args[1]) isa Type)
+        S = n == 0 ? Float64 : literal(sc, args[1])
+        S in (Float64, Float32) && f === Base.eps && (push!(sc.headers, "float.h"); return (S === Float64 ? "DBL_EPSILON" : "FLT_EPSILON"), PRIMARY)
+        S in (Float64, Float32) && f === Base.floatmax && (push!(sc.headers, "float.h"); return (S === Float64 ? "DBL_MAX" : "FLT_MAX"), PRIMARY)
+        S in (Float64, Float32) && f === Base.floatmin && (push!(sc.headers, "float.h"); return (S === Float64 ? "DBL_MIN" : "FLT_MIN"), PRIMARY)
+        S in (Float64, Float32) && f === Base.typemax && (push!(sc.headers, "math.h"); return "INFINITY", PRIMARY)
+        S in (Float64, Float32) && f === Base.typemin && (push!(sc.headers, "math.h"); return "-INFINITY", UNARY)
+        S === Bool && return (f === Base.typemax ? "true" : "false"), PRIMARY
+        if S <: Integer && f in (Base.typemax, Base.typemin)
+            bits = 8 * sizeof(S)
+            S <: Unsigned && return (f === Base.typemax ? "UINT$(bits)_MAX" : "0"), PRIMARY
+            return (f === Base.typemax ? "INT$(bits)_MAX" : "INT$(bits)_MIN"), PRIMARY
+        end
+    end
+
     # Conversions: a call to a type.
     f isa Type && isstruct(T) && return compound(sc, T, args), PRIMARY
     f isa Type && n == 1 && return "($(ctype(T)))" * operand(sc, args[1], UNARY), UNARY
@@ -1160,14 +1194,14 @@ function userinstance!(sc::Scope, f, args)
         T <: Shaped && (push!(spec, eltype(T)); append!(spec, shape(T)); continue)
         push!(spec, juliatype(T))
     end
-    nameof(Base.moduleroot(parentmodule(f))) in (:Core, :Base, :LinearAlgebra, :StaticArrays) && return nothing
+    nameof(Base.moduleroot(parentmodule(f))) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
     mi, sig = try
         any(x -> x isa Integer, spec) ? resolve(f, spec) : (m = Base.method_instance(f, Tuple(spec)); m === nothing ? (nothing, nothing) : (m, argtypes(m)))
     catch e
         e isa ArgumentError ? (nothing, nothing) : rethrow()
     end
     mi === nothing && return nothing
-    nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays) && return nothing
+    nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
     haskey(sc.prog.calls, mi) && return (mi, sig, sc.prog.calls[mi])
     base = identifier(string(mi.def.name))
     taken = union(sc.prog.names, keys(sc.prog.helpers), reserved)
@@ -1306,7 +1340,7 @@ function value(sc::Scope, x)
     x isa Bool            && return x ? "true" : "false"
     x isa Integer         && return string(x)
     x isa AbstractFloat   && return isinf(x) ? (push!(sc.headers, "math.h"); x > 0 ? "INFINITY" : "-INFINITY") :
-                                    isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : repr(x)
+                                    isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : x isa Float32 ? repr(Float64(x)) * "f" : repr(x)
     x isa Irrational      && return (push!(sc.headers, "math.h"); x === pi ? "M_PI" : x === ℯ ? "M_E" : repr(Float64(x)))
     x isa GlobalRef       && return value(sc, getfield(x.mod, x.name))
     throw(ArgumentError("unsupported value: $(repr(x))"))
