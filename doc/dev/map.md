@@ -71,7 +71,7 @@ marked as such rather than forced.
 | Julia | would become in C | status |
 |---|---|---|
 | `if`/`elseif`/`else`, `while`, `for i in a:b`, `break`, `continue`, `return`, `&&`, `\|\|`, `?:` | the same | ✅ |
-| `for x in v`, `for (i, x) in enumerate(v)`, `zip` | index loops | ⬜ |
+| `for x in v`, `for (i, x) in enumerate(v)`, `zip` | index loops | ✅ `for x in v` over a vector; ⬜ `enumerate`, `zip`, a matrix |
 | `for i in 1:n` used only as an index | the C idiom `for (i = 0; i < n; i++) v[i]` | ⬜ |
 | `if x == 1 … elseif x == 2 …` on integer constants | `switch` — see §2 | ⬜ |
 | `@assert` | `assert(…)` from `assert.h` | ⬜ |
@@ -90,7 +90,7 @@ marked as such rather than forced.
 | `count_ones`, `leading_zeros`, `trailing_zeros`, `bswap`, `bitrotate` | `__builtin_popcountll` and friends (extensions), or portable loops | ⬜ |
 | `typemax`, `typemin`, `eps`, `floatmax`, `floatmin` | `INT64_MAX`, `DBL_EPSILON`, `DBL_MAX`, … | ⬜ |
 | `isnan`, `isinf`, `isfinite`, `signbit`, `copysign`, `flipsign` | the same names in `math.h` | 🟡 |
-| `Float32` math (`sqrt(x::Float32)`) | `sqrtf` and friends | ⬜ (except under `ccall`) |
+| `Float32` math (`sqrt(x::Float32)`) | `sqrtf` and friends | ✅ |
 | `round(x, digits=2)` | `rint(x * 100) / 100` | ⬜ |
 | `rand()`, `randn()` | Julia's own generator, Xoshiro256++, written out in C: same seed, same stream, bit for bit — §3.12 | ⬜ |
 | `time()`, `time_ns()` | `clock_gettime` (POSIX) or `timespec_get` (C11) | ⬜ |
@@ -122,8 +122,8 @@ marked as such rather than forced.
 | `tr`, `diag`, `diagm`, `kron`, `transpose!` | small helpers | ⬜ |
 | `lu`, `qr`, `cholesky`, `eigen` | 1–3 in closed form where one exists (symmetric 3×3 eigenvalues do); iterative beyond, as helpers | ⬜ |
 | `reshape`, `vec`, `permutedims`, `reverse`, `circshift` | index remapping helpers; `reshape` of a static array is free (same storage, like a transpose) | ⬜ |
-| `.==`, `.<`, `ifelse.`, `clamp.` | pointwise helpers producing `bool` arrays | ⬜ |
-| `A .= 0`, `fill!(A, x)`, `copyto!`, `A[i] = …` on a mutable array | the existing `zero_`/`fill_`/`copy_` helpers called on the variable | ⬜ |
+| `.==`, `.<`, `ifelse.`, `clamp.` | pointwise helpers producing `bool` arrays | ✅ except `clamp.` |
+| `A .= 0`, `fill!(A, x)`, `copyto!`, `A[i] = …` on a mutable array | the existing `zero_`/`fill_`/`copy_` helpers called on the variable | ✅ except `copyto!` |
 | `isapprox`, `≈` | `fabs(a - b) <= tol * fmax(fabs(a), fabs(b))` with Julia's default tolerance | ⬜ |
 | fusing a broadcast chain into one loop | one helper per chain instead of one per operation | ⬜ |
 
