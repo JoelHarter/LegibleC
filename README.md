@@ -68,8 +68,10 @@ double beta[2];
 solve_2x2_2(temp1_X, temp2_X_y, beta);  // beta = temp1_X \ temp2_X_y
 ```
 
-**The helpers**, generated beside the functions in `helper.h`, each with
-its two-line comment, also generated. The everyday ones are a few lines:
+**The helpers**, generated beside the functions in `helper.h`, each under
+a two-line comment, also generated, saying what it does in words and then
+as the formula — so you can follow a chain of calls without losing the
+thread. The everyday ones are a few lines:
 
 ```c
 /// 4×2-matrix * 2-vector multiplication
