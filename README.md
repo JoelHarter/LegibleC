@@ -63,8 +63,6 @@ double beta[2];
 solve_2x2_2(temp1_X, temp2_X_y, beta);  // beta = temp1_X \ temp2_X_y
 ```
 
----
-
 **The helpers those lines call**, generated beside them in `helper.h`, each
 with a comment saying what it computes. Sizes up to 3 are written out the
 way a person writes them; from 4 on it's LU with partial pivoting.
@@ -92,8 +90,6 @@ static inline void solve_2x2_2(const double A[2][2], const double b[2], double o
     out[1] = (A[0][0] * b[1] - A[1][0] * b[0]) / d;
 }
 ```
-
----
 
 **The whole thing** is in [demo/](demo/README.md): each folder is a Julia
 file and the `out/` it produces — a header a caller includes, the
