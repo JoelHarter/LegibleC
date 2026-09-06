@@ -119,6 +119,7 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
     instances = Tuple{Core.MethodInstance, Vector{Type}}[]
+    synthetics = Dict{Core.MethodInstance, Any}()   # an operator target's stand-in -> (operator, signature)
     types = Type[]
     values = Any[]                    # (module or nothing, name, value, constant or nothing)
     for t in target
@@ -138,6 +139,9 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
             sig = argtypes(mi)
         elseif t isa Tuple
             mi, sig = resolve(t[1], t[2:end])
+            # Julia's own operator at these types — `(+, Float64, 3, Float64, 3)` — is
+            # asked for by name, so the helper it would become is a function instead.
+            nameof(Base.moduleroot(mi.def.module)) in known && (mi = synthetic(t[1], mi, sig); synthetics[mi] = (t[1], sig))
         else
             # A MethodInstance is not necessarily concrete: inference also creates them
             # for abstract signatures (e.g. f(::Real, ::Real)), so check its specTypes
@@ -161,6 +165,7 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
     unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
     names = cnames(instances)
+    for (k, (mi, _)) in enumerate(instances); haskey(synthetics, mi) && (names[k] = string(mi.def.name)); end
     prog = Program(; precise, width, portable, suffix)
     union!(prog.names, names)
     for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
@@ -173,7 +178,7 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
         prog.structs[k] = T => "/**\n" * join(" * " .* split(doc, "\n"), "\n") * "\n */\n" * prog.structs[k].second
     end
     for (mod, name, value, constant) in values; global!(prog, mod, name, value; constant); end
-    generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source, blocked)
+    generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source=source && !haskey(synthetics, mi), blocked)
     functions = [generate(n, mi, sig) for (n, (mi, sig)) in zip(names, instances)]
     # A call to a function that wasn't asked for brings it in, and it may call others.
     while !isempty(prog.pending)
@@ -182,11 +187,29 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
         push!(names, n)
         push!(functions, generate(n, mi, sig))
     end
+    # An operator target whose stand-in is one helper call — `add_3(a, b, out)` — is that
+    # helper, written as a function of the user's under the helper's name and taken out
+    # of `helper.h`. A stand-in with more to it (a scalar operator) stays as it is.
+    for (k, (mi, _)) in enumerate(instances)
+        haskey(synthetics, mi) || continue
+        f, sig = synthetics[mi]
+        julia = string(nameof(f)) * "(" * join(("::" * string(T <: Shaped ? juliatype(T) : T) for T in sig), ", ") * ")"
+        h = onlycall(functions[k][3], prog.helpers)
+        if h === nothing
+            # The stand-in stays; its Doxygen block names the operator, not the stand-in.
+            proto, above, def, vars = functions[k]
+            functions[k] = (proto, replace(above, r"Julia signature: [^\n]*" => "Julia signature: " * julia), def, vars)
+            continue
+        end
+        push!(prog.exported, h)
+        names[k] = h
+        functions[k] = exportedfunction(prog.helpers[h], julia, sig, returntype(mi))
+    end
     # The helpers' names are known only now. A function that shares one is an error,
     # since its name is the C interface; a variable that shares one is renamed with `_`
     # by generating that function again with the helper names blocked.
     for n in names
-        haskey(prog.helpers, n) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
+        haskey(prog.helpers, n) && !(n in prog.exported) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
     end
     for (k, (n, (mi, sig))) in enumerate(zip(names, instances))
         any(v -> haskey(prog.helpers, v), functions[k][4]) || continue
@@ -197,8 +220,51 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
     base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
     base == "helper" && throw(ArgumentError("`helper.c` is the file the generated helpers go to; name the functions' file something else"))
     where, order = placement(prog, base, separate, names)
-    writehelpers(dir, prog, separate ? where : Dict{String, String}())
+    writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported))
     return writefiles(dir, prog, base, where, order, names, functions)
+end
+
+# Methods made on request stand in for Julia's own operators as targets (`synthetic`).
+module Synthetic end
+
+# A stand-in for Julia's operator `f` at the argument types of its instance `mi`: a
+# method of `Synthetic` named by the helper scheme, `add_3`, whose body is the call.
+# The C it makes is what the operator becomes anywhere, and now under a name of its
+# own.
+function synthetic(f, mi::Core.MethodInstance, sig)
+    types = collect(mi.specTypes.parameters[2:end])
+    name = Symbol(operatorname(nameof(f), sig))
+    args = [Symbol('a' + k - 1) for k in 1:length(types)]   # `a`, `b`, `c`, as a helper names them
+    params = [Expr(:(::), a, T) for (a, T) in zip(args, types)]
+    # Built without line numbers, so the method has no source to quote from.
+    s = Core.eval(Synthetic, Expr(:(=), Expr(:call, name, params...), Expr(:block, Expr(:call, f, args...))))
+    return Base.method_instance(s, Tuple(types))
+end
+
+# The helper a function's body is one call to, if it is that and nothing else.
+function onlycall(definition, helpers)
+    inner = [strip(l) for l in split(rstrip(definition), "\n")[2:end-1]]
+    lines = [l for l in inner if !isempty(l) && !startswith(l, "//")]
+    length(lines) == 1 || return nothing
+    m = match(r"^(?:return )?(\w+)\(", lines[1])
+    m !== nothing && haskey(helpers, m[1]) ? String(m[1]) : nothing
+end
+
+# A helper as a function of the user's: its definition without `static inline`, its
+# prototype, and a Doxygen block from its two comment lines and the operator it stands
+# for, in the shape every other function gets.
+function exportedfunction(text, julia, sig, R)
+    lines = split(text, "\n")
+    doc = [String(strip(l[4:end])) for l in lines if startswith(l, "///")]
+    code = [String(l) for l in lines if !startswith(l, "///")]
+    code[1] = replace(code[1], r"^static inline " => "")
+    definition = join(code, "\n")
+    proto = prototype(definition)
+    what(T) = isarray(T) ? describe(T) : T <: Number ? "scalar" : ""
+    pnames = [String(m[1]) for m in eachmatch(r"(\w+)(?:\[[^\]]*\])*(?:,|\)$)", proto[1:end-1])]
+    params = [("in", n, what(T)) for (n, T) in zip(pnames, sig)]
+    length(pnames) > length(sig) && push!(params, ("out", pnames[end], describe(R) * ", the return value"))
+    return (proto, join(doxygen(doc, julia, params), "\n"), definition, String[])
 end
 
 # Does the C text mention the name — a function, as a call; anything else, as a word?
@@ -223,7 +289,7 @@ macros(prog::Program) = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the d
 # written only when there is one. A struct a helper mentions is defined here, unless
 # `external` names the header that has it, which is then included.
 function writehelpers(dir, prog::Program, external)
-    order = helperorder(prog.helpers)
+    order = filter(!in(prog.exported), helperorder(prog.helpers))
     isempty(order) && return
     text = join((prog.helpers[n] for n in order), "\n")
     inline = [n for n in order if isinline(prog.helpers[n])]
@@ -237,6 +303,10 @@ function writehelpers(dir, prog::Program, external)
         name = structname(T)
         mentions(text, name) || continue
         haskey(external, name) ? push!(headers, external[name]) : push!(htext, def)
+    end
+    # A helper that calls one the user asked for by name finds it in the user's file.
+    for name in prog.exported
+        mentions(text, name; call=true) && push!(headers, external[name])
     end
     for name in outline; push!(htext, prototype(prog.helpers[name])); end
     isempty(outline) || push!(htext, "")

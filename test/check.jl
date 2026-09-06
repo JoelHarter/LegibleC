@@ -148,7 +148,8 @@ end
 # written, headers first and the functions last, as one string.
 function csource(name, targets...; kw...)
     dir = mktempdir()
-    f = findfirst(t -> t isa Function || t isa Tuple, collect(targets))
+    own(g) = !(nameof(Base.moduleroot(parentmodule(g))) in (:Core, :Base, :LinearAlgebra, :StaticArrays))
+    f = findfirst(t -> t isa Function && own(t) || t isa Tuple && own(t[1]), collect(targets))
     scope = f === nothing ? Main : parentmodule(targets[f] isa Tuple ? targets[f][1] : targets[f])
     path = transpile(targets...; outpath=dir, outfile=name, scope, kw...)
     path isa AbstractString || (path = path[1])

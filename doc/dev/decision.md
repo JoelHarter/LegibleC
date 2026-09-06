@@ -1474,3 +1474,31 @@ something that has no `bool` — wants integers there instead, at the
 declared cost that the names change with the type. The read rule is C's
 own, and it is what keeps a `2` handed in from a caller from being
 compared unequal to `true`.
+
+---
+
+## 2026-09-07 — Julia's operators as targets
+
+**Decision.** A tuple target whose function is Julia's own — `(+, Float64,
+3, Float64, 3)`, `(\, Float64, 4, 4, Float64, 4)`, `(dot, Float64, 3,
+Float64, 3)` — becomes a function of the user's: the helper that operator
+turns into anywhere, `add_3`, `solve_4x4_4`, `dot_3`, under the helper's
+name, in the user's file with a prototype and a Doxygen block naming the
+operator, and no longer in `helper.h`. Every use of the operator in the
+transpiled code calls that function. A helper the exported one needs,
+`lu_4x4`, stays a helper. An operator with nothing to export — a scalar
+`+` — is a small function under the scheme's name, `add_s`. A user's
+method of an operator, `Base.:*(::Quat, ::Quat)`, was already a target
+by the same tuple, and comes out as before, `mul_Quat_Quat`.
+
+**How.** The operator is asked of Julia: a method `add_3(a, b) = a + b`
+is made on request in a module of the transpiler's, transpiled like any
+function, and if its body is one helper call the helper's text is
+promoted in its place. The transpiler thus keeps one way of turning an
+operator into C.
+
+**Why.** A caller who wants the vector addition or the solve by name
+wants it in the file they include and link, documented like the rest,
+not a `static inline` in the helpers' header that another run may or may
+not write. Unary minus on a struct is `neg_Quat`, as the helper scheme
+names it, not `sub_Quat`.

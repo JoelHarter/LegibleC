@@ -32,6 +32,7 @@ mutable struct Program
     kinds::Dict{Core.MethodInstance, Any}                          # the C struct a tuple-returning function returns (see `returnkind!`)
     tupledefs::Vector{Pair{String, String}}                        # those typedefs, name => text
     globals::Vector{Any}                                           # the program's global variables, in order (see `global!`)
+    exported::Set{String}                                          # helpers asked for by name, written as functions of the user's
 end
 
 # A global variable in the output: its C name, the Julia binding it came from (module and
@@ -55,7 +56,7 @@ end
 Program(; precise::Bool=false, width::Integer=100, portable::Bool=false, suffix::Bool=true) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
-            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[])
+            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}())
 
 # The mathematical constants, for when the output defines its own macros (`portable`):
 # each is emitted as the double it rounds to, in the shortest form that reads back to

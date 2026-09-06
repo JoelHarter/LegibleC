@@ -10,6 +10,7 @@ What `transpile` accepts as a target.
 | `(f, Float64, 3, Float64, 2, 3)` | `f` at these argument types; a type followed by integers is an array of that element type and size, static or a sized `Array` |
 | `transpile(f, Float64, Float64)` | the same for a single function, without the tuple |
 | `(poly, Int64, Int64)`, `(poly, Float64, Float64)` | the same function at two signatures; the C names get the types appended, `poly_I64_I64`, `poly_F64_F64` |
+| `(+, Float64, 3, Float64, 3)`, `(\, Float64, 4, 4, Float64, 4)`, `(dot, Float64, 3, Float64, 3)` | Julia's own operator at these types, as a function of yours: the C it becomes anywhere — the helper, `add_3`, `solve_4x4_4`, `dot_3` — under that name in your file, not in `helper.h`, with a Doxygen block, for you to call by name |
 | a `Core.MethodInstance` | a specialization you already have |
 | `Point`, `Point{Float64}` | a struct type: its `typedef`, with the docstring as a Doxygen block; concrete parameters only. List it before any function, since a type right after a function reads as that function's argument type |
 | `transpile(fall; g, μ)` | variables, by keyword: `const double g = 9.81;` — see below |

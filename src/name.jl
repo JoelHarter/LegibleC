@@ -78,6 +78,7 @@ function operatorname(name::Symbol, sig)
     haskey(operators, name) || return string(name)
     piece(T) = isstruct(T) ? structname(T) : T <: AbstractArray ? dims(T) : "s"
     pieces = [piece(T) for T in sig]
+    name === :- && length(sig) == 1 && return "neg_" * pieces[1]
     once = name in (:+, :-, :(==), :!=, :<, :<=, :>, :>=) && allequal(pieces)
     return operators[name] * "_" * (once ? pieces[1] : join(pieces, "_"))
 end
