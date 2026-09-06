@@ -10,7 +10,7 @@ happens, as a C programmer writes it — `memcpy` for a contiguous run,
 `memset` to zero, a loop otherwise. Copies, block construction, slices and
 slice assignment, `zeros`, `fill`, and the identity have no helpers and no
 names; the `file:line:` comment above them says what they are. See
-`array.md`, and `src/move.jl`.
+`math/array.md`, and `src/move.jl`.
 
 ```c
 /// 2×2-matrix * 2-vector multiplication
@@ -50,7 +50,7 @@ outputs need to share them.
 
 Following the philosophy's Generality principle, no helper body is written for
 one particular kind of array. Every generator is written once from the
-model in `array.md`: an operand has exactly its own dimensions, each on some
+model in `math/array.md`: an operand has exactly its own dimensions, each on some
 axis, with extent 1 along any axis it has none on. From that, one `access`
 function produces the right C subscript for any operand — a scalar, a
 vector, a transposed matrix, a 7-D array — and:
@@ -93,7 +93,7 @@ and `F32` on its own can never be mistaken for a scalar. No `S`/`M` class
 letters: the C doesn't distinguish static from mutable. A type is written
 exactly when not every input is `Float64`, and then on every input,
 including the `Float64` ones — so `F64` appears only next to something that
-isn't. The abbreviations are in `scalar.md`.
+isn't. The abbreviations are in `math/scalar.md`.
 
 **What the contract leaves open decides what's listed.**
 
@@ -122,7 +122,7 @@ isn't. The abbreviations are in `scalar.md`.
 - **Algorithms** carry their method: `solve_4x4_4` and `inv_4x4` (LU),
   `solveLLT_3x3_3` and `invLLT_3x3` (Cholesky), `rsolve_2x3_3x3` (`B / A`),
   `pinv_4x3`; and their pieces `pivot_4x4`, `lu_4x4`, `llt_3x3`. See
-  `linear.md`.
+  `math/solve.md`.
 
 | Julia | helper |
 |---|---|
@@ -165,7 +165,7 @@ no input could be the same array as the output: a product, a solve, an
 inverse, a cross product, anything whose output element reads inputs at
 other indices. Saying so lets the compiler keep loads in registers across
 the stores, and it is a promise the transpiler keeps (such a result that is
-also an operand goes through a temp; `array.md`). An elementwise helper —
+also an operand goes through a temp; `math/array.md`). An elementwise helper —
 `add_3`, `mul_3_s`, `neg_2x2`, a pointwise `addP_…` with an input of the
 output's shape — reads each input only at the index it writes, so it is
 correct with `out` the same array as an input, and its `out` is left plain

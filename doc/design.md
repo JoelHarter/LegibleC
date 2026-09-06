@@ -84,7 +84,7 @@ A Julia program that throws an exception nobody catches prints it and
 stops. The C does the same where it can happen inside a helper — a singular
 matrix in an LU solve, a non-positive-definite one in Cholesky — with
 `fprintf(stderr, …)` and `abort()`. Julia checks the transpiler doesn't
-reproduce (`Int64(2.5)`, `div(1, 0)`) are listed in `scalar.md`.
+reproduce (`Int64(2.5)`, `div(1, 0)`) are listed in `math/scalar.md`.
 
 ## Tests
 

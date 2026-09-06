@@ -40,7 +40,7 @@ prototypes, the helpers it needs, and the functions.
 
 ## Scalar types
 
-`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`. See `scalar.md`
+`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`. See `math/scalar.md`
 for the C spelling of each. `struct` (immutable by value, mutable through a
 pointer, parametric at concrete types) and `Tuple` — see `struct.md`. Not
 yet: complex, `Char`, strings, `Int128`, `Float16`, `Rational`, `BigInt`,
@@ -50,12 +50,13 @@ yet: complex, `Char`, strings, `Int128`, `Float16`, `Rational`, `BigInt`,
 
 | Julia | works |
 |---|---|
-| `+ - * / \ ÷ %`, `mod` (integers) | yes |
-| `x^2`, `x^3`, `x^n` with float `x` | yes (`x^n` on integers beyond 3: not yet) |
+| `+ - * / \ ÷ %`, `mod` | yes; `mod` on floats keeps Julia's sign rule |
+| `x^2`, `x^3`, `x^-1`, `x^n` for any literal integer `n`, `x^y` | yes; `powi(x, n)` by squaring from the 4th power |
 | `< <= > >= == !=` | yes |
 | `! & \| xor << >> ~` | yes |
 | `&&`, `\|\|`, `c ? x : y` | yes, in conditions and as values |
-| `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc round hypot copysign abs max min atan(y, x)` | yes |
+| `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc round hypot copysign abs max min atan(y, x)` | yes; the `f` family on `Float32` |
+| `zero(x)`, `one(x)` | yes |
 | `Float64(a)`, `Int64(x)`, `round(Int64, x)`, `floor(Int64, x)`, … | yes, as casts |
 | `pi`, `ℯ`, `Inf`, `NaN`, `Inf32`, `NaN32`, numeric literals | yes |
 | `isnan`, `isinf`, `isfinite`, `signbit`; `typemax`, `typemin`, `floatmax`, `floatmin`, `eps` of a type | yes, as the `math.h`, `stdint.h`, `float.h` names |
@@ -71,8 +72,9 @@ yet: complex, `Char`, strings, `Int128`, `Float16`, `Rational`, `BigInt`,
 | `for i in a:b`, `a:s:b` with a literal step | yes |
 | `for i in eachindex(v)`, `1:length(v)`, `axes(A, d)` | yes |
 | `for i in 1:2, j in 1:3` | yes |
+| `for x in v` over a vector's elements | yes |
 | `break`, `continue`, `return` anywhere | yes |
-| `for x in v` (over elements), a non-literal step, a range in a variable | not yet |
+| `for x in A` over a matrix, a non-literal step, a range in a variable, `enumerate`, `zip` | not yet |
 | `try`/`catch`, comprehensions, closures, `do` blocks | not yet |
 
 ## Variables
@@ -94,21 +96,23 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `A + B`, `A - B`, `-A`, `s * A`, `A * s` | yes |
 | `A * B`, `A * v`, `v' * A`, `v' * w`, `v * w'`, `A * B'`, `A' * B` | yes |
 | `dot(v, w)`, `cross(v, w)`, `det(A)` | yes |
-| `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm` | yes |
+| `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm`, `count`, `argmax`, `argmin`, `extrema` | yes |
+| `sum(A; dims=1)`, `prod`, `maximum`, `minimum` with `dims`; `diff`, `cumsum`, `cumprod` | yes |
 | `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[:, 2:end]`, `A[i, 2:3]`, any dimension (literal ranges) | yes |
 | `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:end] = B`, `v[2:3] = w` into a mutable array | yes |
 | `A \ b`, `A \ B`, `B / A`, `A / s`, `inv(A)`, `cholesky(A) \ b`, `inv(cholesky(A))`, `lu(A) \ b` | yes; 1–3 written out, LU with partial pivoting beyond |
 | `A \ b` with a non-square `A`, `pinv(A)` | yes: least squares / minimum norm through the Gram matrix and Cholesky (full rank only) |
 | `v'`, `A'`, `transpose(…)` | yes, free (0–2 dimensions, as in Julia) |
 | broadcasting: `.+ .- .* ./ .^`, unary `.-`, `f.(A)` for the `math.h` functions above, any shapes Julia allows | yes |
-| `zeros`, `ones`, `fill`, `zero(A)`, `one(A)`, `SMatrix{n,n}(I)` | yes |
+| `zeros`, `ones`, `fill`, `zero(A)`, `one(A)`, `SMatrix{n,n}(I)`, `SMatrix{n,n}(2I)` | yes |
+| `A + 2I`, `A - I`, `2I - A` | yes |
+| `fill!(A, x)`, `A .= 0`, `A .= B .* 2` into a mutable array | yes |
 | `[1.0 2.0; 3.0 4.0]`, `[1.0, 2.0]`, `SVector(…)`, `@SMatrix […]`, `SA[…]` | yes |
 | `[A B; C D]`, `[u; v]`, `[u v]`, `[A; B;; C; D]`, `[A;; B]`, `[B;; C;;; D;; E]`, with scalars among the blocks, ragged rows and columns | yes, any dimension |
 | `B = A`, `B = A'`, `A = A * A` | yes (copies, and a temp when the destination is an operand) |
+| `.==`, `.<`, `.<=`, `.>`, `.>=`, `.!=`, `.&`, `.\|`, `.!`, `ifelse.` | yes, a `Bool` array |
 | a range in a variable, `A[:, 1] .= 0` | not yet |
-| `.==`, `.<`, `ifelse.` | not yet |
 | runtime-sized `Array` arguments (`staticarray=false`) | not yet — see `dev/map.md` §3.4 for the VLA design |
-| a multiple of the identity (`2I`) | not yet |
 
 ## Comments
 

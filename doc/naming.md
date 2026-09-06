@@ -42,7 +42,7 @@ scope, whichever comes second becomes `omega_`. Function names are checked the
 same way, after the mangling below. Nothing is ever refused for its name.
 
 An array parameter that Julia reassigns keeps its name for the parameter;
-the working copy is the same name under this rule, `x_` (`array.md`,
+the working copy is the same name under this rule, `x_` (`math/array.md`,
 *Assignment and aliasing*). A scalar parameter is simply reassigned.
 
 A name that starts with `_` has its leading underscores moved to the end
@@ -70,7 +70,7 @@ for the names to differ, and applied uniformly to the whole group:
    and so on. Scalars contribute nothing at this level, so two scalar-only
    instances fall straight through.
    `g_3`, `g_2x3`
-2. **Type abbreviation,** after — from the table in `scalar.md`, an array
+2. **Type abbreviation,** after — from the table in `math/scalar.md`, an array
    described by its element type. A function whose arguments are all
    `Float64` leaves the abbreviations off entirely.
    `poly`, `poly_I64_I64`, `poly_F32_F32`
@@ -85,7 +85,7 @@ signature — C can't hold both bodies.
 
 A regular array is described exactly like a static one under the
 `staticarray` option — it needs a size from somewhere other than its type
-(`array.md`).
+(`math/array.md`).
 
 Implementation: `mangled` in `src/name.jl`.
 

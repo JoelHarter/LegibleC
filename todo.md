@@ -23,9 +23,9 @@ transpiler does today is in [doc/](doc/), starting with
     ✅ One-line `///` Doxygen comment on each generated helper — done 2026-09-03, `src/prose.jl`
     ⬜ `Δt` → `Deltat`: decide whether Greek-then-letter gets a separator
     ⬜ From the magnifying glass on `sandbox/demo.c` (2026-09-05), each with its reasoning in the conversation that raised it:
-        ✅ Declare a named local at its first assignment — done 2026-09-05, `doc/array.md` *Declarations*: at the assignment at the top level of the body; a variable first assigned inside an `if` or a loop is declared just ahead of that construct
+        ✅ Declare a named local at its first assignment — done 2026-09-05, `doc/math/array.md` *Declarations*: at the assignment at the top level of the body; a variable first assigned inside an `if` or a loop is declared just ahead of that construct
         ✅ A reassigned parameter — done 2026-09-05, after a round trip: a scalar is reassigned in place; an array is copied at the top of the function, in a block under a comment giving the reason, as `x_`. The no-copy `x_new` scheme was built and then set aside the same day (decision entry)
-        ✅ Per-operation aliasing: elementwise helpers write in place and lose `restrict`; products, solves, inverses, cross, transposed operands and constructions keep the temp — done 2026-09-05, `doc/array.md`, `doc/helper.md`, decision entry
+        ✅ Per-operation aliasing: elementwise helpers write in place and lose `restrict`; products, solves, inverses, cross, transposed operands and constructions keep the temp — done 2026-09-05, `doc/math/array.md`, `doc/helper.md`, decision entry
         ✅ `memcpy(out, x_new, sizeof x_new)` for a whole local array; `sizeof(double[3])` where the source is a parameter or a partial row — done 2026-09-05
         ✅ Step comments: two spaces and no alignment — done 2026-09-05
         ✅ `-x / r^3` — the sign folds onto the scalar, `div_3_s(x, -temp2_r, a)` — done 2026-09-05; the general fusion into one loop stays under Language coverage
@@ -37,10 +37,10 @@ transpiler does today is in [doc/](doc/), starting with
 ⬜ Language coverage (`doc/flow.md`; the wider catalogue of what could map, both ways, is `doc/dev/map.md`)
     ✅ Slicing and slice assignment in any dimension — done 2026-09-05, inline; still open: a range held in a variable, `A[:, 1] .= 0`
     ✅ Reductions: `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all` — done 2026-09-04; `maximum`/`minimum` skip a NaN where Julia returns it
-    ✅ Operations along one dimension: `sum(A; dims=1)` and friends, `diff`, `cumsum`, `cumprod` — done 2026-09-06, `doc/array.md` *Slices and reductions*
+    ✅ Operations along one dimension: `sum(A; dims=1)` and friends, `diff`, `cumsum`, `cumprod` — done 2026-09-06, `doc/math/array.md` *Slices and reductions*
     ✅ `for x in v` over a vector's elements — done 2026-09-06, `doc/flow.md`; still open: a matrix (column-major order), and ranges with a non-literal step
     ✅ `while` whose header can't be inlined — the `while (true) { …; if (!c) break; }` fallback, now tested (it recursed; fixed 2026-09-06)
-    ✅ Integer `^` beyond 2 and 3 — done 2026-09-05, `powi(x, n)` by squaring, `doc/scalar.md`
+    ✅ Integer `^` beyond 2 and 3 — done 2026-09-05, `powi(x, n)` by squaring, `doc/math/scalar.md`
     ✅ `mod` on floats (`modulo`), `Float32` math (`sqrtf` and friends) — done 2026-09-06
     ✅ Tuples as values, multiple return values — done 2026-09-04, `struct.md`
     ✅ Structs → C structs — done 2026-09-04, `struct.md`: by value, mutable through a pointer, parametric, nested
@@ -52,15 +52,15 @@ transpiler does today is in [doc/](doc/), starting with
     ✅ Broadcast: comparison operators, `.&`, `.|`, `.!`, and `ifelse.` — done 2026-09-06
     ⬜ Fuse a broadcast chain into one loop when the extra passes ever matter
 
-⬜ Arrays (`doc/array.md`, `doc/scalar.md`)
+⬜ Arrays (`doc/math/array.md`, `doc/math/scalar.md`)
     ⬜ Regular arrays as *regular* arrays: `staticarray=false`, runtime sizes — the option exists and refuses. Design in `doc/dev/map.md` §3.4: VLA parameters `void f(size_t m, size_t n, const double A[m][n])`, helpers taking the sizes as leading parameters, and a result's size derived symbolically from the inputs'. That last part makes it a redesign of the helper layer rather than an addition, which is why it's still open
     ⬜ Growing vectors (`push!`, `pop!`) — heap storage with an ownership rule (`doc/dev/map.md` §3.4)
     ⬜ Per-argument static/regular mixing in one signature (currently all-or-nothing)
-    ⬜ A boundary helper for the row-major ↔ column-major layout swap when raw memory crosses Julia ↔ C (`doc/array.md`, *Representation*)
+    ⬜ A boundary helper for the row-major ↔ column-major layout swap when raw memory crosses Julia ↔ C (`doc/math/array.md`, *Representation*)
     ⬜ Complex numbers (`C64`/`C32`, `complex.h` — its names are not yet reserved), pointers (`Ptr{T}` ↔ `T*`), `char32_t`
     ⬜ Structured matrices, by the (storage map, support) rule of `doc/dev/map.md` §3.14: `Diagonal` and the triangulars first, then `Symmetric`/`Hermitian`, with loop bounds from the support and zeros written in a result's dead half
     ⬜ `mul` of two vectors where Julia would allow it (a 1×n matrix), and matrix × row
-    ✅ `inv(A)`, `A \ b`, `B / A`, Cholesky — done 2026-09-04, `doc/linear.md`
+    ✅ `inv(A)`, `A \ b`, `B / A`, Cholesky — done 2026-09-04, `doc/math/solve.md`
     ⬜ A static SVD and QR: `pinv` and least squares for a rank-deficient `A`, as Julia does them (the Gram route reports `PosDefException` there)
     ⬜ LDLT: Julia has no `ldlt` for static matrices, so there's no syntax to hang it on; either a reference implementation shipped with the transpiler or `bunchkaufman`
     ⬜ `cholesky(A).L` / `.U` (the `U` is the transposed tag of `L`, free), `cholesky(A) \ B` with a matrix `B`, `B / cholesky(A)`, QR, `eigen` for symmetric 3×3 in closed form

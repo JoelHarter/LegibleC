@@ -118,7 +118,7 @@ marked as such rather than forced.
 | `sum`, `prod`, `maximum`, `minimum`, `norm`, `any`, `all` | reduction helpers, one loop each | ✅ |
 | `sum(A; dims=d)`, `prod`, `maximum`, `minimum` with `dims`; `diff`, `cumsum`, `cumprod` | helpers along one dimension, the dimension on the name: `sum1_2x3`, `diff2_2x3`, `cumsum_4` | ✅ |
 | `extrema`, `argmax`, `argmin`, `count` | reduction helpers | ✅ |
-| `inv`, `A \ b`, `B / A`, `pinv`, `cholesky(A) \ b` | 1–3 written out; pivoted LU, Cholesky, the Gram matrix beyond — `linear.md` | ✅ |
+| `inv`, `A \ b`, `B / A`, `pinv`, `cholesky(A) \ b` | 1–3 written out; pivoted LU, Cholesky, the Gram matrix beyond — `math/solve.md` | ✅ |
 | `tr`, `diag`, `diagm`, `kron`, `transpose!` | small helpers | ⬜ |
 | `lu`, `qr`, `cholesky`, `eigen` | 1–3 in closed form where one exists (symmetric 3×3 eigenvalues do); iterative beyond, as helpers | ⬜ |
 | `reshape`, `vec`, `permutedims`, `reverse`, `circshift` | index remapping helpers; `reshape` of a static array is free (same storage, like a transpose) | ⬜ |
@@ -270,7 +270,7 @@ Three different things hide under `Array`:
    double A[m][n], double out[m])`. It reads exactly like the static case,
    indexes the same, and the helpers generalize by taking the sizes as
    leading parameters: `add(m, n, A, B, out)`. This is the natural next
-   step from `staticarray=false`, and it keeps every rule in `array.md`.
+   step from `staticarray=false`, and it keeps every rule in `math/array.md`.
    Locals of runtime size are VLAs on the stack (fine for numeric sizes)
    or `malloc`ed above a threshold.
 2. **A vector that grows** (`push!`, `pop!`, `append!`, `resize!`) needs

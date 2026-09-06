@@ -6,11 +6,11 @@ suggested order for a first read:
 1. [philosophy.md](philosophy.md) — the principles behind every decision: logic, speed, craft, generality.
 2. [syntax.md](syntax.md) — what Julia it accepts, in one page.
 3. [design.md](design.md) — how it works: the pipeline, the source files, the shape of the output.
-4. [scalar.md](scalar.md) — numbers: types, arithmetic, math, conversions.
+4. [math/scalar.md](math/scalar.md) — numbers: types, arithmetic, math, conversions.
 5. [flow.md](flow.md) — control flow, recovered from the IR.
-6. [array.md](array.md) — arrays: representation, transposes, broadcasting, construction.
+6. [math/array.md](math/array.md) — arrays: representation, transposes, broadcasting, products, construction.
 7. [helper.md](helper.md) — the generated C helpers: one generator per operation, how they're named.
-8. [linear.md](linear.md) — linear algebra: products, determinants, solving, inverses.
+8. [math/solve.md](math/solve.md) — solving linear systems: determinants, inverses, pseudo-inverses, Cholesky, LU.
 9. [struct.md](struct.md) — structs and tuples.
 10. [call.md](call.md) — calls between functions and into C.
 11. [naming.md](naming.md) — how every name in the output is chosen.

@@ -1,23 +1,14 @@
-# Linear
+# Solve
 
-Linear algebra: products, determinants, solving, inverting. Every one of
-these is a helper (`helper.md`), and every one follows a single rule about
-size:
+Solving a linear system, and its relatives: determinants, inverses,
+pseudo-inverses, Cholesky and LU. (Products, `dot` and `cross` are ordinary
+array operations, in `array.md`.) Every one of these is a helper
+(`helper.md`), and every one follows a single rule about size:
 
 > **Sizes 1–3 are written out in full**, the way StaticArrays writes them.
 > **From 4 on it's a deterministic algorithm that guards against
 > singularity.** Everything lives on the stack, in arrays of the static
 > size; nothing is ever allocated.
-
-## Products
-
-Every `*` of two arrays is the one contraction `out(i,j) = Σ_k a(i,k) b(k,j)`
-over the operands' axes, with only the loops that have something to loop
-over: `mul_2x2_2x3`, `mul_2x2_2` (matrix × vector), `mul_T3_3x2` (row ×
-matrix, a row back), `mul_3_T3` (column × row, the outer product),
-`mul_T3_3` (row × column, a scalar returned). A transposed operand costs
-nothing: `A * B'` is `mul_2x3_T2x3` reading `a[i][k] * b[j][k]`. `dot(v, w)`
-is `dot_3`; `cross(v, w)` is `cross`, written out.
 
 ## Determinants
 

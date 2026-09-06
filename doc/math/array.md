@@ -2,7 +2,7 @@
 
 How arrays come out in C: their sizes, their storage, and each thing Julia
 can do with them. The generated functions that do the work are described in
-`helper.md`; products, determinants, solving, and inverting in `linear.md`.
+`helper.md`; determinants, solving, and inverting in `solve.md`.
 
 ## Which arrays
 
@@ -112,6 +112,16 @@ one loop; here each level is its own helper, chained through a temp
 (`expP_3`, then `addP_3_s`) — the same result, one more pass over the data.
 Functions supported under a dot: `+ - * / ^`, unary `-`, and the `math.h`
 functions in `scalar.md`.
+
+## Products
+
+Every `*` of two arrays is the one contraction `out(i,j) = Σ_k a(i,k) b(k,j)`
+over the operands' axes, with only the loops that have something to loop
+over: `mul_2x2_2x3`, `mul_2x2_2` (matrix × vector), `mul_T3_3x2` (row ×
+matrix, a row back), `mul_3_T3` (column × row, the outer product),
+`mul_T3_3` (row × column, a scalar returned). A transposed operand costs
+nothing: `A * B'` is `mul_2x3_T2x3` reading `a[i][k] * b[j][k]`. `dot(v, w)`
+is `dot_3`; `cross(v, w)` is `cross`, written out.
 
 ## Construction
 
@@ -241,10 +251,10 @@ The meaning of each follows Julia's definition.
 | `A + B`, `A - B`, `-A` | `add_2x2`, `sub_2x2`, `neg_2x2` | same-shaped arrays of any dimension |
 | `copy(A)`, `B = A` | inline `memcpy` | |
 | `s * A`, `A * s`, `A / s`, `s \ A` | `mul_s_2x2`, `div_2x2_s` | elementwise |
-| `A * B`, `A * v`, `v' * A`, `v * w'`, `A * B'` | `mul_2x2_2x3`, `mul_2x2_2`, `mul_T3_3x2`, `mul_3_T3`, `mul_2x3_T2x3` | one contraction for all; `linear.md` |
+| `A * B`, `A * v`, `v' * A`, `v * w'`, `A * B'` | `mul_2x2_2x3`, `mul_2x2_2`, `mul_T3_3x2`, `mul_3_T3`, `mul_2x3_T2x3` | one contraction for all; *Products* above |
 | `v' * w`, `dot(v, w)` | `mul_T3_3`, `dot_3` | return the scalar |
 | `cross(v, w)` | `cross` | |
-| `det(A)`, `A \ b`, `B / A`, `inv(A)`, `pinv(A)`, `cholesky(A) \ b` | `det_3x3`, `solve_3x3_3`, `rsolve_2x3_3x3`, `inv_3x3`, `pinv_4x3`, `solveLLT_3x3_3` | `linear.md` |
+| `det(A)`, `A \ b`, `B / A`, `inv(A)`, `pinv(A)`, `cholesky(A) \ b` | `det_3x3`, `solve_3x3_3`, `rsolve_2x3_3x3`, `inv_3x3`, `pinv_4x3`, `solveLLT_3x3_3` | `solve.md` |
 | `A .+ B`, `v .* M`, `exp.(A)` | `addP_2x2_2x2`, `mulP_3_3x2`, `expP_2x2` | every input listed: broadcasting leaves the shapes open |
 | `v .< w`, `v .>= 0.0`, `.==`, `.!=`, `c .& d`, `.!c`, `ifelse.(c, a, b)` | `ltP_3_3`, `andP_3B_3B`, `ifelseP_3B_3F64_3F64` | a `bool` array out; `ifelse.` is `c[i] ? a[i] : b[i]` |
 | `fill!(A, x)`, `A .= 0`, `A .= x`, `A .= B .* 2` | inline `memset` or a loop, or the pointwise helper writing into `A` | into a mutable array; it loses `const` |
