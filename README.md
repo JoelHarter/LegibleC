@@ -70,11 +70,14 @@ solve_2x2_2(temp1_X, temp2_X_y, beta);  // beta = temp1_X \ temp2_X_y
 a comment saying what it computes. The everyday ones are a few lines:
 
 ```c
-/// 3-vector addition
-/// out = a + b
-static inline void add_3(const double a[3], const double b[3], double out[3]) {
-    for (int i = 0; i < 3; i++) {
-        out[i] = a[i] + b[i];
+/// 4×2-matrix * 2-vector multiplication
+/// out = A * b
+static inline void mul_4x2_2(const double A[4][2], const double b[2], double out[restrict 4]) {
+    for (int i = 0; i < 4; i++) {
+        out[i] = 0.0;
+        for (int k = 0; k < 2; k++) {
+            out[i] += A[i][k] * b[k];
+        }
     }
 }
 ```
