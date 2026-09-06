@@ -109,11 +109,12 @@ lt(v::V3, w::V3) = v .< w
 ge0(v::V3) = v .>= 0.0
 sel(c::SVector{3,Bool}, a::V3, b::V3) = ifelse.(c, a, b)
 both(c::SVector{3,Bool}, d::SVector{3,Bool}) = c .& .!d
+squares(v::V3) = v .^ 2 .+ v .^ 3 .+ v .^ -1 .+ v .^ 5
 append!(cases, [Case(coef, A), Case(zer, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0)), Case(fil, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0), 2.5),
                 Case(filint, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0)), Case(into, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0), A),
                 Case(addI, A), Case(subI, A), Case(rsubI, A), Case(twoI), Case(lt, SVector(1.0, 5.0, 3.0), SVector(2.0, 4.0, 3.0)),
                 Case(ge0, SVector(-1.0, 0.0, 1.0)), Case(sel, SVector(true, false, true), SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0)),
-                Case(both, SVector(true, true, false), SVector(true, false, false))])
+                Case(both, SVector(true, true, false), SVector(true, false, false)), Case(squares, SVector(1.5, 2.0, -0.5))])
 @testset "array text" begin
     src = csource("arraytext", coef, zer, addI, lt, sel)
     @test occursin("mul_s_2x2(-3.0, A, temp", src) && occursin("mul_s_2x2(2.0, A, temp", src)   # an integer coefficient takes the element type
@@ -121,6 +122,9 @@ append!(cases, [Case(coef, A), Case(zer, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0)), Case
     @test occursin("addI_2x2(A, 2.0, out);", src) && occursin("out[i][i] += s;", src)
     @test occursin("ltP_3_3(v, w, out);", src) && occursin("out[i] = a[i] < b[i];", src) && occursin("bool out[restrict 3]", src)
     @test occursin("ifelseP_3B_3F64_3F64(c, a, b, out);", src) && occursin("out[i] = a[i] ? b[i] : c[i];", src)
+    sq = csource("squares", squares)
+    @test occursin("/// 3-vector element-wise square\n/// out = a .^ 2\nstatic inline void pow2P_3(const double a[3], double out[3]) {\n    for (int i = 0; i < 3; i++) {\n        out[i] = a[i] * a[i];", sq)
+    @test occursin("out[i] = 1.0 / a[i];", sq) && occursin("out[i] = powi(a[i], 5);", sq) && occursin("pow2P_3(v, temp", sq)
 end
 targets = Any[f for f in unique(c.f for c in cases) if !(f in (regmul, regchain, regvec))]
 append!(targets, [(regmul, Float64, 2, 3, Float64, 3, 3), (regchain, Float64, 2, 2, Float64), (regvec, Float64, 3, 3, Float64, 3)])

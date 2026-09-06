@@ -44,6 +44,8 @@ function prose(op::Symbol, types, R=nothing; pointwise::Bool=false)
     # The cross product is only ever of 3-vectors, so saying so says nothing.
     op == :cross && return (typed ? join(unique(string(eltype(T)) for T in types), " × ") * " " : "") * "cross product"
     op == :ifelse && return "element-wise choice between $(d[2]) and $(d[3]) by $(d[1])"
+    m = match(r"^pow(m?)(\d+)$", string(op))
+    m !== nothing && return "$(d[1]) element-wise " * (m[2] == "2" && isempty(m[1]) ? "square" : m[2] == "3" && isempty(m[1]) ? "cube" : "power $(m[1] == "m" ? "-" : "")$(m[2])")
     length(types) == 1 && return "$(d[1]) $(pointwise ? "element-wise " : "")$(get(unaryword, op, string(op)))"
     a, b = types
     sym, verb = get(binaryword, op, (string(op), string(op)))

@@ -252,6 +252,18 @@ function scalarhelper!(helpers::Dict{String, String}, op::Symbol, types, E::Type
     return name
 end
 
+# `a^n` for a literal `n` as one C expression, the way `render` writes a scalar power:
+# squares, cubes and the reciprocal written out, anything else through `powi`.
+function powexpr(helpers, a::AbstractString, n::Integer, E::Type)
+    one = E <: AbstractFloat ? (ctype(E) == "float" ? "1.0f" : "1.0") : "1"
+    n == 0 && return one
+    n == 1 && return a
+    n == 2 && return "$a * $a"
+    n == 3 && return "$a * $a * $a"
+    n == -1 && return "$one / $a"
+    return "$(powhelper!(helpers, E))($a, $n)"
+end
+
 # `x^n` for an integer `n`, by squaring: `powi(x, 13)`, one helper per base type
 # (`powiF32`, `powiI64` off the double). The exponent is a literal at every call, so
 # an optimizing compiler inlines this, unrolls the loop over its bits and folds the
@@ -829,6 +841,7 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
         idx, pairs = loopindices(extents(R); taken=argnames)
         accesses = [access(T, n, idx) for (T, n) in zip(types, argnames)]
         expr = cfn isa String ? "$cfn($(join(accesses, ", ")))" :
+               cfn isa Integer ? powexpr(helpers, accesses[1], cfn, eltype(R)) :
                cfn == :neg ? "-" * accesses[1] :
                cfn == :not ? "!" * accesses[1] :
                cfn == :ifelse ? "$(accesses[1]) ? $(accesses[2]) : $(accesses[3])" :
@@ -839,7 +852,8 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
         params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
         push!(params, declare(R, "out"; restrict=!any(T -> alike(T, R), types)))
         spelled = [istransposed(T) ? n * "ᵀ" : n for (T, n) in zip(types, argnames)]
-        formula = length(types) == 1 ? (cfn == :neg ? "out = .-$(spelled[1])" : cfn == :not ? "out = .!$(spelled[1])" : "out = $op.($(spelled[1]))") :
+        formula = cfn isa Integer ? "out = $(spelled[1]) .^ $cfn" :
+                  length(types) == 1 ? (cfn == :neg ? "out = .-$(spelled[1])" : cfn == :not ? "out = .!$(spelled[1])" : "out = $op.($(spelled[1]))") :
                   length(types) == 2 && haskey(dotspelling, op) ? "out = $(spelled[1]) $(dotspelling[op]) $(spelled[2])" : "out = $op.($(join(spelled, ", ")))"
         helpers[name] = definition("void", name, params, body; doc=[prose(op, types, R; pointwise=true), formula])
     end

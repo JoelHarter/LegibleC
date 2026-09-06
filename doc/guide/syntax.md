@@ -119,7 +119,7 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `A \ b`, `A \ B`, `B / A`, `A / s`, `inv(A)`, `cholesky(A) \ b`, `inv(cholesky(A))`, `lu(A) \ b` | yes; 1–3 written out, LU with partial pivoting beyond |
 | `A \ b` with a non-square `A`, `pinv(A)` | yes: least squares / minimum norm through the Gram matrix and Cholesky (full rank only) |
 | `v'`, `A'`, `transpose(…)` | yes, free (0–2 dimensions, as in Julia) |
-| broadcasting: `.+ .- .* ./ .^`, unary `.-`, `f.(A)` for the `math.h` functions above, any shapes Julia allows | yes |
+| broadcasting: `.+ .- .* ./ .^`, `x .^ 2` with a literal exponent, unary `.-`, `f.(A)` for the `math.h` functions above, any shapes Julia allows | yes |
 | `zeros`, `ones`, `fill`, `zero(A)`, `one(A)`, `SMatrix{n,n}(I)`, `SMatrix{n,n}(2I)` | yes |
 | `A + 2I`, `A - I`, `2I - A` | yes |
 | `fill!(A, x)`, `A .= 0`, `A .= B .* 2` into a mutable array | yes |

@@ -772,6 +772,14 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     node = ci.code[root.id]                       # broadcasted(f, args...)
     f = callee(ci, node.args[2])
     args = node.args[3:end]
+    # `x .^ 2`: a literal exponent is part of the operation, not an operand.
+    power = nothing
+    if f === Base.literal_pow
+        p = literal(sc, args[3])
+        p isa Val || throw(ArgumentError("unsupported broadcast power (statement $i)"))
+        power = typeof(p).parameters[1]
+        args = [args[2]]
+    end
     # Inner broadcasts first, each into a temp.
     inputs = Any[]
     for a in args
@@ -798,14 +806,15 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
         R = all(t -> !isarray(t) || istransposed(t), types) ?
             (nd = maximum(ndims(t) for t in types if isarray(t)); Transposed{E, Tuple(reverse(bs)[1:nd]), nd}) : shaped(E, bs)
     end
-    op, cfn = broadcastop(f, length(inputs), E)
+    op, cfn = power === nothing ? broadcastop(f, length(inputs), E) : (Symbol("pow", power < 0 ? "m" : "", abs(power)), power)
     cfn isa String && push!(sc.headers, cfn == "llabs" ? "stdlib.h" : "math.h")
     cfn isa String && cfn != "llabs" && E === Float32 && (cfn *= "f")   # the `f` family on floats
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     name = broadcasthelper!(sc.helpers, op, cfn, types, R)
     emit!(lines, sc, "$name($(join((value(sc, a) for a in inputs), ", ")), $dest);")
     spelled = [spell(valuetype(sc, a), value(sc, a)) for a in inputs]
-    step!(lines, sc, "$dest = " * (length(inputs) == 1 ? (cfn == :neg ? ".-$(spelled[1])" : cfn == :not ? ".!$(spelled[1])" : "$op.($(spelled[1]))") :
+    step!(lines, sc, "$dest = " * (power !== nothing ? "$(spelled[1]) .^ $power" :
+                                    length(inputs) == 1 ? (cfn == :neg ? ".-$(spelled[1])" : cfn == :not ? ".!$(spelled[1])" : "$op.($(spelled[1]))") :
                                     length(inputs) == 2 && haskey(dotspelling, op) ? "$(spelled[1]) $(dotspelling[op]) $(spelled[2])" : "$op.($(join(spelled, ", ")))"))
     sc.shapes[i] = R
 end
