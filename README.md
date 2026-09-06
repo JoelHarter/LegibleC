@@ -48,7 +48,7 @@ static inline double norm_3(const double a[3]) {
 /**
  * One step of gravity toward the origin: position and velocity after `dt`.
  *
- * Julia signature: orbit(x::SVector{3, Float64}, v::SVector{3, Float64}, dt::Float64), body.jl:8
+ * Julia signature: orbit(x::SVector{3, Float64}, v::SVector{3, Float64}, dt::Float64) @body.jl:8
  * @param[in]  x    3-vector
  * @param[in]  v    3-vector
  * @param[in]  dt   scalar
@@ -61,24 +61,24 @@ void orbit(const double x[3], const double v[3], double dt, double out[restrict 
     double v_[3];
     memcpy(v_, v, sizeof v_);
 
-    // body.jl:9: r = norm(x)
+    // @body.jl:9: r = norm(x)
     double r = norm_3(x_);
 
-    // body.jl:10: a = -x / r^3
+    // @body.jl:10: a = -x / r^3
     double a[3];
     div_3_s(x_, -(r * r * r), a);
 
-    // body.jl:11: v = v + dt * a
+    // @body.jl:11: v = v + dt * a
     double temp1_dt_a[3];
     mul_s_3(dt, a, temp1_dt_a);  // temp1_dt_a = dt * a
     add_3(v_, temp1_dt_a, v_);  // v_ = v_ + temp1_dt_a
 
-    // body.jl:12: x = x + dt * v
+    // @body.jl:12: x = x + dt * v
     double temp2_dt_v[3];
     mul_s_3(dt, v_, temp2_dt_v);  // temp2_dt_v = dt * v_
     add_3(x_, temp2_dt_v, x_);  // x_ = x_ + temp2_dt_v
 
-    // body.jl:13: return [x; v]
+    // @body.jl:13: return [x; v]
     memcpy(out, x_, sizeof(double[3]));
     memcpy(&out[3], v_, sizeof(double[3]));
 }

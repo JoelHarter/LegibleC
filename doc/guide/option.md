@@ -6,7 +6,7 @@ Every keyword option of `transpile`.
 |---|---|---|
 | `outfile` | `"juliatranspiled"` | the file name; `.c` is added if missing |
 | `outpath` | `pwd()` | the folder |
-| `source` | `true` | copy each Julia line above its C as `// file.jl:12: …`; comments are always carried, this controls the code lines |
+| `source` | `true` | copy each Julia line above its C as `// @file.jl:12: …`; comments are always carried, this controls the code lines |
 | `precise` | `false` | print floats with every digit (`%.17g`) instead of `%g` |
 | `portable` | `false` | define `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file instead of using `M_PI` and `M_E`, which are POSIX rather than ISO C |
 | `width` | `100` | the longest line; a long scalar expression wraps at its loosest operators |

@@ -39,7 +39,9 @@ src = csource("comment", scaled, project, nodoc, steps, built, single, longexpr,
     @test occursin("@param[out] out  2×2-matrix, the return value", src)
     @test occursin("// trailing on the signature", src)
     @test occursin("// Scale first.", src)
-    @test occursin("// comment.jl:", src) && occursin("B = A * s      # trailing on a line of code", src)
+    @test occursin("// @comment.jl:", src) && occursin("B = A * s      # trailing on a line of code", src)
+    @test occursin(r"// @comment\.jl:\d+: A \* v\n", src) && !occursin("// @comment.jl:19: project(", src)   # a short-form line carries only its body
+    @test occursin(r"Julia signature: project\(A::SMatrix\{2, 3, Float64, 6\}, v::SVector\{3, Float64\}\) @comment\.jl:\d+\n", src)
     @test occursin("One-line docstring in plain quotes.", src)
     @test occursin("/// 2×2-matrix * scalar multiplication", src)
     @test occursin("/// 2×3-matrix * 3-vector multiplication", src)
@@ -56,12 +58,12 @@ src = csource("comment", scaled, project, nodoc, steps, built, single, longexpr,
     @test occursin("// Scale first.", bare) && !occursin("B = A * s      #", bare)
     # Spacing: a blank line before each Julia statement's C, source comments or not;
     # none after the opening brace or before the closing one.
-    @test occursin("mul_2x2_s(A, s, B);\n\n    // comment.jl:", src) && occursin("mul_2x2_s(A, s, B);\n\n    double C[2][2];", bare)
+    @test occursin("mul_2x2_s(A, s, B);\n\n    // @comment.jl:", src) && occursin("mul_2x2_s(A, s, B);\n\n    double C[2][2];", bare)
     @test occursin(") {\n    // trailing on the signature\n    // Scale first.", src) && occursin("    return x * x;\n}", src)
     @test !occursin("\n\n\n", src) && !occursin("\n\n}", src)
     # A multi-line expression: its C at the first line, the continuation lines after it
     # (the known imprecision); a line that is only a bracket contributes its comment only.
-    @test occursin("    double t = (a + b) * (a - b);\n\n    // comment.jl:", src) && occursin("# continuation line lands after the C for the expression", src)
-    @test occursin("// a line that is only a closing bracket keeps this comment, not the bracket", src) && !occursin(r"// comment\.jl:\d+: \)", src)
+    @test occursin("    double t = (a + b) * (a - b);\n\n    // @comment.jl:", src) && occursin("# continuation line lands after the C for the expression", src)
+    @test occursin("// a line that is only a closing bracket keeps this comment, not the bracket", src) && !occursin(r"// @comment\.jl:\d+: \)", src)
 end
 end

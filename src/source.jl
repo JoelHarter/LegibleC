@@ -142,12 +142,27 @@ function body(src::Source, from::Integer, to::Integer; code::Bool=true)
         elseif minor(text) || (k == src.first && !src.short)
             trailing === nothing || push!(out, comment(trailing))
         elseif code
-            push!(out, "// $(src.name):$k: $s")
+            # The line, prefixed `@file:line:`; a short-form definition's line contributes
+            # only its body, since its signature is in the Doxygen block already.
+            push!(out, "// @$(src.name):$k: " * (k == src.first && src.short ? afterdef(s) : s))
         elseif trailing !== nothing
             push!(out, comment(trailing))
         end
     end
     return out
+end
+
+# The body of a short-form definition line, `f(x) = body`: what follows the `=` at the
+# top level. The line itself if that isn't found.
+function afterdef(s::AbstractString)
+    cs = collect(s)
+    depth = 0
+    for (i, c) in enumerate(cs)
+        c in "([{" && (depth += 1)
+        c in ")]}" && (depth -= 1)
+        depth == 0 && c == '=' && 1 < i < length(cs) && !(cs[i-1] in "=<>!:") && cs[i+1] != '=' && return strip(String(cs[i+1:end]))
+    end
+    return s
 end
 
 # Split a line into its code and its trailing comment (without the `#`), the latter

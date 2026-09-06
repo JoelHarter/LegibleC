@@ -236,7 +236,7 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     end
     comments, doc = sc.src === nothing ? (String[], String[]) : leading(sc.src)
     origin = "$(mi.def.name)($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
-             (sc.src === nothing ? "" : ", $(sc.src.name):$(sc.src.first)")
+             (sc.src === nothing ? "" : " @$(sc.src.name):$(sc.src.first)")
     what(T) = isarray(T) ? describe(T) : T === Char ? "character" : T <: AbstractString ? "string" : T <: Number ? "scalar" : ""
     params = Tuple{String, String, String}[]
     for i in 2:ci.nargs
@@ -1246,7 +1246,9 @@ function returnkind!(prog::Program, mi::Core.MethodInstance, cname::AbstractStri
         for F in R.parameters
             structdef!(prog, F)
         end
-        push!(prog.tupledefs, kind.cname => "typedef struct {\n" * join("    " .* declare.(collect(R.parameters), kind.fields) .* ";", "\n") * "\n} $(kind.cname);\n")
+        listed = length(kind.fields) == 1 ? kind.fields[1] : length(kind.fields) == 2 ? join(kind.fields, " and ") : join(kind.fields[1:end-1], ", ") * ", and " * kind.fields[end]
+        push!(prog.tupledefs, kind.cname => "/// the return value of $cname: $listed, as one struct since C returns one value\n" *
+                                            "typedef struct {\n" * join("    " .* declare.(collect(R.parameters), kind.fields) .* ";", "\n") * "\n} $(kind.cname);\n")
     end
     kind.cname == fallback.cname && structdef!(prog, R)
     prog.kinds[mi] = kind
@@ -1739,7 +1741,8 @@ function structdef!(prog::Program, T::Type)
         structdef!(prog, F)
     end
     lines = ["    " * declare(F, c) * ";" for (F, c) in zip(fields, fieldcnames(T))]
-    push!(prog.structs, T => "typedef struct {\n" * join(lines, "\n") * "\n} $(structname(T));\n")
+    doc = istuple(T) ? "/// a tuple held as one value: $(join(fieldcnames(T), ", "))\n" : ""
+    push!(prog.structs, T => doc * "typedef struct {\n" * join(lines, "\n") * "\n} $(structname(T));\n")
 end
 
 # `p.x`, `c->n`, `t.a`: field `f` (a symbol, or a 1-based position) of the struct or

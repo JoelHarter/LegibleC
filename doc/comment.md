@@ -36,7 +36,7 @@ function fancy(a::Float64, b::Float64)
  *
  * Adds, then scales.
  *
- * Julia signature: fancy(a::Float64, b::Float64), probe.jl:8
+ * Julia signature: fancy(a::Float64, b::Float64) @probe.jl:8
  * @param[in]  a    scalar
  * @param[in]  b    scalar
  */
@@ -82,20 +82,20 @@ the body.
 |---|---|
 | blank | nothing — see *Spacing* below |
 | only a comment (`# …`, or inside `#= =#`) | the comment |
-| code, with or without a trailing comment | the whole line, as `file:line: code` — see below |
+| code, with or without a trailing comment | the whole line, as `@file:line: code` — see below |
 | only closing brackets or `end`, e.g. `end`, `)`, `])` | its trailing comment, if any; not the code |
 | the signature line of a `function … end` | its trailing comment, if any; not the code |
-| the whole line of a short-form `f(x) = …` | the whole line — it *is* the body |
+| the whole line of a short-form `f(x) = …` | what follows the `=` — the signature is in the Doxygen block already |
 
 A `#` inside a string literal isn't a comment.
 
 **Code lines** are controlled by the `source` option of `transpile`, on by
 default. When on, each line of code appears verbatim — trailing comment
-included — prefixed with the file's name and the line number:
+included — prefixed with `@`, the file's name and the line number:
 
 ```c
     // first the sum
-    // probe.jl:10: s = a + b      # trailing on code
+    // @probe.jl:10: s = a + b      # trailing on code
     s = a + b;
 ```
 
@@ -120,10 +120,10 @@ with `source=false` too; the blank is then the only thing marking where one
 statement's C ends and the next begins.
 
 ```c
-    // demo.jl:9: r = norm(x)
+    // @demo.jl:9: r = norm(x)
     double r = norm_3(x_);
 
-    // demo.jl:10: a = -x / r^3
+    // @demo.jl:10: a = -x / r^3
     double temp1_r = r * r * r;
     double a[3];
     div_3_s(x_, -temp1_r, a);
@@ -188,7 +188,7 @@ are not aligned with each other: with declarations sitting between the
 steps, alignment would only look like it had failed.
 
 ```c
-// f.jl:12: f(A, b, c, D) = (A .+ b) \ c + D
+// @f.jl:12: f(A, b, c, D) = (A .+ b) \ c + D
 double temp1[3][3];
 addP_3x3_3(A, b, temp1);  // temp1 = A .+ b
 double temp2_c[3];

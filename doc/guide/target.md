@@ -47,7 +47,7 @@ option (`width`, `source`, …) goes as a pair, `:width => width`.
 
 Anywhere Julia can see them. A function typed at the REPL transpiles like
 one from a file; what it lacks is source to carry over, so it gets a bare
-Doxygen block and no `// file.jl:12:` lines. Regenerating the C later needs
+Doxygen block and no `// @file.jl:12:` lines. Regenerating the C later needs
 the Julia in a file, which is where it belongs anyway. One call generates everything: the
 targets share one set of names, one `helper.h`, one copy of each callee.
 List every function you want in a single call; a later call writes its own

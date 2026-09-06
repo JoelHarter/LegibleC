@@ -68,7 +68,7 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
 @testset "name" begin
     # A reassigned array parameter is worked on as a copy `x_` made at the top under a
     # comment; elementwise helpers then write it in place. A reassigned scalar is the parameter.
-    @test occursin("    // copy x and v to prevent modification within this function\n    double x_[3];\n    memcpy(x_, x, sizeof x_);\n    double v_[3];\n    memcpy(v_, v, sizeof v_);\n\n    // name.jl", src)
+    @test occursin("    // copy x and v to prevent modification within this function\n    double x_[3];\n    memcpy(x_, x, sizeof x_);\n    double v_[3];\n    memcpy(v_, v, sizeof v_);\n\n    // @name.jl", src)
     @test occursin("mul_s_3(dt, x_, temp1_dt_x);", src) && occursin("add_3(v_, temp1_dt_x, v_);", src) && occursin("div_3_s(x_, 2.0, x_);", src)   # temps are named from the Julia, not the copy
     @test occursin("    // copy x to prevent modification within this function\n    double x_[3];\n    memcpy(x_, x, sizeof x_);\n\n", src) && occursin("mul_3_s(x_, 2.0, x_);", src)
     @test occursin("mul_2x2_2x2(A_, A_, temp", src) && occursin("add_2x2(A_, A_, A_);", src)
