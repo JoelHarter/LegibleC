@@ -33,5 +33,12 @@ check("operator", [Case(lenb, SVector(1.0, 2.0, 3.0), SVector(1.0, 1.0, 1.0)), C
     paths = transpile((+, Float64, 3, Float64, 3), lenb; outfile="lib", split=true, outpath=dir, scope=@__MODULE__)
     @test basename.(paths) == ["add_3.c", "lenb.c"] && occursin("#include \"add_3.h\"", read(joinpath(dir, "out", "lenb.c"), String))
     @test_throws ArgumentError csource("bare", *)
+    # A broadcast is a symbol beginning with `.`: an operator's, or a function's.
+    src = csource("broadcast", (:.+, Float64, 3, Float64), (:.*, Float64, 3, 2, Float64, 3), (broadcast, sqrt, Float64, 3), (:.+, Float64, 3, 2, Float64, 1, 2))
+    @test occursin("void addP_3_s(const double a[3], double b, double out[3])", src) && occursin("Julia signature: .+(::SVector{3, Float64}, ::Float64)", src)
+    @test occursin("void mulP_3x2_3(const double A[3][2], const double b[3], double out[3][2])", src) && occursin("out[i][j] = A[i][j] * b[i];", src)
+    @test occursin("void sqrtP_3(const double a[3], double out[3])", src) && occursin("Julia signature: sqrt.(::SVector{3, Float64})", src)
+    @test occursin("out[i][j] = A[i][j] + B[0][j];", src)
+    @test_throws ArgumentError csource("nodot", (:sqrt, Float64, 3))
 end
 end

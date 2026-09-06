@@ -24,6 +24,8 @@ a target that can't be resolved throws an `ArgumentError`.
 Options:
 
 - `outfile`: name of the functions file; `.c` is appended if not already present.
+- `helper`: the name of the helper files, `helper.h` and `helper.c` by default — for
+  several `transpile` calls into one `out/`, each with helpers of its own to keep.
 - `split`: every function in a file of its own, named after it, listed or not, with
   its header; every struct in a header of its own; a function's return struct with
   the function. `<outfile>.h` then holds the globals and includes every other
@@ -65,8 +67,10 @@ Each function keeps its Julia name in C. If the same function is transpiled at m
 than one signature in a single call, those get the argument types appended
 (`fun1_Float64_Float64`) so the names don't collide.
 """
-function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, Vararg{Union{DataType, Integer}}}, Type, Pair{Symbol, <:Any}, GlobalRef}...;
+function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Function, Symbol}, Vararg{Union{DataType, Integer}}},
+                                 Tuple{typeof(broadcast), Function, Vararg{Union{DataType, Integer}}}, Type, Pair{Symbol, <:Any}, GlobalRef}...;
                    outfile::AbstractString="juliatranspiled", outpath::AbstractString=pwd(), split::Bool=false,
+                   helper::AbstractString="helper",
                    templimit::Integer=40,
                    # On by default only until dynamic arrays are supported; then it flips
                    # to off, and static becomes something you opt into.
@@ -88,7 +92,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
     LegibleC.c23floattypes[] = c23floattypes
     LegibleC.booltype[] = bool
     try
-        return transpiled(target...; outfile, outpath, separate=split, templimit, staticarray, source, precise, width, portable, suffix=tempsuffix, scope, variables)
+        return transpiled(target...; outfile, outpath, separate=split, helper=(endswith(helper, ".c") || endswith(helper, ".h") ? helper[1:end-2] : helper), templimit, staticarray, source, precise, width, portable, suffix=tempsuffix, scope, variables)
     finally
         LegibleC.spelling[] = Dict{Char, String}()
         LegibleC.scope[] = Main
@@ -114,7 +118,7 @@ macro transpile(args...)
     return Expr(:call, GlobalRef(@__MODULE__, :transpile), Expr(:parameters, kws...), esc.(rest)...)
 end
 
-function transpiled(target...; outfile, outpath, separate, templimit, staticarray, source, precise, width, portable, suffix, scope, variables)
+function transpiled(target...; outfile, outpath, separate, helper, templimit, staticarray, source, precise, width, portable, suffix, scope, variables)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
@@ -137,11 +141,19 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
         if t isa Function
             mi, _ = concretemethod(t)
             sig = argtypes(mi)
+        elseif t isa Tuple && (t[1] isa Symbol || t[1] === broadcast)
+            # A broadcast: an operator's symbol, `(:.+, Float64, 3, Float64)`, since `.+`
+            # is no function; or Julia's own spelling of any function's, `(broadcast,
+            # sqrt, Float64, 3)`. A stand-in method is its only form.
+            f = t[1] isa Symbol ? t[1] : Broadcast(t[2])
+            sig, _ = spectypes(t[(t[1] isa Symbol ? 2 : 3):end])   # static arrays, as `resolve` gives a function's
+            mi = synthetic(f, sig, sig)
+            synthetics[mi] = (f, sig)
         elseif t isa Tuple
             mi, sig = resolve(t[1], t[2:end])
             # Julia's own operator at these types — `(+, Float64, 3, Float64, 3)` — is
             # asked for by name, so the helper it would become is a function instead.
-            nameof(Base.moduleroot(mi.def.module)) in known && (mi = synthetic(t[1], mi, sig); synthetics[mi] = (t[1], sig))
+            nameof(Base.moduleroot(mi.def.module)) in known && (mi = synthetic(t[1], collect(mi.specTypes.parameters[2:end]), sig); synthetics[mi] = (t[1], sig))
         else
             # A MethodInstance is not necessarily concrete: inference also creates them
             # for abstract signatures (e.g. f(::Real, ::Real)), so check its specTypes
@@ -193,7 +205,7 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
     for (k, (mi, _)) in enumerate(instances)
         haskey(synthetics, mi) || continue
         f, sig = synthetics[mi]
-        julia = string(nameof(f)) * "(" * join(("::" * string(T <: Shaped ? juliatype(T) : T) for T in sig), ", ") * ")"
+        julia = (f isa Symbol ? string(f) : f isa Broadcast ? string(nameof(f.f)) * "." : string(nameof(f))) * "(" * join(("::" * string(T <: Shaped ? juliatype(T) : T) for T in sig), ", ") * ")"
         h = onlycall(functions[k][3], prog.helpers)
         if h === nothing
             # The stand-in stays; its Doxygen block names the operator, not the stand-in.
@@ -218,27 +230,43 @@ function transpiled(target...; outfile, outpath, separate, templimit, staticarra
     dir = joinpath(outpath, "out")
     mkpath(dir)
     base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
-    base == "helper" && throw(ArgumentError("`helper.c` is the file the generated helpers go to; name the functions' file something else"))
-    where, order = placement(prog, base, separate, names)
-    writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported))
-    return writefiles(dir, prog, base, where, order, names, functions)
+    base == helper && throw(ArgumentError("`$helper.c` is the file the generated helpers go to; name the functions' file something else"))
+    where, order = placement(prog, base, separate, names, helper)
+    writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper)
+    return writefiles(dir, prog, base, where, order, names, functions, helper)
 end
 
 # Methods made on request stand in for Julia's own operators as targets (`synthetic`).
 module Synthetic end
 
-# A stand-in for Julia's operator `f` at the argument types of its instance `mi`: a
-# method of `Synthetic` named by the helper scheme, `add_3`, whose body is the call.
-# The C it makes is what the operator becomes anywhere, and now under a name of its
-# own.
-function synthetic(f, mi::Core.MethodInstance, sig)
-    types = collect(mi.specTypes.parameters[2:end])
-    name = Symbol(operatorname(nameof(f), sig))
+# A function broadcast asked for as a target, `(broadcast, sqrt, Float64, 3)`.
+struct Broadcast
+    f::Function
+end
+
+# A stand-in for Julia's operator `f` at the argument `types` — or for a broadcast,
+# `f` an operator's symbol, `:.+`, or a `Broadcast`: a method of `Synthetic` named by
+# the helper scheme, `add_3`, `addP_3_s`, `sqrtP_3`, whose body is the call. The C it
+# makes is what the operator becomes anywhere, and now under a name of its own.
+function synthetic(f, types, sig)
     args = [Symbol('a' + k - 1) for k in 1:length(types)]   # `a`, `b`, `c`, as a helper names them
     params = [Expr(:(::), a, T) for (a, T) in zip(args, types)]
+    if f isa Symbol
+        s = string(f)
+        startswith(s, ".") && length(s) > 1 && Base.isoperator(Symbol(s[2:end])) ||
+            throw(ArgumentError("a broadcast target is an operator's dotted symbol, `:.+`, or `(broadcast, f, types...)`; got :$f"))
+        body = Expr(:call, f, args...)
+        name = Symbol(replace(operatorname(Symbol(s[2:end]), sig), "_" => "P_"; count=1))
+    elseif f isa Broadcast
+        body = Expr(:., f.f, Expr(:tuple, args...))
+        name = Symbol(replace(operatorname(nameof(f.f), sig), "_" => "P_"; count=1))
+    else
+        body = Expr(:call, f, args...)
+        name = Symbol(operatorname(nameof(f), sig))
+    end
     # Built without line numbers, so the method has no source to quote from.
-    s = Core.eval(Synthetic, Expr(:(=), Expr(:call, name, params...), Expr(:block, Expr(:call, f, args...))))
-    return Base.method_instance(s, Tuple(types))
+    made = Core.eval(Synthetic, Expr(:(=), Expr(:call, name, params...), Expr(:block, body)))
+    return Base.method_instance(made, Tuple(types))
 end
 
 # The helper a function's body is one call to, if it is that and nothing else.
@@ -288,13 +316,13 @@ macros(prog::Program) = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the d
 # helpers and the inline ones themselves; the `.c` holds the out-of-line ones, and is
 # written only when there is one. A struct a helper mentions is defined here, unless
 # `external` names the header that has it, which is then included.
-function writehelpers(dir, prog::Program, external)
+function writehelpers(dir, prog::Program, external, helper)
     order = filter(!in(prog.exported), helperorder(prog.helpers))
     isempty(order) && return
     text = join((prog.helpers[n] for n in order), "\n")
     inline = [n for n in order if isinline(prog.helpers[n])]
     outline = [n for n in order if !isinline(prog.helpers[n])]
-    guard = "LEGIBLEC_HELPER_H"
+    guard = "LEGIBLEC_" * uppercase(identifier(helper)) * "_H"
     htext = String[]
     used = [m for m in macros(prog) if occursin(split(m)[2], text)]
     append!(htext, used); isempty(used) || push!(htext, "")
@@ -313,7 +341,7 @@ function writehelpers(dir, prog::Program, external)
     for name in inline; push!(htext, prog.helpers[name]); end
     hbody = join(htext, "\n")
     ctext = join((prog.helpers[n] for n in outline), "\n")
-    open(joinpath(dir, "helper.h"), "w") do io
+    open(joinpath(dir, helper * ".h"), "w") do io
         println(io, "#ifndef $guard\n#define $guard\n")
         for h in includes(hbody); println(io, "#include <", h, ">"); end
         for h in unique(headers); println(io, "#include \"$h.h\""); end
@@ -322,9 +350,9 @@ function writehelpers(dir, prog::Program, external)
         println(io, "#endif  // $guard")
     end
     isempty(outline) && return
-    open(joinpath(dir, "helper.c"), "w") do io
+    open(joinpath(dir, helper * ".c"), "w") do io
         for h in includes(ctext); println(io, "#include <", h, ">"); end
-        println(io, "#include \"helper.h\"")
+        println(io, "#include \"$helper.h\"")
         for name in outline; println(io); print(io, prog.helpers[name]); end
     end
 end
@@ -335,7 +363,7 @@ end
 # function's return struct with that function; the globals and the foreign wrappers
 # in `<base>`. Names that differ only in case share a file — `point` and `Point`,
 # which one file system in three would merge anyway — named in lowercase.
-function placement(prog::Program, base, split::Bool, names)
+function placement(prog::Program, base, split::Bool, names, helper)
     where = Dict{String, String}()
     helpertext = join(values(prog.helpers), "\n")
     for n in names; where[n] = split ? n : base; end
@@ -343,17 +371,17 @@ function placement(prog::Program, base, split::Bool, names)
     for n in keys(prog.foreign); where[n] = base; end
     for (T, _) in prog.structs
         n = structname(T)
-        where[n] = split ? n : mentions(helpertext, n) ? "helper" : base
+        where[n] = split ? n : mentions(helpertext, n) ? helper : base
     end
     for (n, _) in prog.tupledefs
         owner = endswith(n, "_t") ? get(where, n[1:end-2], nothing) : nothing
         where[n] = !split ? base : owner === nothing ? n : owner
     end
     files = [base; [where[n] for n in names]; [where[structname(T)] for (T, _) in prog.structs]; [where[n] for (n, _) in prog.tupledefs]]
-    filter!(!=("helper"), files)
+    filter!(!=(helper), files)
     canon = Dict(key => (spellings = unique(f for f in files if lowercase(f) == key); length(spellings) == 1 ? only(spellings) : key)
                  for key in unique(lowercase.(files)))
-    for (n, f) in where; f == "helper" || (where[n] = canon[lowercase(f)]); end
+    for (n, f) in where; f == helper || (where[n] = canon[lowercase(f)]); end
     order = unique(canon[lowercase(f)] for f in files)
     return where, order
 end
@@ -367,7 +395,7 @@ end
 # `<base>` header of a split includes every other header, so a caller can include just
 # that. A file with nothing for a `.c` — a struct's header — gets none. Returns the
 # path of the `.c`, or the paths in file order when there are several.
-function writefiles(dir, prog::Program, base, where, order, names, functions)
+function writefiles(dir, prog::Program, base, where, order, names, functions, helper)
     definition = Dict(zip(names, (f[3] for f in functions)))
     # What each file defines, for the includes: functions and foreign wrappers are looked
     # for as calls, the rest as words.
@@ -375,7 +403,7 @@ function writefiles(dir, prog::Program, base, where, order, names, functions)
     for (n, f) in where
         haskey(entities, f) && push!(entities[f], (n, haskey(definition, n) || haskey(prog.foreign, n)))
     end
-    helperstructs = [structname(T) for (T, _) in prog.structs if where[structname(T)] == "helper"]
+    helperstructs = [structname(T) for (T, _) in prog.structs if where[structname(T)] == helper]
     needs(text, f) = any(mentions(text, n; call) for (n, call) in entities[f])
     inheader(g::Global) = g.constant && !(globaltype(g.value) <: AbstractString)
     umbrella = length(order) > 1
@@ -411,7 +439,7 @@ function writefiles(dir, prog::Program, base, where, order, names, functions)
         header = ["#ifndef $guard", "#define $guard", ""]
         n0 = length(header)
         for h in includes(htext); push!(header, "#include <$h>"); end
-        any(mentions(htext, n) for n in helperstructs) && push!(header, "#include \"helper.h\"")
+        any(mentions(htext, n) for n in helperstructs) && push!(header, "#include \"$helper.h\"")
         included = [f for f in order if f != file && (umbrella && file == base || needs(htext, f))]
         for f in included; push!(header, "#include \"$f.h\""); end
         length(header) > n0 && push!(header, "")
@@ -428,7 +456,7 @@ function writefiles(dir, prog::Program, base, where, order, names, functions)
         push!(paths, path)
         open(path, "w") do io
             for h in includes(ctext); println(io, "#include <", h, ">"); end
-            (any(mentions(ctext, n; call=true) for n in keys(prog.helpers)) || any(mentions(ctext, n) for n in helperstructs)) && println(io, "#include \"helper.h\"")
+            (any(mentions(ctext, n; call=true) for n in keys(prog.helpers) if !(n in prog.exported)) || any(mentions(ctext, n) for n in helperstructs)) && println(io, "#include \"$helper.h\"")
             for f in order; f != file && needs(ctext, f) && !(f in included) && println(io, "#include \"$f.h\""); end
             println(io, "#include \"$file.h\"")
             println(io)
@@ -439,6 +467,19 @@ function writefiles(dir, prog::Program, base, where, order, names, functions)
         end
     end
     return length(paths) == 1 ? paths[1] : paths
+end
+
+# A spec's types — each a type, optionally followed by the dimensions of an array —
+# as static arrays, as the shaped signature, and as (element type, dimensions) pairs.
+function spectypes(spec)
+    (isempty(spec) || spec[1] isa Integer) && throw(ArgumentError("in $(spec), a type must come first, then any dimensions of an array"))
+    groups = Tuple{DataType, Vector{Int}}[]
+    for x in spec
+        x isa DataType ? push!(groups, (x, Int[])) : push!(groups[end][2], x)
+    end
+    static = [isempty(d) ? T : SArray{Tuple{d...}, T, length(d), prod(d)} for (T, d) in groups]
+    shapedsig = [isempty(d) ? T : shaped(T, d) for (T, d) in groups]
+    return static, shapedsig, groups
 end
 
 # What each standard header provides, as a pattern over the C text that uses it.
@@ -489,18 +530,11 @@ csignature(sig) = [isarray(T) ? shaped(eltype(T), shape(T)) : T for T in sig]
 # integer dimensions of an array — to a MethodInstance and a signature.
 function resolve(f::Function, spec)
     isempty(spec) && return (concretemethod(f)[1], argtypes(concretemethod(f)[1]))
-    spec[1] isa Integer && throw(ArgumentError("in $((f, spec...)), a dimension must follow a type"))
-    # Group into (element type, dimensions) pairs.
-    groups = Tuple{DataType, Vector{Int}}[]
-    for x in spec
-        x isa DataType ? push!(groups, (x, Int[])) : push!(groups[end][2], x)
-    end
-    all(isempty(d) for (_, d) in groups) && (mi = concretemethod(f, spec...)[1]; return (mi, argtypes(mi)))
+    all(x -> x isa DataType, spec) && (mi = concretemethod(f, spec...)[1]; return (mi, argtypes(mi)))
+    static, shapedsig, groups = spectypes(spec)
     # Arrays are static if the function takes them that way, else regular arrays of
     # the same size, which the transpiler treats identically.
-    static  = [isempty(d) ? T : SArray{Tuple{d...}, T, length(d), prod(d)} for (T, d) in groups]
     regular = [isempty(d) ? T : Array{T, length(d)} for (T, d) in groups]
-    shapedsig = [isempty(d) ? T : shaped(T, d) for (T, d) in groups]
     mi = Base.method_instance(f, Tuple(static))
     mi === nothing || return (mi, static)
     mi = Base.method_instance(f, Tuple(regular))

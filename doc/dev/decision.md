@@ -1502,3 +1502,12 @@ wants it in the file they include and link, documented like the rest,
 not a `static inline` in the helpers' header that another run may or may
 not write. Unary minus on a struct is `neg_Quat`, as the helper scheme
 names it, not `sub_Quat`.
+
+**Broadcasts as targets, and the helper files by name** (same day). A
+broadcast is a target as an operator's dotted symbol, `(:.+, Float64, 3,
+Float64)`, or as Julia's own `broadcast` with the function, `(broadcast,
+sqrt, Float64, 3)` — `:.sqrt` isn't Julia syntax, so the function form is
+the one Julia already has. Both go through the same stand-in as the
+operators. The `helper` option names the helper files, so that several
+`transpile` calls into one `out/` — a library built one operation per
+call — each keep the helpers they need instead of overwriting one pair.

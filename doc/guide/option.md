@@ -5,6 +5,7 @@ Every keyword option of `transpile`.
 | option | default | what it does |
 |---|---|---|
 | `outfile` | `"juliatranspiled"` | the file name; `.c` is added if missing |
+| `helper` | `"helper"` | the name of the helper files, `helper.h` and `helper.c`; give each `transpile` call into one `out/` its own, and each keeps its helpers |
 | `split` | `false` | every function in a file of its own, named after it, listed or not, with its header; every struct in a header of its own; a function's return struct with the function. `<outfile>.h` then holds the globals and includes every other header, so a caller can still include one file; `<outfile>.c` holds the mutable globals, and is written only when there are any. Names that differ only in case, `point` and `Point`, share a file named in lowercase |
 | `outpath` | `pwd()` | the folder |
 | `source` | `true` | copy each Julia line above its C as `// @file.jl:12: …`; comments are always carried, this controls the code lines |

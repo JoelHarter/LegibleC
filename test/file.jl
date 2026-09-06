@@ -15,6 +15,7 @@ fall(t::Float64) = 0.5 * g * square(t)
 height(t::Float64) = 100.0 - fall(t)
 far(p::Point) = square(p.x) + square(p.y)
 alone(x::Float64) = x + 1.0
+doubled(v::SVector{3,Float64}) = v + v
 point(p::Point) = p.x
 function step(x::Float64, ẋ::Float64, dt::Float64)
     ẋ += dt * -x
@@ -56,5 +57,9 @@ check("lib", [Case(fall, 2.0), Case(far, Point(3.0, 4.0)), Case(alone, 1.0), Cas
     @test transpile(height, far; outfile="both", outpath=dir, scope=@__MODULE__) == joinpath(out, "both.c")
     @test occursin("double square(double x)", text("both.c")) && occursin("static const double g = 9.81;", text("both.h"))
     @test_throws ArgumentError transpile(height; outfile="helper", outpath=dir, scope=@__MODULE__)
+    # The helper files by another name, so two calls into one `out/` keep both sets.
+    path = transpile(doubled; outfile="geo", helper="geohelper", outpath=dir, scope=@__MODULE__)
+    @test isfile(joinpath(out, "geohelper.h")) && occursin("#include \"geohelper.h\"", text("geo.c")) && occursin("LEGIBLEC_GEOHELPER_H", text("geohelper.h"))
+    @test_throws ArgumentError transpile(far; outfile="same", helper="same", outpath=dir, scope=@__MODULE__)
 end
 end
