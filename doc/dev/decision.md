@@ -1282,3 +1282,23 @@ no source. What it cost was the most Julian workflow there is, defining a
 function at the prompt to see what the transpiler makes of it. The guide
 now says that regenerating the C needs the Julia in a file, and leaves it
 at that.
+
+---
+
+## 2026-09-06 — Names carry their module path
+
+**Decision.** A function, global or struct type from a module other than
+the call's `scope` is named with its module path in front, joined with
+`_`: `Physics_c`, `Earth_Orbit_a`, `Physics_speed`, relative to the scope
+(`Orbit_a` from inside `Earth`; bare inside its own module); `Main` adds
+nothing. Reading through an import doesn't change the name. Whatever
+still collides gets `_`.
+
+**Why.** Julia's modules are exactly the thing that lets two libraries
+both name something `a`, and C's single namespace throws that away if the
+module is dropped. `Earth.a` and `Moon.a` as `Earth_a` and `Moon_a` is
+what a C programmer writes by hand (`gsl_const_…`, `M_PI`). Relative to
+the scope, because that is how Julia itself resolves names where the call
+is written, so `@transpile` from inside a module reads like the Julia
+there. Obscure collisions can still occur; rather than refusing, the
+existing `_` rule takes them, since the C stays correct either way.

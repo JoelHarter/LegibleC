@@ -59,6 +59,31 @@ const overrides = Dict('ε' => "epsilon", 'φ' => "phi", '∇' => "nabla", 'ð' 
 # The user's own spellings for the current `transpile` call, checked by `checkspelling`.
 const spelling = Ref(Dict{Char, String}())
 
+# The module the current `transpile` call was written in (its `scope`): names in it are
+# bare; names elsewhere carry their module path, relative to it.
+const scope = Ref{Module}(Main)
+
+"""
+    qualified(name, mod) -> String
+
+The C name of `name` defined in module `mod`, as seen from the call's `scope`: the
+name itself for something in the scope, otherwise the module path in front, joined
+with `_` — `Physics.c` is `Physics_c` from `Main`, and `c` from inside `Physics`;
+`Earth.Orbit.a` is `Earth_Orbit_a` from `Main` and `Orbit_a` from inside `Earth`. `Main`
+contributes nothing, being the program. Collisions that survive get `_` like any other.
+"""
+function qualified(name::AbstractString, mod::Module)
+    path = [String(s) for s in fullname(mod)]
+    here = [String(s) for s in fullname(scope[])]
+    isempty(path) || path[1] != "Main" || popfirst!(path)
+    isempty(here) || here[1] != "Main" || popfirst!(here)
+    k = 0
+    while k < length(path) && k < length(here) && path[k+1] == here[k+1]
+        k += 1
+    end
+    return join([identifier.(path[k+1:end]); identifier(name)], "_")
+end
+
 """
     identifier(name) -> String
 

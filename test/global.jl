@@ -22,6 +22,12 @@ shifted(v::SVector{3,Float64}) = v + w
 scaled(x::Float64) = k * x
 dist(p::Point) = sqrt((p.x - origin.x)^2 + (p.y - origin.y)^2)
 plain(x::Float64) = x + 1.0
+module Physics
+const c = 3.0e8
+speed(t::Float64) = c * t
+end
+module Moon; const a = 1737.0; end
+travel(t::Float64) = Physics.speed(t) + Moon.a + Physics.c
 unstable(x::Float64) = u * x
 
 check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(scaled, 3.0), Case(dist, Point(3.0, 4.0))])
@@ -51,5 +57,11 @@ check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(sc
     @test_throws ArgumentError csource("abstract", plain, Vector{Float64})
     @test_throws ArgumentError csource("untyped", unstable)                            # an untyped mutable global
     @test occursin("\ndouble u = 1.0;", csource("untypedlisted", plain; u, scope=@__MODULE__))   # listed, its value has a type, and the binding isn't const
+    # Names carry their module path, relative to the scope: bare in it, prefixed elsewhere.
+    far = csource("far", travel; scope=@__MODULE__)
+    @test occursin("const double Physics_c = 3.0e8;", far) && occursin("const double Moon_a = 1737.0;", far)
+    @test occursin("double Physics_speed(double t)", far) && occursin("return Physics_speed(t) + Moon_a + Physics_c;", far) && occursin("double travel(double t)", far)
+    near = csource("near", Physics.speed; scope=Physics)
+    @test occursin("const double c = 3.0e8;", near) && occursin("double speed(double t)", near) && occursin("return c * t;", near)
 end
 end

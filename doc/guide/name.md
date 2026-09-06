@@ -16,6 +16,11 @@ the names you wrote:
 | `long`, `printf` | `long_`, `printf_` | a C reserved word gets `_` |
 | `omega` and `ω` together | `omega`, `omega_` | a collision gets `_` |
 
+**Modules.** A name from another module carries the module's path:
+`Physics.c` is `Physics_c`, `Earth.Orbit.a` is `Earth_Orbit_a`, functions
+and struct types the same. Names from the module you call `@transpile` in
+(or the `scope` you pass) stay bare, and `Main` never adds a prefix.
+
 **Your own spellings.** When the built-in spelling isn't the word you want,
 give yours:
 

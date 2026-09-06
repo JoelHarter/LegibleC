@@ -74,7 +74,9 @@ a `ccall` needs to exist. Returns the generated C, for tests that look at the te
 function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra::AbstractString="")
     dir = mktempdir()
     fs = unique(c.f for c in cases)
-    path = transpile((targets === nothing ? fs : targets)...; outpath=dir, outfile=name)
+    scope = parentmodule(fs[1])            # the test module: its names are bare
+    path = transpile((targets === nothing ? fs : targets)...; outpath=dir, outfile=name, scope)
+    LegibleC.scope[] = scope               # so the names spelled below match the file's
     cnames = Dict(zip(fs, identifiers([identifier(string(nameof(f))) for f in fs])))
     main = ["#include <stdio.h>", "#include \"$name.c\"", extra, "int main(void) {"]
     references = Any[]
@@ -120,6 +122,7 @@ function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra
         push!(main, "    printf(\"\\n\");")
     end
     push!(main, "    return 0;", "}")
+    LegibleC.scope[] = Main
     write(joinpath(dir, "main.c"), join(main, "\n") * "\n")
     exe = joinpath(dir, "main")
     out = dirname(path)
@@ -141,7 +144,9 @@ end
 # written, headers first and the functions last, as one string.
 function csource(name::AbstractString, targets...; kw...)
     dir = mktempdir()
-    path = transpile(targets...; outpath=dir, outfile=name, kw...)
+    f = findfirst(t -> t isa Function || t isa Tuple, collect(targets))
+    scope = f === nothing ? Main : parentmodule(targets[f] isa Tuple ? targets[f][1] : targets[f])
+    path = transpile(targets...; outpath=dir, outfile=name, scope, kw...)
     out = dirname(path)
     files = readdir(out)
     for f in files

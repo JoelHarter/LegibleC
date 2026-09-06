@@ -75,6 +75,19 @@ names blocked); a *function* that matches one is an error, since a
 function's name is the C interface and quietly changing it would mislead the
 caller.
 
+## Modules
+
+C has one namespace per program where Julia has one per module, so a name
+carries its module path, joined with `_`, relative to the module the
+`transpile` call was written in (its `scope`; `@transpile` sets it): from
+`Main`, `Physics.c` is `Physics_c`, `Earth.Orbit.a` is `Earth_Orbit_a`, and
+`Physics.speed` is `Physics_speed`; from inside `Physics`, `c` and `speed`
+are bare, and `Earth.Orbit.a` from inside `Earth` is `Orbit_a`. `Main`
+contributes nothing, being the program. This applies to functions, globals
+and struct types alike, and reading a name through an import doesn't change
+it: `c` after `using Physics` is still `Physics_c`, which says where it came
+from. Whatever still collides after that gets `_` like any other collision.
+
 ## Function names: the same function at several signatures
 
 A function transpiled at one signature keeps its plain name. When several

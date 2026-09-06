@@ -68,10 +68,12 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    scope::Module=Main,
                    variables...)
     LegibleC.spelling[] = checkspelling(spelling)
+    LegibleC.scope[] = scope
     try
         return transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable, suffix=tempsuffix, scope, variables)
     finally
         LegibleC.spelling[] = Dict{Char, String}()
+        LegibleC.scope[] = Main
     end
 end
 
@@ -251,7 +253,7 @@ end
 # C names for the instances: each Julia name made C-valid, instances that share a name
 # told apart by `mangled`, and the results kept clear of reserved words.
 function cnames(instances)
-    base = [identifier(string(mi.def.name)) for (mi, _) in instances]
+    base = [qualified(string(mi.def.name), mi.def.module) for (mi, _) in instances]
     names = similar(base)
     for b in unique(base)
         group = findall(==(b), base)

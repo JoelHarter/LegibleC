@@ -1439,6 +1439,11 @@ function render(sc::Scope, i, ex::Expr)
         return "$name($(value(sc, args[1])), $(value(sc, args[2])))", PRIMARY
     end
 
+    # `Moon.a`: a module's global, read through `getproperty`; the same as a direct reference.
+    if f === Base.getproperty && n == 2 && literal(sc, args[1]) isa Module
+        return value(sc, GlobalRef(literal(sc, args[1]), literal(sc, args[2]))), PRIMARY
+    end
+
     # Characters: the `ctype.h` classes and cases. Julia's classes are Unicode-aware and
     # C's are ASCII; for the ASCII characters `char` can hold, they agree.
     if n == 1 && valuetype(sc, args[1]) === Char
@@ -1697,7 +1702,7 @@ function global!(prog::Program, mod::Union{Module, Nothing}, name::Symbol, value
     (isstruct(T) && ismutabletype(T)) && throw(ArgumentError("the global $name is a mutable struct; the C caller owns those"))
     structdef!(prog, T)
     isconst = constant !== nothing ? constant : mod !== nothing ? Base.isconst(mod, name) : true
-    cname = free(identifier(string(name)), union(prog.names, reserved))
+    cname = free(mod === nothing ? identifier(string(name)) : qualified(string(name), mod), union(prog.names, reserved))
     push!(prog.names, cname)
     g = Global(cname, mod, name, value, isconst)
     push!(prog.globals, g)
@@ -1884,7 +1889,7 @@ function register!(prog::Program, f, spec)
     mi === nothing && return nothing
     nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
     haskey(prog.calls, mi) && return (mi, sig, prog.calls[mi])
-    base = identifier(string(mi.def.name))
+    base = qualified(string(mi.def.name), mi.def.module)
     taken = union(prog.names, keys(prog.helpers), reserved)
     name = base in taken ? free(join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_"), taken) : free(base, reserved)
     push!(prog.names, name)

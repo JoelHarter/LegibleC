@@ -59,7 +59,7 @@ istuple(T::Type) = T isa DataType && T <: Tuple && isconcretetype(T)
 # `Tuple_` and its element types (`Tuple_F64_I64`, `Tuple_3_2x2`).
 function structname(T::Type)
     istuple(T) && return "Tuple_" * join((typeword(P) for P in T.parameters), "_")
-    base = identifier(string(nameof(T)))
+    base = qualified(string(nameof(T)), T.name.module)
     isempty(T.parameters) && return base
     return base * "_" * join((p isa Type ? typeword(p) : string(p) for p in T.parameters), "_")
 end
