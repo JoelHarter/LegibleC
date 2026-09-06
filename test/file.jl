@@ -1,4 +1,4 @@
-# Several output files: one per target, or as named; what they share goes to common.
+# One file for everything, or every function and struct in a file of its own.
 module File
 using Test, StaticArrays
 import Main: Case, check, csource
@@ -15,34 +15,46 @@ fall(t::Float64) = 0.5 * g * square(t)
 height(t::Float64) = 100.0 - fall(t)
 far(p::Point) = square(p.x) + square(p.y)
 alone(x::Float64) = x + 1.0
+point(p::Point) = p.x
+function step(x::Float64, ẋ::Float64, dt::Float64)
+    ẋ += dt * -x
+    x += dt * ẋ
+    return x, ẋ
+end
+function twice(x::Float64, ẋ::Float64, dt::Float64)
+    x, ẋ = step(x, ẋ, dt)
+    return step(x, ẋ, dt)
+end
 
-check("split", [Case(fall, 2.0), Case(far, Point(3.0, 4.0)), Case(alone, 1.0)]; outfile=("motion", "geometry", "geometry"))
+check("lib", [Case(fall, 2.0), Case(far, Point(3.0, 4.0)), Case(alone, 1.0), Case(twice, 1.0, 0.0, 0.1)]; split=true)
 @testset "file" begin
     dir = mktempdir()
-    # Named per target: two targets with one name share a file; `square`, reached from
-    # both files, goes to common.h/.c, which each includes; `fall`, reached only from
-    # `height`, goes with it. A constant is `static const` in its header.
-    paths = transpile(height, far, alone; outfile=("motion", "geometry", "geometry"), outpath=dir, scope=@__MODULE__)
-    @test basename.(paths) == ["common.c", "motion.c", "geometry.c"]
+    # Split: every function in its own file, listed or not, every struct in its own
+    # header, the constant in the base header, which includes all the others.
+    paths = transpile(height, far, alone; outfile="lib", split=true, outpath=dir, scope=@__MODULE__)
+    @test basename.(paths) == ["height.c", "far.c", "alone.c", "fall.c", "square.c"]
     out = dirname(paths[1])
-    @test sort(readdir(out)) == ["common.c", "common.h", "geometry.c", "geometry.h", "motion.c", "motion.h"]
-    common = read(joinpath(out, "common.c"), String)
-    motion = read(joinpath(out, "motion.c"), String)
-    geometry = read(joinpath(out, "geometry.c"), String)
-    @test occursin("double square(double x)", common) && !occursin("double square(double x)", motion) && !occursin("double square(double x)", geometry)
-    @test occursin("double fall(double t)", motion) && occursin("double height(double t)", motion)
-    @test occursin("double far(Point p)", geometry) && occursin("double alone(double x)", geometry)
-    @test occursin("#include \"common.h\"\n#include \"motion.h\"", motion) && occursin("#include \"common.h\"\n#include \"geometry.h\"", geometry)
-    @test occursin("static const double g = 9.81;  // gravity, m/s²", read(joinpath(out, "motion.h"), String)) && !occursin("9.81", motion)
-    @test occursin("typedef struct {\n    double x;\n    double y;\n} Point;", read(joinpath(out, "geometry.h"), String))
-    @test occursin("/**\n * Squared.", read(joinpath(out, "common.h"), String))
-    # `nothing` names every file after its target; one string is one file, as ever.
-    paths = transpile(height, far; outfile=nothing, outpath=dir, scope=@__MODULE__)
-    @test basename.(paths) == ["common.c", "height.c", "far.c"]
+    @test sort(readdir(out)) == ["Point.h", "alone.c", "alone.h", "fall.c", "fall.h", "far.c", "far.h", "height.c", "height.h", "lib.h", "square.c", "square.h"]
+    text(f) = read(joinpath(out, f), String)
+    @test occursin("static const double g = 9.81;  // gravity, m/s²", text("lib.h"))
+    @test all(occursin("#include \"$h\"", text("lib.h")) for h in ("height.h", "far.h", "alone.h", "fall.h", "square.h", "Point.h"))
+    @test occursin("#include \"lib.h\"\n#include \"square.h\"\n#include \"fall.h\"\n", text("fall.c")) && occursin("return 0.5 * g * square(t);", text("fall.c"))
+    @test occursin("#include \"fall.h\"\n#include \"height.h\"\n", text("height.c"))
+    @test occursin("#include \"Point.h\"\n\n/**", text("far.h")) && occursin("typedef struct {\n    double x;\n    double y;\n} Point;", text("Point.h"))
+    @test occursin("/**\n * Squared.", text("square.h"))
+    # A return struct stays with its function; a pass-through's header includes it.
+    paths = transpile(twice; outfile="lib", split=true, outpath=dir, scope=@__MODULE__)
+    @test basename.(paths) == ["twice.c", "step.c"]
+    @test occursin("} step_t;", text("step.h")) && !occursin("} step_t;", text("twice.h")) && occursin("#include \"step.h\"\n\n/**", text("twice.h"))
+    # Names that differ only in case share a file, named in lowercase.
+    fresh = mktempdir()
+    @test transpile(point; outfile="lib", split=true, outpath=fresh, scope=@__MODULE__) == joinpath(fresh, "out", "point.c")
+    @test sort(readdir(joinpath(fresh, "out"))) == ["lib.h", "point.c", "point.h"]
+    merged = read(joinpath(fresh, "out", "point.h"), String)
+    @test occursin("} Point;", merged) && occursin("double point(Point p);", merged)
+    # One file, as ever.
     @test transpile(height, far; outfile="both", outpath=dir, scope=@__MODULE__) == joinpath(out, "both.c")
-    @test occursin("double square(double x)", read(joinpath(out, "both.c"), String))
-    @test_throws ArgumentError transpile(height, far; outfile=("one",), outpath=dir, scope=@__MODULE__)
-    @test_throws ArgumentError transpile(height, far; outfile=("helper", "x"), outpath=dir, scope=@__MODULE__)
-    @test_throws ArgumentError transpile(height, far; outfile=("common", "x"), outpath=dir, scope=@__MODULE__)
+    @test occursin("double square(double x)", text("both.c")) && occursin("static const double g = 9.81;", text("both.h"))
+    @test_throws ArgumentError transpile(height; outfile="helper", outpath=dir, scope=@__MODULE__)
 end
 end

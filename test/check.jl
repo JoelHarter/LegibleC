@@ -76,7 +76,7 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
     fs = unique(c.f for c in cases)
     scope = parentmodule(fs[1])            # the test module: its names are bare
     path = transpile((targets === nothing ? fs : targets)...; outpath=dir, outfile=name, scope, kw...)
-    path isa AbstractString || (path = path[end])
+    path isa AbstractString || (path = path[1])
     LegibleC.scope[] = scope               # so the names spelled below match the file's
     cnames = Dict(zip(fs, identifiers([identifier(string(nameof(f))) for f in fs])))
     headers = ["#include \"$h\"" for h in readdir(dirname(path)) if endswith(h, ".h") && h != "helper.h"]
@@ -149,7 +149,7 @@ function csource(name, targets...; kw...)
     f = findfirst(t -> t isa Function || t isa Tuple, collect(targets))
     scope = f === nothing ? Main : parentmodule(targets[f] isa Tuple ? targets[f][1] : targets[f])
     path = transpile(targets...; outpath=dir, outfile=name, scope, kw...)
-    path isa AbstractString || (path = path[end])
+    path isa AbstractString || (path = path[1])
     last = basename(path)
     out = dirname(path)
     files = readdir(out)

@@ -189,8 +189,8 @@ that element type and size. Arrays are `StaticArrays` types, or `Array`s
 given a size in the call. An `out/` folder comes out: `<outfile>.h` for
 callers, `<outfile>.c` with the functions, `helper.h` and `helper.c` with
 the generated helpers they need — and anything a listed function calls
-comes with it. One file name per target, `outfile=("a", "a", "b")`, splits
-them over files, with what they share in `common.c`. Constants a function reads come along too, and any you list
+comes with it. With `split=true`, every function and struct gets a file of
+its own, and `<outfile>.h` includes them all. Constants a function reads come along too, and any you list
 by keyword, `transpile(f; g, μ)`; `@transpile` does the same from inside a
 module. `transpile` and `@transpile` are the package's only exported names,
 so your own functions can be named anything.
