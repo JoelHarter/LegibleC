@@ -1883,10 +1883,10 @@ function step!(lines, sc::Scope, text; from::Int=length(lines))
     push!(sc.steps, (from, length(lines), text, sc.stmtline[sc.current]))
 end
 
-# A value's name in a step comment: `Aᵀ` when it's transposed — `A†` when the elements
+# A value's name in a step comment: `Aᵀ` when it's transposed — `Aᴴ` when the elements
 # aren't real, since `'` is then the adjoint. (Names keep `T` either way: `mul_T3_3`.)
 spell(T::Type, name::AbstractString) = istransposed(T) ? name * tmark(T) : name
-tmark(T::Type) = eltype(T) <: Real ? "ᵀ" : "†"
+tmark(T::Type) = eltype(T) <: Real ? "ᵀ" : "ᴴ"
 
 # Write the step comments in. On a Julia line that became more than one step, each
 # step gets its text — at the end of the line when the step is one statement, on the
