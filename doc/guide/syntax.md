@@ -16,9 +16,9 @@ A target is a function with one concrete method, a `MethodInstance`, or a
 tuple of a function and argument types — where a type followed by integers is
 an array of that element type and size. Options: `outfile`, `outpath`,
 `templimit`, `staticarray` (on), `source` (on), `precise`, `portable`, `width`
-(100), `spelling` (your own C names for characters, `../naming.md`). One
-`.c` file comes out, with
-prototypes, the helpers it needs, and the functions.
+(100), `spelling` (your own C names for characters, `../naming.md`). An
+`out/` folder comes out: the functions in `<outfile>.c`, the helpers in
+`mathhelper.h`/`.c` and `helper.h`/`.c` — see `start.md`.
 
 ## Functions
 

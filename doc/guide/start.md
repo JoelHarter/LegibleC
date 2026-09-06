@@ -24,14 +24,24 @@ energy(m::Float64, v::SVector{3,Float64}) = m * dot(v, v) / 2
 transpile(energy; outfile="body", outpath=".")
 ```
 
-That writes `body.c` and returns its path. The file holds, in order: the
-`#include`s it needs, any `#define`s, `typedef struct`s for the structs and
-tuples used, a prototype for every function, the generated helpers
-(`static inline`, each with a two-line comment), and your functions, each
-under a Doxygen block made from its docstring. It compiles on its own:
+That writes an `out/` folder next to where you ran it, and returns the path
+of `out/body.c`. The folder holds:
+
+- `body.c` — your functions: the `#include`s, any `#define`s, `typedef
+  struct`s for the structs used, each function's prototype (with its own
+  return struct right above it, when it returns a tuple), and the functions
+  themselves, each under a Doxygen block made from its docstring.
+- `mathhelper.h` — the generated mathematical helpers: small ones as
+  `static inline` functions, each with a two-line comment, and prototypes
+  for the larger ones.
+- `mathhelper.c` — the larger helpers: solvers, factorizations.
+- `helper.h`, `helper.c` — the same for printing and text helpers, written
+  only when something uses them.
+
+It compiles as a unit:
 
 ```
-cc -std=c11 -O2 -Wall -Wextra -c body.c
+cc -std=c11 -O2 -Wall -Wextra -c out/*.c
 ```
 
 Argument types must be concrete: `Float64`, `SVector{3,Float64}`,

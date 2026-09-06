@@ -19,7 +19,8 @@ rows(A::SMatrix{2,3,Float64,6}) = println(A')
 
 function run(src, calls)
     dir = mktempdir()
-    write(joinpath(dir, "print.c"), src)
+    # `csource` gives the three files as one text; as one file it needs no `#include "helper.h"`.
+    write(joinpath(dir, "print.c"), replace(src, r"#include \"\w+\.h\"\n" => ""))
     write(joinpath(dir, "main.c"), "#include \"print.c\"\nint main(void) {\n" * join("    " .* calls, "\n") * "\n    return 0;\n}\n")
     exe = joinpath(dir, "main")
     Base.run(`cc $flags -I$dir $(joinpath(dir, "main.c")) -o $exe`)
@@ -61,7 +62,7 @@ x = 3
     @test err == "bad: 2\n"
     @test occursin("printf(\"x = %g, n = %lld, b = %d, u = %llu 100%%\\n\", x, (long long)n, b, (unsigned long long)(uint8_t)200);", src)
     @test occursin("printarray(stdout, &A[0][0], 2, (const int[]){2, 2});", src) && occursin("printarray(stdout, v, 1, (const int[]){3});", src)
-    @test occursin("static void printarray_I64(FILE *f, const int64_t *a, int ndims, const int dims[])", src) && occursin("printarray_B(", src)
+    @test occursin("void printarray_I64(FILE *f, const int64_t *a, int ndims, const int dims[])", src) && occursin("printarray_B(", src)
     @test occursin("fprintf(stderr, \"bad: %g\\n\", x);", src)
     @test occursin("printf(\"%.3f | %5lld | %-8.2e | %s | %%\\n\", x, (long long)n, x, \"lit\");", src)
     # every digit, on request

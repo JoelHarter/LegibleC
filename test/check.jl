@@ -122,7 +122,9 @@ function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra
     push!(main, "    return 0;", "}")
     write(joinpath(dir, "main.c"), join(main, "\n") * "\n")
     exe = joinpath(dir, "main")
-    run(`cc $flags -I$dir $(joinpath(dir, "main.c")) -o $exe`)
+    out = dirname(path)
+    others = [joinpath(out, f) for f in readdir(out) if endswith(f, ".c") && f != name * ".c"]
+    run(`cc $flags -I$out $(joinpath(dir, "main.c")) $others -o $exe`)
     lines = split(read(`$exe`, String), "\n")
     @testset "$name" begin
         @test length(lines) == length(cases) + 1
@@ -135,10 +137,16 @@ function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra
     return read(path, String)
 end
 
-# Transpile and compile only, for a test that checks the text of the C.
+# Transpile and compile only, for a test that checks the text of the C: every file
+# written, headers first and the functions last, as one string.
 function csource(name::AbstractString, targets...; kw...)
     dir = mktempdir()
     path = transpile(targets...; outpath=dir, outfile=name, kw...)
-    run(`cc $flags -c $path -o $(joinpath(dir, "out.o"))`)
-    return read(path, String)
+    out = dirname(path)
+    files = readdir(out)
+    for f in files
+        endswith(f, ".c") && run(`cc $flags -c $(joinpath(out, f)) -o $(joinpath(dir, f * ".o"))`)
+    end
+    ordered = [filter(endswith(".h"), files); filter(f -> endswith(f, ".c") && f != name * ".c", files); [name * ".c"]]
+    return join((read(joinpath(out, f), String) for f in ordered), "\n")
 end

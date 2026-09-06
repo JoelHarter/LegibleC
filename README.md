@@ -84,8 +84,9 @@ void orbit(const double x[3], const double v[3], double dt, double out[restrict 
 }
 ```
 
-The other three helpers are in the same file, each with its two-line
-comment. That is the whole output: one `.c`, C11, clean under
+The other three helpers sit beside it in `mathhelper.h`, each with its
+two-line comment. That is the whole output: an `out/` folder with the
+functions in one `.c` and the helpers in a header, C11, clean under
 `-Wall -Wextra -Werror`.
 
 ## What you get
@@ -144,9 +145,10 @@ transpile(f, g, (h, Float64, 3, Float64, 2, 3); outfile="name", outpath=dir)
 A target is a function with one concrete method, or a function with its
 argument types spelled out, where a type followed by integers is an array of
 that element type and size. Arrays are `StaticArrays` types, or `Array`s
-given a size in the call. One `.c` file comes out — prototypes, the helpers
-it needs, the functions — and anything a listed function calls comes with
-it. `transpile` is the package's one exported name, so your own functions
+given a size in the call. An `out/` folder comes out: `<outfile>.c` with
+the functions, `mathhelper.h` and `mathhelper.c` with the helpers they
+need, `helper.h` and `helper.c` for printing and text if used — and
+anything a listed function calls comes with it. `transpile` is the package's one exported name, so your own functions
 can be named anything.
 
 [doc/guide/](doc/guide/README.md) is the user guide: what's accepted,

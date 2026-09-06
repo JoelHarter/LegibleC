@@ -111,9 +111,21 @@ end
 # programmer marks inline — and plain `static` when it calls other helpers, searches,
 # or can abort: the solvers and factorizations, which nobody wants copied into every
 # caller.
+# A helper's text. A small one is `static inline`, and lives in `helper.h` so every file
+# that includes it has the body; a large one (a solver, a factorization) is an ordinary
+# function in `helper.c`, with its prototype in the header.
 definition(ret, name, params, body; doc::Union{AbstractString, Vector{String}}="", inline::Bool=true) =
     join("/// " .* (doc isa AbstractString ? (isempty(doc) ? String[] : [doc]) : doc), "\n") * (isempty(doc) ? "" : "\n") *
-    "static $(inline ? "inline " : "")$ret $name($(join(params, ", "))) {\n" * join("    " .* body, "\n") * "\n}\n"
+    "$(inline ? "static inline " : "")$ret $name($(join(params, ", "))) {\n" * join("    " .* body, "\n") * "\n}\n"
+
+# Is this helper mathematics (`mathhelper.h`) rather than printing or text (`helper.h`)?
+mathematical(name) = !(startswith(name, "printarray") || name == "utf8len")
+
+# Is this helper's text a `static inline` one (for the header) or an ordinary function?
+isinline(text) = occursin(r"^static inline ", text) || occursin("\nstatic inline ", text)
+
+# The prototype of a helper, from its definition: the signature line, ended with `;`.
+prototype(text) = (m = match(r"^(?:static inline )?([^\n]*) \{$"m, text); m === nothing ? "" : m[1] * ";")
 
 # The (index name, extent) pairs that need a loop: those with more than one element.
 live(pairs) = [p for p in pairs if p[2] > 1]

@@ -3,7 +3,10 @@
 """
     transpile(target...; outfile="juliatranspiled", outpath=pwd()) -> path
 
-Transpile one or more targets to a single C file and return its path. Each
+Transpile one or more targets into `outpath/out/`: `<outfile>.c` with the functions,
+`mathhelper.h` and `mathhelper.c` with the generated mathematical helpers, `helper.h`
+and `helper.c` with any others (printing, text). Returns the path of the functions
+file. Each
 `target` is one of:
 
 - a `Function` — must have exactly one method with all-concrete argument types
@@ -20,8 +23,9 @@ a target that can't be resolved throws an `ArgumentError`.
 
 Options:
 
-- `outfile`: name of the C file; `.c` is appended if not already present.
-- `outpath`: folder to write it in; defaults to Julia's current working directory.
+- `outfile`: name of the functions file; `.c` is appended if not already present.
+- `outpath`: the folder whose `out/` subfolder receives the files; defaults to
+  Julia's current working directory.
 - `templimit`: longest name an intermediate value may be given before its
   descriptive suffix is dropped (see [`temp!`](@ref)).
 - `staticarray`: treat every Julia array as fixed-size, and refuse anything a
@@ -119,20 +123,62 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         any(v -> haskey(prog.helpers, v), functions[k][3]) || continue
         functions[k] = generate(n, mi, sig; blocked=keys(prog.helpers))
     end
-    path = joinpath(outpath, endswith(outfile, ".c") ? outfile : outfile * ".c")
-    open(path, "w") do io
-        for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "ctype.h", "stdio.h", "float.h", "math.h")
-            h in prog.headers && println(io, "#include <", h, ">")
+    # The files in `out/`: `mathhelper.h`/`.c` for the mathematical helpers (`add_3`,
+    # `solve_4x4_4`, `powi`), `helper.h`/`.c` for the rest (printing, text), and
+    # `<outfile>.c` for the user's functions. A header holds what its helpers need —
+    # standard includes, constants, typedefs — plus prototypes of the out-of-line
+    # helpers and the inline ones themselves; the `.c` holds the out-of-line ones. A
+    # helper file is written only when it has something in it. A function's own return
+    # struct sits right above its prototype.
+    dir = joinpath(outpath, "out")
+    mkpath(dir)
+    base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
+    order = helperorder(prog.helpers)
+    includes = [h for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "ctype.h", "stdio.h", "float.h", "math.h") if h in prog.headers]
+    macros = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the double nearest $(constants[m])" for m in sort!(collect(prog.macros))]
+    structs = [(structname(T), def) for (T, def) in prog.structs]
+    placed = Set{String}()
+    groups = [("mathhelper", [n for n in order if mathematical(n)]), ("helper", [n for n in order if !mathematical(n)])]
+    for (file, names) in groups
+        isempty(names) && continue
+        text = join((prog.helpers[n] for n in names), "\n")
+        inline = [n for n in names if isinline(prog.helpers[n])]
+        outline = [n for n in names if !isinline(prog.helpers[n])]
+        guard = "LEGIBLEC_" * uppercase(file) * "_H"
+        open(joinpath(dir, file * ".h"), "w") do io
+            println(io, "#ifndef $guard\n#define $guard\n")
+            for h in includes; println(io, "#include <", h, ">"); end
+            println(io)
+            used = [m for m in macros if occursin(split(m)[2], text)]
+            foreach(m -> println(io, m), used); isempty(used) || println(io)
+            for (name, def) in structs; name in placed || !occursin(name, text) || (print(io, def); println(io); push!(placed, name)); end
+            for name in outline; println(io, prototype(prog.helpers[name])); end
+            isempty(outline) || println(io)
+            for name in inline; print(io, prog.helpers[name]); println(io); end
+            println(io, "#endif")
         end
+        open(joinpath(dir, file * ".c"), "w") do io
+            println(io, "#include \"$file.h\"")
+            for name in outline; println(io); print(io, prog.helpers[name]); end
+        end
+    end
+    path = joinpath(dir, base * ".c")
+    open(path, "w") do io
+        for h in includes; println(io, "#include <", h, ">"); end
+        for (file, names) in groups; isempty(names) || println(io, "#include \"$file.h\""); end
         println(io)
-        for m in sort!(collect(prog.macros)); println(io, "#define LEGIBLEC_", m, " ", Float64(constants[m]), "  // the double nearest ", constants[m]); end
-        isempty(prog.macros) || println(io)
-        for (_, definition) in prog.structs; print(io, definition); println(io); end
-        for (_, definition) in prog.tupledefs; print(io, definition); println(io); end
+        foreach(m -> println(io, m), macros); isempty(macros) || println(io)
+        for (name, def) in structs; name in placed || (print(io, def); println(io)); end
         for name in sort!(collect(keys(prog.foreign))); println(io, prog.foreign[name]); end
         isempty(prog.foreign) || println(io)
-        for (prototype, _, _) in functions; println(io, prototype); end
-        for name in helperorder(prog.helpers); println(io); print(io, prog.helpers[name]); end
+        # Each function's own return struct, right above its prototype, once.
+        for (prototype, _, _) in functions
+            for (name, def) in prog.tupledefs
+                startswith(prototype, name * " ") && !(name in placed) || continue
+                print(io, def); push!(placed, name)
+            end
+            println(io, prototype)
+        end
         for (_, definition, _) in functions; println(io); print(io, definition); end
     end
     return path

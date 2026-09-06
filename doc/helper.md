@@ -29,7 +29,10 @@ Helpers take their inputs first and write the output into their last
 parameter, or return it when it's a scalar. They're written for C's memory
 layout, not Julia's: a multiplication runs its inner loop along a row of the
 output and a row of the second operand, both contiguous in row-major
-storage. Speed first (`philosophy.md`); the loops are still plain enough to
+storage. Mathematical helpers are written to `out/mathhelper.h` (the
+`static inline` ones, and prototypes of the rest) and `out/mathhelper.c`
+(solvers and factorizations); printing and text helpers to `helper.h`/`.c`.
+Speed first (`philosophy.md`); the loops are still plain enough to
 read. Helpers that call other helpers — `det_4x4` calls `det_3x3`,
 `solve_4x4_4` calls `lu_4x4` calls `pivot_4x4` — are written in dependency
 order, so no prototypes are needed.

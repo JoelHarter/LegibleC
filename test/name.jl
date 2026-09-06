@@ -121,9 +121,11 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test occursin("for (int i_ = 0; i_ < 3; i_++)", src)                                           # the ninth input is `i`
     @test occursin("/// 3-vector * transposed 3-vector broadcast multiplication", src)
     @test_throws ArgumentError csource("clash", add_3)
-    # Small helpers are `static inline`; solvers and factorizations are plain `static`.
+    # Small helpers are `static inline`, in helper.h; solvers and factorizations are
+    # ordinary functions in helper.c, with prototypes in the header.
     big = csource("big", solve4, inv3)
-    @test occursin("static void pivot_4x4(", big) && occursin("static void lu_4x4(", big) && occursin("static void solve_4x4_4(", big)
+    @test occursin("\nvoid pivot_4x4(", big) && occursin("\nvoid lu_4x4(", big) && occursin("\nvoid solve_4x4_4(", big) && !occursin("static void", big)
+    @test occursin("void solve_4x4_4(const double A[4][4], const double b[4], double out[restrict 4]);", big)
     @test occursin("static inline void inv_3x3(", big) && occursin("static inline double det_3x3(", big)
 end
 end
