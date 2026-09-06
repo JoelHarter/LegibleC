@@ -394,12 +394,18 @@ function markinlined!(sc::Scope)
     for (i, st) in enumerate(code)
         st isa Expr && st.head === :call && get(count, i, 0) == 1 || continue
         T = widen(ci.ssavaluetypes[i])
-        # Scalars, and small structs held by value (no array fields): a struct result is
-        # `conjugate(q)` where the author wrote it, and `(Point){x, y}` likewise.
-        (T <: Union{Number, Char} || isstruct(T) && !ismutabletype(T) && !any(isarray, fieldtypes(T))) && !compiletime(ci.ssavaluetypes[i]) || continue
         u = findfirst(s -> uses(s, i), code)
         use = code[u]
         use isa Expr && use.head === :(=) && (use = use.args[2])
+        # Scalars, and small structs held by value (no array fields): a struct result is
+        # `conjugate(q)` where the author wrote it, and `(Point){x, y}` likewise. A struct
+        # with an array field is built field by field, so only a call's result of one is
+        # inlined, and only where the whole struct goes: returned, or passed to a call.
+        # `f(q).v` would read a field of a temporary, which C allows and nobody writes.
+        whole = use isa Core.ReturnNode ||
+                use isa Expr && use.head === :call && !(callee_or_nothing(ci, use.args[1]) in (Base.getproperty, Core.getfield, Base.getindex))
+        small = !any(isarray, fieldtypes(T)) || whole && !(callee_or_nothing(ci, st.args[1]) isa Type)
+        (T <: Union{Number, Char} || isstruct(T) && !ismutabletype(T) && small) && !compiletime(ci.ssavaluetypes[i]) || continue
         use isa Expr && use.head === :call && duplicates(sc, u, use, i) && continue
         effect = !pure(sc, st) || any(a -> a isa Core.SSAValue && a.id in effectful, st.args[2:end])
         all(k -> effect ? silent(sc, k) : inert(sc, k), i+1:u-1) || continue

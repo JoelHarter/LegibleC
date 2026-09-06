@@ -1064,14 +1064,28 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     end
     acc = args[1]
     acctype, accname = length(args) >= 2 ? operand(acc, valuetype(sc, args[2])) : (valuetype(sc, acc), value(sc, acc))
+    # `A + B + C` accumulates in the destination, as a person would write it, when every
+    # step has the destination's type, the helper lets its output alias an input (the
+    # elementwise ones do; a matrix product's output is `restrict`), and no later operand
+    # is the destination itself. Otherwise each step but the last gets a temp.
+    steps = Type[]
+    let t = acctype
+        for a in args[2:end]
+            at = operand(a, t)[1]
+            push!(steps, op === :mul && isarray(t) && isarray(at) ? Union{} : result((t, at)))
+            t = steps[end]
+        end
+    end
+    inplace = length(args) > 2 && all(==(steps[end]), steps) && all(a -> operand(a, acctype)[2] != dest, args[2:end])
+    inplace && declaration && emit!(lines, sc, declare(steps[end], dest) * ";")
     R = acctype
     for (n, a) in enumerate(args[2:end])
         last = n == length(args) - 1
         atype, aname = operand(a, acctype)
         types = (acctype, atype)
         R = result(types)
-        out = last ? dest : temp!(sc, nothing, unique([contribution(sc, acc); contribution(sc, a)]))
-        (last ? declaration : true) && emit!(lines, sc, declare(R, out) * ";")
+        out = last || inplace ? dest : temp!(sc, nothing, unique([contribution(sc, acc); contribution(sc, a)]))
+        !inplace && (last ? declaration : true) && emit!(lines, sc, declare(R, out) * ";")
         # A folded negation (`foldable`) lands on the scalar operand.
         isnegated(sc, acc) && (aname = negate(aname))
         isnegated(sc, a) && (accname = negate(accname))

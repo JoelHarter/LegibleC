@@ -1,6 +1,7 @@
 # Structs by value, mutable structs through a pointer, parametric structs, and tuples.
 module Struct
 using Test, StaticArrays
+using LinearAlgebra: ⋅, ×
 import Main: Case, check, csource
 
 struct Point
@@ -65,6 +66,15 @@ function rotated(q::Quaternion, v::SVector{3,Float64})
     p = q * Quaternion(0.0, v[1], v[2], v[3]) * q'
     return SVector(p.x, p.y, p.z)
 end
+"A quaternion as a scalar part and a vector part."
+struct Quat
+    w::Float64
+    v::SVector{3,Float64}
+end
+Base.:*(a::Quat, b::Quat) = Quat(a.w * b.w - a.v ⋅ b.v, a.w * b.v + b.w * a.v + a.v × b.v)
+Base.conj(q::Quat) = Quat(q.w, -q.v)
+Base.adjoint(q::Quat) = conj(q)
+turned(q::Quat, v::SVector{3,Float64}) = (q * Quat(0.0, v) * q').v
 third(t::NTuple{3,Float64}) = t[1] + t[3]
 viathird(a::Float64) = third((a, 2a, 3a))
 function step(x::Float64, ẋ::Float64, dt::Float64)
@@ -84,7 +94,19 @@ check("struct", [Case(norm2, p), Case(make, 5.0, 6.0), Case(midpoint, Segment(p,
                  Case(peek, Counter(21)), Case(both, 1.5, 2), Case(untup, SVector(1.5, 2.0)), Case(held, 1.5, 3),
                  Case(tswap, 1.0, 2.0), Case(arrays, SVector(1.0, 2.0, 3.0)), Case(unarrays, SVector(1.0, 2.0, 3.0)),
                  Case(third, (1.0, 2.0, 3.0)), Case(viathird, 1.5), Case(step, 1.0, 0.0, 0.1), Case(twice, 1.0, 0.0, 0.1), Case(kept, 1.0, 0.1),
-                 Case(rotated, Quaternion(cos(0.3), 0.0, 0.0, sin(0.3)), SVector(1.0, 0.0, 0.0))])
+                 Case(rotated, Quaternion(cos(0.3), 0.0, 0.0, sin(0.3)), SVector(1.0, 0.0, 0.0)),
+                 Case(turned, Quat(cos(0.3), SVector(0.0, 0.0, sin(0.3))), SVector(1.0, 0.0, 0.0))])
+@testset "array-field struct passed whole" begin
+    # A call returning a struct with an array field is written where it is used when the
+    # whole struct goes there — returned, or passed to a call — never where a field of it
+    # is read; and `a + b + c` on arrays accumulates in its destination.
+    src = csource("quat", turned)
+    @test occursin("return conj_Quat(q);", src)
+    @test occursin("Quat temp2_q_v = mul_Quat_Quat(mul_Quat_Quat(q, temp1_v), adjoint_Quat(q));", src)
+    @test occursin("memcpy(out, temp2_q_v.v, sizeof(double[3]));", src)
+    @test occursin("add_3(temp1_a_b_v, temp2_b_a_v, temp4_a_b_v);", src) && occursin("add_3(temp4_a_b_v, temp3_a_v_b, temp4_a_b_v);", src)
+    @test !occursin("temp5", src)
+end
 @testset "operator methods" begin
     # A method of a Julia operator on the user's struct is the user's function, named by
     # the operator's word; `a * b * c` is the two binary calls.

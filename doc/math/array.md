@@ -271,4 +271,8 @@ The meaning of each follows Julia's definition.
 | `cumsum(v)`, `cumsum(A; dims=1)`, `cumprod` | `cumsum_4`, `cumsum1_2x3`, `cumprod_4` | |
 
 Shape mismatches are errors at transpile time, as they'd be at run time in
-Julia. `A + B + C` (one call in Julia) is chained through a temp.
+Julia. `A + B + C` (one call in Julia) accumulates in its destination,
+`add_3(A, B, out); add_3(out, C, out);`, when every step has the
+destination's type and no later operand is the destination; the elementwise
+helpers let their output alias an input. A chain of matrix products, whose
+helper's output is `restrict`, goes through a temp per step.

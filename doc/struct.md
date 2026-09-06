@@ -26,7 +26,11 @@ it is one: the operator's word and each input's kind, `mul_Quaternion_Quaternion
 binary calls. A struct built to be returned is the literal in the `return`,
 `return (Point){x, y};`, broken one field per line when long; a small struct
 value used once — a constructor, a call returning one — is written where it
-is used, like a scalar.
+is used, like a scalar. A struct with an array field is built field by field
+as above, but a call returning one is still written where it is used when
+the whole struct goes there — `return conj_Quat(q);`, or as an argument to
+another call — and gets a variable when a field of it is read, since
+`f(q).v` reads a field of a temporary, which no one writes.
 
 A parametric struct at a concrete instantiation is one C struct per
 instantiation, named like a function at several signatures: `Pair2_F64`,

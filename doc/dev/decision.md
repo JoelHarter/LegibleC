@@ -1349,3 +1349,27 @@ what is returned — extended to by-value structs, where they cost nothing.
 The continuation-line placement was the last "known imprecision" in the
 comment rules; a four-line initializer with its source underneath was too
 strange to leave.
+
+---
+
+## 2026-09-06 — A struct with an array field, passed whole; `A + B + C` in place
+
+**Decision.** A call that returns a struct with an array field is written
+where it is used when the whole struct goes there — `return conj_Quat(q);`,
+`mul_Quat_Quat(mul_Quat_Quat(q, p), adjoint_Quat(q))` — and gets a
+variable when a field of it is read. A constructor of such a struct is
+always built field by field. An n-ary array sum or difference, `a + b + c`,
+accumulates in its destination — `add_3(a, b, out); add_3(out, c, out);` —
+when every step has the destination's type, the helper's output may alias
+an input, and no later operand is the destination; a matrix product's
+output is `restrict`, so a chain of those keeps a temp per step.
+
+**Why.** `Quat result = conj_Quat(q); return result;` is not what anyone
+writes, and neither is a named variable for `q'` that is used once in the
+next call. What kept these out was the rule that a struct with an array
+field can't be a compound literal, which is about constructing one, not
+about passing one along. `f(q).v`, reading an array field of a temporary,
+is legal C11 that no one writes and some compilers warn about, so a field
+read still gets a variable. The in-place accumulation is how a person
+writes a three-term sum with such helpers; it also keeps the temps numbered
+in the order they appear, which the temp-per-step form did not.

@@ -13,10 +13,10 @@ top of each file says what to look at.
 - [showcase/](showcase/showcase.jl) — a damped oscillator step, an energy,
   an RMS, an angle wrap: Unicode names, `+=`, a tuple returned as the
   function's own struct, `&& return` as an `if`.
-- [vecrot/](vecrot/vecrot.jl) — a quaternion struct with only `*` defined,
-  and a vector rotated by one: a struct by value, `Base.:*` on it coming out
-  as `mul_Quaternion_Quaternion`, `q'` as `adjoint_Quaternion`, `q * p * q'` as two calls,
-  `sincos` as its two lines,
-  a four-field initializer broken per line.
+- [vecrot/](vecrot/vecrot.jl) — a quaternion as a scalar part and a vector
+  part, with only `*` and `'` defined, and a vector rotated by one: a struct
+  with an array field, `Base.:*` on it coming out as `mul_Quat_Quat` with the
+  dot and cross products as helpers, `q'` as `adjoint_Quat` calling
+  `conj_Quat`, `q * p * q'` as two calls, `sincos` as its two lines.
 
 More candidates are in `doc/dev/todo.md`.
