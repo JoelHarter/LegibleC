@@ -1,0 +1,51 @@
+# Every push and pull request runs the test suite. A push to main that passes also
+# regenerates stackmath, compiles every file of it, and pushes the C to the stackmath
+# repository when it changed. That push needs STACKMATH_TOKEN, a fine-grained personal
+# access token with contents write on JoelHarter/stackmath, in this repository's secrets.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - run: julia -e 'using Pkg; Pkg.develop(path="."); Pkg.add("StaticArrays")'
+      - run: julia test/runtests.jl
+  stackmath:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - run: julia -e 'using Pkg; Pkg.develop(path="."); Pkg.add("StaticArrays")'
+      - name: generate
+        run: julia aux/stackmath/stackmath.jl
+      - name: compile every file
+        run: cd aux/stackmath/out && for f in *.c; do cc -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -I. -c "$f" -o /dev/null; done
+      - uses: actions/checkout@v4
+        with:
+          repository: JoelHarter/stackmath
+          token: ${{ secrets.STACKMATH_TOKEN }}
+          path: stackmath
+      - name: publish when changed
+        run: |
+          rm -f stackmath/*.c stackmath/*.h
+          cp aux/stackmath/out/*.c aux/stackmath/out/*.h stackmath/
+          cd stackmath
+          git add -A
+          if git diff --cached --quiet; then echo "stackmath unchanged"; exit 0; fi
+          git config user.name "LegibleC"
+          git config user.email "actions@github.com"
+          git commit -m "Regenerated from LegibleC ${GITHUB_SHA::7}"
+          git push
