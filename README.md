@@ -19,95 +19,75 @@ comments and docstrings carried across, no allocation, no runtime, nothing
 to link but the C standard library. It reads as if a careful engineer wrote
 it, because that is the standard it is held to.
 
-## An example
+## A taste
 
-The Julia source, as a physicist writes it:
+Three lines of Julia, and the C each becomes.
+
+**A physicist's line, names and all:**
 
 ```julia
-"One semi-implicit Euler step of a damped oscillator with natural frequency `ω₀` and damping ratio `ζ`."
-function step(x::Float64, ẋ::Float64, ω₀::Float64, ζ::Float64, Δt::Float64)
-    ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
-    ẋ += Δt * ẍ
-    x += Δt * ẋ
-    return x, ẋ
-end
-
-"Total energy of a particle of mass `m` at `r` moving at `v`, in a gravity well of strength `μ`."
-energy(m::Float64, r::SVector{3,Float64}, v::SVector{3,Float64}, μ::Float64) = m * ((v ⋅ v) / 2 - μ / norm(r))
-
-transpile(step, energy; outfile="body")
+ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
 ```
 
-<h1 align="center">⬇</h1>
-
-The C that LegibleC produces from nothing but that source. First the
-header a caller includes, `body.h`:
-
 ```c
-#ifndef BODY_H
-#define BODY_H
-
-/// the return value of step: x and xdot, as one struct since C returns one value
-typedef struct {
-    double x;
-    double xdot;
-} step_t;
-
-/**
- * One semi-implicit Euler step of a damped oscillator with natural frequency `ω₀` and damping ratio `ζ`.
- *
- * Julia signature: step(x::Float64, ẋ::Float64, ω₀::Float64, ζ::Float64, Δt::Float64) @body.jl:4
- * @param[in] x       scalar
- * @param[in] xdot    scalar
- * @param[in] omega0  scalar
- * @param[in] zeta    scalar
- * @param[in] Deltat  scalar
- */
-step_t step(double x, double xdot, double omega0, double zeta, double Deltat);
-
-/**
- * Total energy of a particle of mass `m` at `r` moving at `v`, in a gravity well of strength `μ`.
- *
- * Julia signature: energy(m::Float64, r::SVector{3, Float64}, v::SVector{3, Float64}, μ::Float64) @body.jl:12
- * @param[in] m   scalar
- * @param[in] r   3-vector
- * @param[in] v   3-vector
- * @param[in] mu  scalar
- */
-double energy(double m, const double r[3], const double v[3], double mu);
-
-#endif  // BODY_H
+// @showcase.jl:7: ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
+double xddot = -2 * zeta * omega0 * xdot - omega0 * omega0 * x;
 ```
 
-Then the functions, `body.c`:
+**Linear algebra, solve included** — the normal equations of a least-squares
+fit:
+
+```julia
+β = (X' * X) \ (X' * y)
+```
 
 ```c
-#include "helper.h"
-#include "body.h"
+// @orbit.jl:18: β = (X' * X) \ (X' * y)
+double temp1_X[2][2];
+mul_T4x2_4x2(X, X, temp1_X);  // temp1_X = Xᵀ * X
+double temp2_X_y[2];
+mul_T4x2_4(X, y, temp2_X_y);  // temp2_X_y = Xᵀ * y
+double beta[2];
+solve_2x2_2(temp1_X, temp2_X_y, beta);  // beta = temp1_X \ temp2_X_y
+```
 
-step_t step(double x, double xdot, double omega0, double zeta, double Deltat) {
-    // @body.jl:5: ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
-    double xddot = -2 * zeta * omega0 * xdot - omega0 * omega0 * x;
+**The helpers those lines call**, generated beside them in `helper.h`, each
+with a comment saying what it computes. Sizes up to 3 are written out the
+way a person writes them; from 4 on it's LU with partial pivoting.
 
-    // @body.jl:6: ẋ += Δt * ẍ
-    xdot += Deltat * xddot;
-
-    // @body.jl:7: x += Δt * ẋ
-    x += Deltat * xdot;
-
-    // @body.jl:8: return x, ẋ
-    return (step_t){x, xdot};
+```c
+/// 3-vector addition
+/// out = a + b
+static inline void add_3(const double a[3], const double b[3], double out[3]) {
+    for (int i = 0; i < 3; i++) {
+        out[i] = a[i] + b[i];
+    }
 }
 
-double energy(double m, const double r[3], const double v[3], double mu) {
-    // @body.jl:12: m * ((v ⋅ v) / 2 - μ / norm(r))
-    return m * (dot_3(v, v) / 2 - mu / norm_3(r));
+/// 2×2-matrix determinant
+/// returns det(A)
+static inline double det_2x2(const double A[2][2]) {
+    return A[0][0] * A[1][1] - A[0][1] * A[1][0];
+}
+
+/// 2×2-matrix \ 2-vector solve by Cramer's rule
+/// out = A \ b
+static inline void solve_2x2_2(const double A[2][2], const double b[2], double out[restrict 2]) {
+    double d = det_2x2(A);
+    out[0] = (A[1][1] * b[0] - A[0][1] * b[1]) / d;
+    out[1] = (A[0][0] * b[1] - A[1][0] * b[0]) / d;
 }
 ```
 
-`helper.h` beside them holds `dot_3` and `norm_3`, each a few lines with
-a two-line comment saying what it computes. That is the whole output: an
-`out/` folder, C11, clean under `-Wall -Wextra -Werror`.
+**The whole thing** is in [demo/](demo/README.md): each folder is a Julia
+file and the `out/` it produces — a header a caller includes, the
+functions, the helpers. Run `julia showcase.jl` in one to regenerate it, or
+do the same for your own code:
+
+```julia
+using LegibleC
+transpile(f, g; outfile="name")
+```
 
 ## What you get
 
