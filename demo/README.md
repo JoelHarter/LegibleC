@@ -3,9 +3,9 @@
 Worked examples that show what the transpiler does, for people deciding
 whether to use it. Nothing here is a test — `test/` proves it works; this
 folder shows it off. Each example is a folder with a small Julia file that
-reads as a physicist or engineer would write it, and an empty `out/`. Run
-the file — `julia showcase.jl` in its folder — and `out/` fills with the C:
-a header a caller includes, the functions, the helpers. The comment at the
+reads as a physicist or engineer would write it. Run it — `julia
+showcase.jl` in its folder — and an `out/` appears beside it with the C: a
+header a caller includes, the functions, the helpers. The comment at the
 top of each file says what to look at.
 
 - [orbit/](orbit/orbit.jl) — one step of gravity and a least-squares fit:

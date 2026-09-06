@@ -95,8 +95,8 @@ like the ones above. Transpile an `A \ b` at 4×4 to read them. Everything
 stays on the stack at its static size; this is for the small dense systems
 of control and simulation, not for the BLAS-sized ones.
 
-**The whole thing** is in [demo/](demo/README.md): each folder is a Julia
-file and an empty `out/`. Run `julia showcase.jl` there and `out/` fills
+**The whole thing** is in [demo/](demo/README.md): each folder is one
+Julia file. Run `julia showcase.jl` there and an `out/` appears beside it
 with the C — a header a caller includes, the functions, the helpers. Do the
 same for your own code:
 
