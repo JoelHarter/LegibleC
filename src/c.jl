@@ -381,6 +381,24 @@ function emitexpr!(lines, sc::Scope, prefix::AbstractString, expr::AbstractStrin
         return emit!(lines, sc, "};")
     end
     pieces = splitexpr(expr)
+    # No operator to break at: a call breaks at its arguments' commas, the continuation
+    # lines aligned under the first argument, as a long call is written by hand.
+    if length(pieces) == 1 && (m = match(r"^([\w.]+\()(.*)\)$", expr)) !== nothing
+        args = splitfields(m[2])
+        length(args) > 1 || return emit!(lines, sc, prefix * expr * ";")
+        pad = " " ^ (length(prefix) + length(m[1]))
+        line = prefix * m[1] * args[1]
+        for (k, a) in enumerate(args[2:end])
+            more = ", " * a
+            if length(line) + length(more) + (k == length(args) - 1 ? 2 : 1) > room
+                emit!(lines, sc, line * ",")
+                line = pad * a
+            else
+                line *= more
+            end
+        end
+        return emit!(lines, sc, line * ");")
+    end
     length(pieces) == 1 && return emit!(lines, sc, prefix * expr * ";")
     pad = " " ^ length(prefix)
     line = prefix * pieces[1]
