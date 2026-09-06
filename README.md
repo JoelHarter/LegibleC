@@ -31,7 +31,7 @@ nothing but that.
 ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
 ```
 
-<p align="center"><img src="doc/arrow.svg" width="48" alt="becomes"></p>
+<p align="center"><b>⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇</b></p>
 
 The C:
 
@@ -49,7 +49,7 @@ fit. The Julia:
 β = (X' * X) \ (X' * y)
 ```
 
-<p align="center"><img src="doc/arrow.svg" width="48" alt="becomes"></p>
+<p align="center"><b>⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇</b></p>
 
 The C:
 
