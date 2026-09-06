@@ -56,7 +56,9 @@ least-squares fit.
 <p align="center"><b>⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇</b></p>
 
 **C:** generated from only the Julia above. Every comment is generated
-too: the source line above the block, and the step after each call.
+too: the source line above the block, and after each call the step it
+performs, in the C names — so you can follow the line's work through the
+temps without losing the thread.
 
 ```c
 // @orbit.jl:18: β = (X' * X) \ (X' * y)
@@ -69,9 +71,8 @@ solve_2x2_2(temp1_X, temp2_X_y, beta);  // beta = temp1_X \ temp2_X_y
 ```
 
 **The helpers**, generated beside the functions in `helper.h`, each under
-a two-line comment, also generated, saying what it does in words and then
-as the formula — so you can follow a chain of calls without losing the
-thread. The everyday ones are a few lines:
+a two-line comment, also generated: what it does in words, then as the
+formula. The everyday ones are a few lines:
 
 ```c
 /// 4×2-matrix * 2-vector multiplication
