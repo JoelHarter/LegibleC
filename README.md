@@ -74,7 +74,7 @@ wrong C.
 
 ## Documentation
 
-- [doc/philosophy.md](doc/philosophy.md) — the three principles behind
+- [doc/philosophy.md](doc/philosophy.md) — the principles behind
   every decision, and which wins when they conflict.
 - [doc/](doc/) — how the transpiler works, one topic per file, starting
   with `design.md`; the folder's README gives a reading order.

@@ -48,7 +48,7 @@ outputs need to share them.
 
 ## One generator per operation
 
-Following the philosophy's third principle, no helper body is written for
+Following the philosophy's Generality principle, no helper body is written for
 one particular kind of array. Every generator is written once from the
 model in `array.md`: an operand has exactly its own dimensions, each on some
 axis, with extent 1 along any axis it has none on. From that, one `access`

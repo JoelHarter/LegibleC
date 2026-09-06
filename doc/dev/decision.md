@@ -1090,3 +1090,21 @@ the dozen internals it uses by name.
 The sandbox tripped over it twice in one day. A module makes the user's
 namespace theirs. The trailing `using .LegibleC` keeps the one-line usage in the
 README, and is the whole of what a user sees.
+
+---
+
+## 2026-09-06 — Logic is its own principle, numbered zero
+
+**Decision.** `philosophy.md` now has four principles: 0 Logic, 1 Speed,
+2 Craft, 3 Generality. Logic — the C does what the Julia does, in the same
+order, with the same effects, agreeing to rounding — was previously a clause
+inside Speed ("while matching the logical intent"). Nothing about the
+philosophy changed; what changed is that the clause is now stated on its
+own, first, and numbered zero to say that it isn't weighed against the
+others. Earlier decision entries that say "first", "second" or "third
+principle" mean Speed, Craft and Generality, as they did when written.
+
+**Why.** The morning's work on inlining showed how often the logic clause is
+the deciding one — evaluation order, effects, repeated operands — and each
+time it had to be dug out of the middle of a paragraph about speed. A rule
+that decides that often should be the first thing on the page.

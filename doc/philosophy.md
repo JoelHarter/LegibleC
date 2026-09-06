@@ -1,61 +1,54 @@
 # Philosophy
 
-Three principles govern every decision in this project. When they seem to
+These principles govern every decision in this project. When they seem to
 conflict, the earlier one wins.
+
+### 0. Logic
+
+The C **carries out the Julia author's logical intent**: the same
+calculation, by the same steps, in the same order, with the same results.
+Rounding differences are fine — bit-for-bit agreement is not the goal.
+Nothing below is worth anything without this.
 
 ### 1. Speed
 
-The C must run **as fast as C can possibly run**, while matching the
-*logical intent* of the Julia it came from. Bit-for-bit agreement is not the
-goal: rounding differences and the like are acceptable. Identical logic is
-not negotiable. It's fine if reaching full speed needs an optimization flag
-on the C compiler, as long as there is always one single, fixed setting under
-which *everything* we emit runs as fast as it can; we never emit code that
-needs one flag here and a different flag there.
+The C runs **as fast as C can run**. That is the standard every choice is
+held to, and nothing is left slower than it could be for the sake of anything
+below. Reaching full speed may take an optimization flag on the C compiler;
+there should be one single, fixed setting under which everything we emit runs
+at full speed.
 
 ### 2. Craft
 
-The C should look **as if an experienced C programmer wrote it by hand** —
-like the best C code looks. Not terse to the point of gibberish; quite the
-opposite: expressive names, helpful comments, and an arrangement that makes
-logical sense to a human. Nothing should betray a machine's bookkeeping.
+The C looks **as if an experienced C programmer wrote it by hand**: expressive
+names, helpful comments, an arrangement that makes sense to a person. Nothing
+betrays a machine's bookkeeping.
 
-And the human it is written for is not only a C programmer. It is someone
-good at math, physics, or engineering who may know Julia, MATLAB, or Python
-and not C. **The C should invite that reader in**: a matrix product should
-read as a matrix product, a solve as a solve, with the mathematics visible in
-the names and the comments, so that someone who has never written a line of
-C can follow what the program does and see their own formulas in it. That
-doesn't mean bending the C toward those languages — it stays the best C it
-can be — only presenting it so a reader arriving from a higher language is
-welcomed rather than shut out.
+The person it is written for may not be a C programmer. They are good at
+math, physics or engineering and may know Julia, MATLAB or Python instead —
+so a matrix product reads as a matrix product and a solve as a solve, with
+the mathematics visible in the names and comments. The C stays the best C it
+can be; it is presented so that reader can see their own formulas in it.
 
-The same idea applies on the Julia side, where we control nothing but owe
-the author something: **if the source was written in a very Julian way, we
-always find a way to transpile it.** The constructs Julians reach for
-constantly — `test ? yes : no`, `x < 0 && return 0.0`,
-`for i in eachindex(v)`, `x, y = f(v)`, a dot on every operator — must each
-have a C form, and when C has no direct counterpart, that form is whatever
-a C expert would have written for the same intent. We aim to handle as much
-Julia as possible, and we start with what hardcore Julians use most.
+The same care is owed to the Julia side: **whatever is written in a very
+Julian way, we find a way to transpile.** `test ? yes : no`, `x < 0 && return
+0.0`, `for i in eachindex(v)`, `x, y = f(v)`, a dot on every operator — each
+has a C form, and where C has no direct counterpart, the form is what a C
+expert would have written for the same intent. We start with what Julians
+reach for most.
 
 ### 3. Generality
 
 Whatever can be written for the general case **is written for the general
 case**.
 
-The thing written generally is a rule inside the transpiler: the logic that
-decides how some kind of thing is handled. It is not a function in the Julia
-we read, and not a function in the C we write. Those can be as many and as
-specific as a program needs — `add_2x2`, `mul_2x2_2x3`, `cross_F32`, and a hundred more —
-as long as one piece of transpiler logic produces all of them.
+The transpiler is a set of rules, each deciding how one kind of thing is
+handled, and each written for the whole kind: arrays of any dimension, not
+matrices; numbers, not `Float64`; real and complex alike. The C a rule emits
+can be as specific as it likes — `add_2x2`, `mul_2x2_2x3`, `cross_F32` and a
+hundred more — so long as one rule produces them all.
 
-So: don't write a rule for matrices when a rule for arrays of any dimension
-would have done the job. Don't write one rule for `Float64` and another for
-`Int16` when the same rule serves both. Don't write one for real numbers and
-another for complex. Those are the examples we've met so far, not the limits
-of the idea; other places it applies will be imagined, or discovered along
-the way, and get the same treatment.
-
-One rule that covers every case is one rule to get right, one rule to read,
-and one rule to trust.
+The Julia a rule was written against is a sample, not the boundary: a case
+nobody had in mind should already work, and usually does. Every decision is
+then made in one place — one rule to get right, one to read, one to trust —
+and the Julia we accept grows by the rule, not by the case.
