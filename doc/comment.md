@@ -206,7 +206,10 @@ name a step produces is the name the next step consumes. A step that
 accumulates into its own destination — the later terms of `A + B + C` —
 reads `out += C`. An operator on structs is spelled as the Julia would be,
 `temp2 = q * temp1 * q'`, `conj(q)`, since the C call's name is the
-helper's, not the mathematics; and a struct built over several lines,
+helper's, not the mathematics. The `'` stays a prime there: ᵀ and ᴴ mark
+arrays, whose transpose the transpiler itself performs, while on a struct
+`'` is the author's own method, spelled as they wrote it. And a struct
+built over several lines,
 `temp1 = Quat(0.0, v)`, is a step of its line like the copies are.
 
 A Julia line that became a single operation gets no step comment: its
