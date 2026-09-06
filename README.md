@@ -21,82 +21,93 @@ it, because that is the standard it is held to.
 
 ## An example
 
+The Julia source, as a physicist writes it:
+
 ```julia
-"One step of gravity toward the origin: position and velocity after `dt`."
-function orbit(x::SVector{3,Float64}, v::SVector{3,Float64}, dt::Float64)
-    r = norm(x)
-    a = -x / r^3
-    v = v + dt * a
-    x = x + dt * v
-    return [x; v]
+"One semi-implicit Euler step of a damped oscillator with natural frequency `ω₀` and damping ratio `ζ`."
+function step(x::Float64, ẋ::Float64, ω₀::Float64, ζ::Float64, Δt::Float64)
+    ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
+    ẋ += Δt * ẍ
+    x += Δt * ẋ
+    return x, ẋ
 end
 
-transpile(orbit; outfile="body")
+"Total energy of a particle of mass `m` at `r` moving at `v`, in a gravity well of strength `μ`."
+energy(m::Float64, r::SVector{3,Float64}, v::SVector{3,Float64}, μ::Float64) = m * ((v ⋅ v) / 2 - μ / norm(r))
+
+transpile(step, energy; outfile="body")
 ```
 
-```
-                                       ║
-                                       ║
-                                       ║
-                                   ╲   ║   ╱
-                                     ╲ ║ ╱
-                                       ▼
-```
+<h1 align="center">⬇</h1>
+
+The C that LegibleC produces from nothing but that source. First the
+header a caller includes, `body.h`:
 
 ```c
-/// 3-vector norm
-/// returns norm(a)
-static inline double norm_3(const double a[3]) {
-    double sum = 0.0;
-    for (int i = 0; i < 3; i++) {
-        sum += a[i] * a[i];
-    }
-    return sqrt(sum);
-}
+#ifndef BODY_H
+#define BODY_H
+
+/// the return value of step: x and xdot, as one struct since C returns one value
+typedef struct {
+    double x;
+    double xdot;
+} step_t;
 
 /**
- * One step of gravity toward the origin: position and velocity after `dt`.
+ * One semi-implicit Euler step of a damped oscillator with natural frequency `ω₀` and damping ratio `ζ`.
  *
- * Julia signature: orbit(x::SVector{3, Float64}, v::SVector{3, Float64}, dt::Float64) @body.jl:8
- * @param[in]  x    3-vector
- * @param[in]  v    3-vector
- * @param[in]  dt   scalar
- * @param[out] out  6-vector, the return value
+ * Julia signature: step(x::Float64, ẋ::Float64, ω₀::Float64, ζ::Float64, Δt::Float64) @body.jl:4
+ * @param[in] x       scalar
+ * @param[in] xdot    scalar
+ * @param[in] omega0  scalar
+ * @param[in] zeta    scalar
+ * @param[in] Deltat  scalar
  */
-void orbit(const double x[3], const double v[3], double dt, double out[restrict 6]) {
-    // copy x and v to prevent modification within this function
-    double x_[3];
-    memcpy(x_, x, sizeof x_);
-    double v_[3];
-    memcpy(v_, v, sizeof v_);
+step_t step(double x, double xdot, double omega0, double zeta, double Deltat);
 
-    // @body.jl:9: r = norm(x)
-    double r = norm_3(x_);
+/**
+ * Total energy of a particle of mass `m` at `r` moving at `v`, in a gravity well of strength `μ`.
+ *
+ * Julia signature: energy(m::Float64, r::SVector{3, Float64}, v::SVector{3, Float64}, μ::Float64) @body.jl:12
+ * @param[in] m   scalar
+ * @param[in] r   3-vector
+ * @param[in] v   3-vector
+ * @param[in] mu  scalar
+ */
+double energy(double m, const double r[3], const double v[3], double mu);
 
-    // @body.jl:10: a = -x / r^3
-    double a[3];
-    div_3_s(x_, -(r * r * r), a);
+#endif
+```
 
-    // @body.jl:11: v = v + dt * a
-    double temp1_dt_a[3];
-    mul_s_3(dt, a, temp1_dt_a);  // temp1_dt_a = dt * a
-    add_3(v_, temp1_dt_a, v_);  // v_ = v_ + temp1_dt_a
+Then the functions, `body.c`:
 
-    // @body.jl:12: x = x + dt * v
-    double temp2_dt_v[3];
-    mul_s_3(dt, v_, temp2_dt_v);  // temp2_dt_v = dt * v_
-    add_3(x_, temp2_dt_v, x_);  // x_ = x_ + temp2_dt_v
+```c
+#include "helper.h"
+#include "body.h"
 
-    // @body.jl:13: return [x; v]
-    memcpy(out, x_, sizeof(double[3]));
-    memcpy(&out[3], v_, sizeof(double[3]));
+step_t step(double x, double xdot, double omega0, double zeta, double Deltat) {
+    // @body.jl:5: ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
+    double xddot = -2 * zeta * omega0 * xdot - omega0 * omega0 * x;
+
+    // @body.jl:6: ẋ += Δt * ẍ
+    xdot += Deltat * xddot;
+
+    // @body.jl:7: x += Δt * ẋ
+    x += Deltat * xdot;
+
+    // @body.jl:8: return x, ẋ
+    return (step_t){x, xdot};
+}
+
+double energy(double m, const double r[3], const double v[3], double mu) {
+    // @body.jl:12: m * ((v ⋅ v) / 2 - μ / norm(r))
+    return m * (dot_3(v, v) / 2 - mu / norm_3(r));
 }
 ```
 
-The Doxygen block and prototype are in `body.h`, the function in `body.c`,
-and the four helpers in `helper.h`, each with its two-line comment. That is
-the whole output: an `out/` folder, C11, clean under `-Wall -Wextra
--Werror`.
+`helper.h` beside them holds `dot_3` and `norm_3`, each a few lines with
+a two-line comment saying what it computes. That is the whole output: an
+`out/` folder, C11, clean under `-Wall -Wextra -Werror`.
 
 ## What you get
 
