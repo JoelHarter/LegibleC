@@ -36,7 +36,7 @@ are all the transpiler's.
 
 <p align="center"><b>⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇</b></p>
 
-The C:
+The C, comment included — the transpiler wrote that too:
 
 ```c
 // @showcase.jl:7: ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
@@ -54,7 +54,8 @@ fit. The Julia:
 
 <p align="center"><b>⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇</b></p>
 
-The C:
+The C. Every comment here is generated: the source line above the block,
+and the step after each call:
 
 ```c
 // @orbit.jl:18: β = (X' * X) \ (X' * y)
@@ -67,7 +68,7 @@ solve_2x2_2(temp1_X, temp2_X_y, beta);  // beta = temp1_X \ temp2_X_y
 ```
 
 **The helpers**, generated beside the functions in `helper.h`, each with
-a comment saying what it computes. The everyday ones are a few lines:
+its two-line comment, also generated. The everyday ones are a few lines:
 
 ```c
 /// 4×2-matrix * 2-vector multiplication
