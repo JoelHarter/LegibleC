@@ -154,6 +154,10 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, st
             # Julia's own operator at these types — `(+, Float64, 3, Float64, 3)` — is
             # asked for by name, so the helper it would become is a function instead.
             nameof(Base.moduleroot(mi.def.module)) in known && (mi = synthetic(t[1], collect(mi.specTypes.parameters[2:end]), sig); synthetics[mi] = (t[1], sig))
+            # An anonymous function, `(A -> sum(A; dims=1), Float64, 3, 3)`, `((A, B) -> A' * B,
+            # …)`: an operation with no name of its own, so it must be one helper's, and
+            # is promoted like an operator; more than that needs a name.
+            startswith(string(mi.def.name), "#") && (synthetics[mi] = (t[1], sig))
         else
             # A MethodInstance is not necessarily concrete: inference also creates them
             # for abstract signatures (e.g. f(::Real, ::Real)), so check its specTypes
@@ -177,7 +181,7 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, st
     unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
     names = cnames(instances)
-    for (k, (mi, _)) in enumerate(instances); haskey(synthetics, mi) && (names[k] = string(mi.def.name)); end
+    for (k, (mi, _)) in enumerate(instances); haskey(synthetics, mi) && (names[k] = startswith(string(mi.def.name), "#") ? "anonymous$k" : string(mi.def.name)); end
     prog = Program(; precise, width, portable, suffix)
     union!(prog.names, names)
     for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
@@ -205,9 +209,16 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, st
     for (k, (mi, _)) in enumerate(instances)
         haskey(synthetics, mi) || continue
         f, sig = synthetics[mi]
-        julia = (f isa Symbol ? string(f) : f isa Broadcast ? string(nameof(f.f)) * "." : string(nameof(f))) * "(" *
-                join(("::" * replace(string(T <: Shaped ? juliatype(T) : T), "StaticArraysCore." => "") for T in sig), ", ") * ")"
+        anonymous = startswith(string(mi.def.name), "#")
+        types = join(("::" * replace(string(T <: Shaped ? juliatype(T) : T), "StaticArraysCore." => "") for T in sig), ", ")
+        julia = (f isa Symbol ? string(f) : f isa Broadcast ? string(nameof(f.f)) * "." : anonymous ? "" : string(nameof(f))) * "(" * types * ")"
         h = onlycall(functions[k][3], prog.helpers)
+        if anonymous
+            h === nothing && throw(ArgumentError("an anonymous target must be a single operation the transpiler has a helper for, like `A -> sum(A; dims=1)` or `(A, B) -> A' * B`; for anything more, give the function a name"))
+            # `(::SMatrix{4, 2, Float64, 8}, ::SVector{4, Float64}) -> Aᵀ * b`: the helper's own step.
+            step = replace(split(prog.helpers[h], "\n")[2], r"^/// (out = |returns )?" => "")
+            julia *= " -> " * step
+        end
         if h === nothing
             # The stand-in stays; its Doxygen block names the operator, not the stand-in.
             proto, above, def, vars = functions[k]

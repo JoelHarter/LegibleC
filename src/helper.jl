@@ -378,6 +378,7 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
            op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
            op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a * $a;"]); "return $(E === Float32 ? "sqrtf" : "sqrt")(sum);"] :
            op == :count   ? ["int64_t count = 0;"; nest(pairs, ["if ($a) {", "    count++;", "}"]); "return count;"] :
+           op == :tr      ? ["$(ctype(E)) sum = $zero;"; "for (int i = 0; i < $(shape(T)[1]); i++) {"; "    sum += $A[i][i];"; "}"; "return sum;"] :
            # `argmax`, `argmin`: Julia's 1-based index of the first extreme element.
            op == :argmax  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) max = $first;"; nest(pairs, ["if ($a > max) {", "    max = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :
            op == :argmin  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) min = $first;"; nest(pairs, ["if ($a < min) {", "    min = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :

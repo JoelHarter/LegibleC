@@ -5,6 +5,7 @@ import Main: Case, check, csource
 import LegibleC: transpile
 
 lenb(a::SVector{3,Float64}, b::SVector{3,Float64}) = norm(a + b)
+traced(A::SMatrix{3,3,Float64,9}) = tr(A) + 1
 struct Pair2
     x::Float64
     y::Float64
@@ -12,8 +13,8 @@ end
 Base.:-(p::Pair2) = Pair2(-p.x, -p.y)
 flipped(p::Pair2) = (-p).x
 
-check("operator", [Case(lenb, SVector(1.0, 2.0, 3.0), SVector(1.0, 1.0, 1.0)), Case(flipped, Pair2(1.0, 2.0))];
-      targets=((+, Float64, 3, Float64, 3), (*, Float64, 3, 3, Float64, 3), (\, Float64, 4, 4, Float64, 4), (dot, Float64, 3, Float64, 3), (+, Float64, Float64), lenb, (-, Pair2), flipped))
+check("operator", [Case(lenb, SVector(1.0, 2.0, 3.0), SVector(1.0, 1.0, 1.0)), Case(flipped, Pair2(1.0, 2.0)), Case(traced, SMatrix{3,3}(1.0, 2, 3, 4, 5, 6, 7, 8, 9))];
+      targets=((+, Float64, 3, Float64, 3), (*, Float64, 3, 3, Float64, 3), (\, Float64, 4, 4, Float64, 4), (dot, Float64, 3, Float64, 3), (+, Float64, Float64), lenb, (-, Pair2), flipped, traced))
 @testset "operator" begin
     src = csource("operator", (+, Float64, 3, Float64, 3), (*, Float64, 3, 3, Float64, 3), (\, Float64, 4, 4, Float64, 4), (dot, Float64, 3, Float64, 3), (+, Float64, Float64), lenb, (-, Pair2))
     # The helper, promoted: its body, its two comment lines in a Doxygen block that names
@@ -40,5 +41,13 @@ check("operator", [Case(lenb, SVector(1.0, 2.0, 3.0), SVector(1.0, 1.0, 1.0)), C
     @test occursin("void sqrtP_3(const double a[3], double out[3])", src) && occursin("Julia signature: sqrt.(::SVector{3, Float64})", src)
     @test occursin("out[i][j] = A[i][j] + B[0][j];", src)
     @test_throws ArgumentError csource("nodot", (:sqrt, Float64, 3))
+    # An anonymous function says what the tuple can't: a keyword, a transposed operand.
+    src = csource("anonymous", (A -> sum(A; dims=1), Float64, 3, 3), ((A, B) -> A' * B, Float64, 4, 2, Float64, 4, 3), ((a, b) -> a * b', Float64, 3, Float64, 2), (tr, Float64, 3, 3))
+    @test occursin("void sum1_3x3(const double A[3][3], double out[1][3])", src) && occursin("Julia signature: (::SMatrix{3, 3, Float64, 9}) -> sum(A; dims=1)", src)
+    @test occursin("void mul_T4x2_4x3(const double A[4][2], const double B[4][3], double out[restrict 2][3])", src) && occursin("Julia signature: (::SMatrix{4, 2, Float64, 8}, ::SMatrix{4, 3, Float64, 12}) -> Aᵀ * B", src)
+    @test occursin("void mul_3_T2(const double a[3], const double b[2], double out[restrict 3][2])", src)
+    @test occursin("double tr_3x3(const double A[3][3]) {\n    double sum = 0.0;\n    for (int i = 0; i < 3; i++) {\n        sum += A[i][i];\n    }\n    return sum;\n}", src) && occursin("/**\n * 3×3-matrix trace\n * returns tr(A)", src)
+    @test_throws ArgumentError csource("named", ((a, b) -> norm(a + b), Float64, 3, Float64, 3))
+    @test_throws ArgumentError csource("square", (tr, Float64, 2, 3))
 end
 end

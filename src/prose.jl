@@ -22,7 +22,7 @@ const unaryword = Dict(:neg => "negation", :abs => "absolute value", :sqrt => "s
                    :ceil => "ceiling", :trunc => "truncation", :round => "rounding",
                    :sum => "sum", :prod => "product", :maximum => "maximum", :minimum => "minimum",
                    :any => "any", :all => "all", :norm => "norm", :inv => "inverse", :pinv => "pseudoinverse",
-                   :not => "logical not", :count => "count of true elements", :argmax => "index of the maximum",
+                   :not => "logical not", :count => "count of true elements", :tr => "trace", :argmax => "index of the maximum",
                    :argmin => "index of the minimum", :extrema => "minimum and maximum")
 
 # One operand as a person names it: "scalar", "3-vector", "2×3-matrix", "4×3×2-array",

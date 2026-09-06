@@ -12,6 +12,7 @@ What `transpile` accepts as a target.
 | `(poly, Int64, Int64)`, `(poly, Float64, Float64)` | the same function at two signatures; the C names get the types appended, `poly_I64_I64`, `poly_F64_F64` |
 | `(+, Float64, 3, Float64, 3)`, `(\, Float64, 4, 4, Float64, 4)`, `(dot, Float64, 3, Float64, 3)` | Julia's own operator at these types, as a function of yours: the C it becomes anywhere — the helper, `add_3`, `solve_4x4_4`, `dot_3` — under that name in your file, not in `helper.h`, with a Doxygen block, for you to call by name |
 | `(:.+, Float64, 3, Float64)`, `(broadcast, sqrt, Float64, 3)` | a broadcast at these types, the same way: an operator's dotted symbol, or Julia's own `broadcast` with the function — `addP_3_s`, `sqrtP_3` |
+| `(A -> sum(A; dims=1), Float64, 3, 3)`, `((A, B) -> A' * B, Float64, 4, 2, Float64, 4, 2)` | an anonymous function at these types, for an operation the tuple can't spell — a keyword, a transposed operand: it must be one operation the transpiler has a helper for, and comes out as that helper, `sum1_3x3`, `mul_T4x2_4x2`; anything more needs a name |
 | a `Core.MethodInstance` | a specialization you already have |
 | `Point`, `Point{Float64}` | a struct type: its `typedef`, with the docstring as a Doxygen block; concrete parameters only. List it before any function, since a type right after a function reads as that function's argument type |
 | `transpile(fall; g, μ)` | variables, by keyword: `const double g = 9.81;` — see below |

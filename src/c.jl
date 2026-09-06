@@ -1503,9 +1503,10 @@ function render(sc::Scope, i, ex::Expr)
     f in (Base.zero, Base.one) && n == 1 && T <: Number && return value(sc, f === Base.zero ? zero(T) : one(T)), PRIMARY
 
     # A reduction: a helper that returns the scalar.
-    if f in (Base.sum, Base.prod, Base.maximum, Base.minimum, Base.any, Base.all, LinearAlgebra.norm, Base.count, Base.argmax, Base.argmin, Base.extrema) &&
+    if f in (Base.sum, Base.prod, Base.maximum, Base.minimum, Base.any, Base.all, LinearAlgebra.norm, Base.count, Base.argmax, Base.argmin, Base.extrema, LinearAlgebra.tr) &&
        n == 1 && isarray(valuetype(sc, args[1]))
         op = f === LinearAlgebra.norm ? :norm : Symbol(nameof(f))
+        op == :tr && !(ndims(valuetype(sc, args[1])) == 2 && allequal(shape(valuetype(sc, args[1])))) && throw(ArgumentError("tr needs a square matrix, got a $(describe(valuetype(sc, args[1]))) (statement $i)"))
         op == :norm && push!(sc.headers, "math.h")
         op in (:argmax, :argmin) && ndims(valuetype(sc, args[1])) != 1 && throw(ArgumentError("$op of a $(describe(valuetype(sc, args[1]))) is a CartesianIndex in Julia; not supported (statement $i)"))
         op == :extrema && structdef!(sc.prog, T)   # a (min, max) tuple, returned as a struct

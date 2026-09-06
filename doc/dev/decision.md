@@ -1511,3 +1511,15 @@ the one Julia already has. Both go through the same stand-in as the
 operators. The `helper` option names the helper files, so that several
 `transpile` calls into one `out/` — a library built one operation per
 call — each keep the helpers they need instead of overwriting one pair.
+
+**Anonymous targets, and `tr`** (same day). An anonymous function as a
+target, `(A -> sum(A; dims=1), Float64, 3, 3)` or `((A, B) -> A' * B, …)`,
+is the way to ask for an operation the tuple form can't spell — a
+keyword argument, a transposed operand — in Julia's own words. Having no
+name, it must be one operation the transpiler has a helper for, and it
+becomes that helper under the helper's name, `sum1_3x3`, `mul_T4x2_4x2`,
+with the Doxygen block reading `(::SMatrix{…}, ::SMatrix{…}) -> Aᵀ * B`;
+anything more is refused with "give the function a name", since a
+function of the user's is theirs to name. Before this an anonymous target
+came out under a mangled nonsense name. `tr(A)` joins the reductions as
+`tr_3x3`, the sum of the diagonal.
