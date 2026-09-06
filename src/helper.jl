@@ -213,7 +213,7 @@ function contraction(a::Type, b::Type, an, bn, R, E::Type)
     m, K = extent(a, 1), extent(a, 2)
     K2, n = extent(b, 1), extent(b, 2)
     K == K2 || throw(ArgumentError("mul: dimensions don't match, $(dims(a)) and $(dims(b))"))
-    zero = ctype(E) == "float" ? "0.0f" : E <: AbstractFloat ? "0.0" : "0"
+    zero = E === Float32 ? "0.0f" : E <: AbstractFloat ? "0.0" : "0"
     ii, jj, kk = indices(3; taken=(an, bn))
     i, j, k = m > 1 ? ii : "0", n > 1 ? jj : "0", K > 1 ? kk : "0"
     term = "$(access(a, an, [i, k])) * $(access(b, bn, [k, j]))"
@@ -268,7 +268,7 @@ end
 # `a^n` for a literal `n` as one C expression, the way `render` writes a scalar power:
 # squares, cubes and the reciprocal written out, anything else through `powi`.
 function powexpr(helpers, a::AbstractString, n::Integer, E::Type)
-    one = E <: AbstractFloat ? (ctype(E) == "float" ? "1.0f" : "1.0") : "1"
+    one = E <: AbstractFloat ? (E === Float32 ? "1.0f" : "1.0") : "1"
     n == 0 && return one
     n == 1 && return a
     n == 2 && return "$a * $a"
@@ -289,7 +289,7 @@ function powhelper!(helpers::Dict{String, String}, E::Type)
     name = "powi" * (E === Float64 ? "" : abbrev(E))
     haskey(helpers, name) && return name
     t = ctype(E)
-    one = E <: AbstractFloat ? (t == "float" ? "1.0f" : "1.0") : "1"
+    one = E <: AbstractFloat ? (E === Float32 ? "1.0f" : "1.0") : "1"
     signed = E <: AbstractFloat
     body = [signed ? ["bool neg = n < 0;", "if (neg) {", "    n = -n;", "}"] : String[];
             "$t r = $one;"; "while (n > 0) {"; "    if (n & 1) {"; "        r *= x;"; "    }"; "    x *= x;"; "    n >>= 1;"; "}";
@@ -306,8 +306,8 @@ function modhelper!(helpers::Dict{String, String}, E::Type)
     name = "modulo" * (E === Float64 ? "" : abbrev(E))
     haskey(helpers, name) && return name
     t = ctype(E)
-    f = t == "float" ? "f" : ""
-    zero = t == "float" ? "0.0f" : "0.0"
+    f = E === Float32 ? "f" : ""
+    zero = E === Float32 ? "0.0f" : "0.0"
     body = ["$t r = fmod$f(x, y);",
             "if (r == $zero) {", "    return copysign$f(r, y);", "}",
             "return (r > $zero) != (y > $zero) ? r + y : r;"]
@@ -348,7 +348,7 @@ function dethelper!(helpers::Dict{String, String}, T::Type, E::Type)
          "     + $(a(0, 2)) * ($(a(1, 0)) * $(a(2, 1)) - $(a(1, 1)) * $(a(2, 0)));"]
     else
         S = shaped(E, (n - 1, n - 1))
-        one, zero = E <: AbstractFloat ? (ctype(E) == "float" ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
+        one, zero = E <: AbstractFloat ? (E === Float32 ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
         cut = nest([("i", n - 1), ("k", n - 1)], ["M[i][k] = $(access(T, A, ["i + 1", "k < j ? k : k + 1"]));"])
         loop = nest([("j", n)], [cut; "det += sign * $(access(T, A, ["0", "j"])) * $(dethelper!(helpers, S, E))(M);"; "sign = -sign;"])
         ["$(ctype(E)) det = $zero;"; "$(ctype(E)) sign = $one;"; declare(S, "M") * ";"; loop; "return det;"]
@@ -367,15 +367,16 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
     idx, pairs = loopindices(shape(T))
     a = A * brackets(idx)
     first = A * brackets(["0" for _ in shape(T)])
-    zero = E <: AbstractFloat ? (ctype(E) == "float" ? "0.0f" : "0.0") : "0"
-    one = E <: AbstractFloat ? (ctype(E) == "float" ? "1.0f" : "1.0") : "1"
-    body = op == :sum     ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a;"]); "return sum;"] :
-           op == :prod    ? ["$(ctype(E)) product = $one;"; nest(pairs, ["product *= $a;"]); "return product;"] :
+    zero = E <: AbstractFloat ? (E === Float32 ? "0.0f" : "0.0") : "0"
+    one = E <: AbstractFloat ? (E === Float32 ? "1.0f" : "1.0") : "1"
+    v = eltype(T) === Bool && booltype[] !== Bool ? "($a != 0)" : a       # an integer as bool: nonzero is true
+    body = op == :sum     ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $v;"]); "return sum;"] :
+           op == :prod    ? ["$(ctype(E)) product = $one;"; nest(pairs, ["product *= $v;"]); "return product;"] :
            op == :maximum ? ["$(ctype(E)) max = $first;"; nest(pairs, ["if ($a > max) {", "    max = $a;", "}"]); "return max;"] :
            op == :minimum ? ["$(ctype(E)) min = $first;"; nest(pairs, ["if ($a < min) {", "    min = $a;", "}"]); "return min;"] :
            op == :any     ? [nest(pairs, ["if ($a) {", "    return true;", "}"]); "return false;"] :
            op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
-           op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a * $a;"]); "return $(ctype(E) == "float" ? "sqrtf" : "sqrt")(sum);"] :
+           op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a * $a;"]); "return $(E === Float32 ? "sqrtf" : "sqrt")(sum);"] :
            op == :count   ? ["int64_t count = 0;"; nest(pairs, ["if ($a) {", "    count++;", "}"]); "return count;"] :
            # `argmax`, `argmin`: Julia's 1-based index of the first extreme element.
            op == :argmax  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) max = $first;"; nest(pairs, ["if ($a > max) {", "    max = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :
@@ -461,7 +462,7 @@ end
 # lives on the stack in arrays of the static size: no allocation anywhere.
 
 # The literal one and zero of `E`.
-onezero(E::Type) = E <: AbstractFloat ? (ctype(E) == "float" ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
+onezero(E::Type) = E <: AbstractFloat ? (E === Float32 ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
 
 # Partial pivoting for column `k` of the LU work array: the row at or below `k` with the
 # largest magnitude in that column is swapped into row `k`, in both `LU` and the
@@ -471,7 +472,7 @@ function pivothelper!(helpers::Dict{String, String}, T::Type)
     E = eltype(T)
     name = "pivot_" * dims(T)
     haskey(helpers, name) && return name
-    fabs = ctype(E) == "float" ? "fabsf" : "fabs"
+    fabs = E === Float32 ? "fabsf" : "fabs"
     body = ["int best = k;",
             "for (int i = k + 1; i < $n; i++) {",
             "    if ($fabs(LU[i][k]) > $fabs(LU[best][k])) {",
@@ -729,7 +730,7 @@ function llthelper!(helpers::Dict{String, String}, T::Type)
     name = "llt_" * dims(T)
     haskey(helpers, name) && return name
     A = inputs((T,))[1]
-    sqrt = ctype(E) == "float" ? "sqrtf" : "sqrt"
+    sqrt = E === Float32 ? "sqrtf" : "sqrt"
     _, zero = onezero(E)
     body = String[]
     if n <= 3

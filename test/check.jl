@@ -78,9 +78,10 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
     path = transpile((targets === nothing ? fs : targets)...; outpath=dir, outfile=name, scope, kw...)
     path isa AbstractString || (path = path[1])
     LegibleC.scope[] = scope               # so the names spelled below match the file's
+    LegibleC.booltype[] = get(kw, :bool, Bool)
     cnames = Dict(zip(fs, identifiers([identifier(string(nameof(f))) for f in fs])))
     headers = ["#include \"$h\"" for h in readdir(dirname(path)) if endswith(h, ".h") && h != "helper.h"]
-    main = ["#include <stdio.h>", "#include <math.h>", headers..., extra, "int main(void) {"]
+    main = ["#include <stdio.h>", "#include <stdbool.h>", "#include <math.h>", headers..., extra, "int main(void) {"]
     references = Any[]
     for (k, c) in enumerate(cases)
         passes = String[]
@@ -125,6 +126,7 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
     end
     push!(main, "    return 0;", "}")
     LegibleC.scope[] = Main
+    LegibleC.booltype[] = Bool
     write(joinpath(dir, "main.c"), join(main, "\n") * "\n")
     exe = joinpath(dir, "main")
     out = dirname(path)

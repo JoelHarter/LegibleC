@@ -54,6 +54,12 @@ Options:
 - `width`: the longest line the C may have, in columns. A scalar expression
   that would run past it is wrapped at its loosest operators, each
   continuation line starting with the operator. See `doc/copy.md`.
+- `c23float`: write `Float64` and `Float32` as C23's `_Float64` and `_Float32`
+  instead of `double` and `float`, wherever they appear.
+- `bool`: the C type for Julia's `Bool` — `Bool` itself, for C's `bool`, or one of
+  Julia's integer types, `Int32` say, for that integer wherever a `Bool` appears:
+  parameters, results, fields, elements, and the names that mention the type. The
+  C then writes `0` and `1`, and reads any nonzero value as true.
 
 Each function keeps its Julia name in C. If the same function is transpiled at more
 than one signature in a single call, those get the argument types appended
@@ -71,15 +77,23 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    portable::Bool=false,
                    tempsuffix::Bool=true,
                    spelling::AbstractDict=Dict{Char, String}(),
+                   c23float::Bool=false,
+                   bool::Type=Bool,
                    scope::Module=Main,
                    variables...)
+    bool === Bool || bool in (Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64) ||
+        throw(ArgumentError("bool must be Bool or one of Julia's integer types, not $bool"))
     LegibleC.spelling[] = checkspelling(spelling)
     LegibleC.scope[] = scope
+    LegibleC.c23float[] = c23float
+    LegibleC.booltype[] = bool
     try
         return transpiled(target...; outfile, outpath, separate=split, templimit, staticarray, source, precise, width, portable, suffix=tempsuffix, scope, variables)
     finally
         LegibleC.spelling[] = Dict{Char, String}()
         LegibleC.scope[] = Main
+        LegibleC.c23float[] = false
+        LegibleC.booltype[] = Bool
     end
 end
 
@@ -190,10 +204,14 @@ end
 # Does the C text mention the name — a function, as a call; anything else, as a word?
 mentions(text, name; call::Bool=false) = occursin(Regex("\\b\\Q$name\\E" * (call ? "\\(" : "\\b")), text)
 
-# Each file includes the standard headers its own text uses, found by the names each
+# Each file includes the standard headers its own code uses, found by the names each
 # header provides — `int64_t`, `bool`, `memcpy`, `sqrt`, `printf`, … — not the union of
-# what the program uses.
-includes(text) = [h for (h, pattern) in standard if occursin(pattern, text)]
+# what the program uses. Comments don't count: a Julia line quoted above its C may
+# say `true` or `sqrt` without the C doing so.
+function includes(text)
+    code = replace(text, r"/\*.*?\*/"s => "", r"//[^\n]*" => "")
+    return [h for (h, pattern) in standard if occursin(pattern, code)]
+end
 
 # `#define`s for the portable constants, each written where it is used.
 macros(prog::Program) = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the double nearest $(constants[m])" for m in sort!(collect(prog.macros))]

@@ -2,6 +2,11 @@
 # the abbreviation used when a type has to appear in a mangled name. The same table
 # is written up in doc/math/scalar.md; keep the two in step.
 
+# Two options change the spelling of scalars: C23's `_Float64` and `_Float32` in place
+# of `double` and `float`, and an integer type in place of `bool` (see `transpile`).
+const c23float = Ref(false)
+const booltype = Ref{Type}(Bool)
+
 # (Julia, C, abbreviation)
 const scalars = (
     (Bool,    "bool",     "B"),
@@ -20,6 +25,9 @@ const scalars = (
 
 # The C spelling of a Julia type.
 function ctype(T::Type)
+    T === Bool && booltype[] !== Bool && return ctype(booltype[])
+    T === Float64 && c23float[] && return "_Float64"
+    T === Float32 && c23float[] && return "_Float32"
     for (julia, c, _) in scalars
         T === julia && return c
     end
@@ -34,6 +42,7 @@ end
 
 # The abbreviation for a scalar type in a mangled name.
 function abbrev(T::Type)
+    T === Bool && booltype[] !== Bool && return abbrev(booltype[])
     for (julia, _, a) in scalars
         T === julia && return a
     end

@@ -562,7 +562,7 @@ function statement!(lines, sc::Scope, i, st)
         # `s, c = sincos(x)` is exactly `s = sin(x); c = cos(x)`: ISO C has no `sincos`,
         # and the compiler fuses the two calls itself. The pair is read by destructuring.
         a = expression(sc, st.args[2])[1]
-        f = ctype(valuetype(sc, st.args[2])) == "float" ? "f" : ""
+        f = valuetype(sc, st.args[2]) === Float32 ? "f" : ""
         push!(sc.headers, "math.h")
         sc.pair[i] = ("sin$f($a)", "cos$f($a)")
     elseif st isa Expr && st.head === :call && (T === Nothing || T === Any) && userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end]) !== nothing
@@ -1473,10 +1473,22 @@ function render(sc::Scope, i, ex::Expr)
     # `a + -b` is written `a - b`, and `a - -b` is `a + b`: exact, since a negation
     # is, and what a person writes. A negation is what a right operand that starts
     # with `-` is: anything binding less tightly than `*` has been parenthesised.
+    # With an integer standing in for `bool` (the `bool` option), a truth value read from
+    # storage — a parameter, a field, an element, a global — is any nonzero value, so
+    # where it enters arithmetic or a comparison it is read as `(b != 0)`. One computed
+    # here, a comparison's result, is already 0 or 1.
+    function stored(x)
+        x isa Core.SlotNumber && return true
+        x isa Core.SSAValue || return false
+        st = ci.code[x.id]
+        (st isa Core.SlotNumber || st isa GlobalRef) && return true
+        st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.getfield, Core.getfield, Base.getproperty, Base.getindex)
+    end
+    truth(x, prec; right=false) = booltype[] !== Bool && valuetype(sc, x) === Bool && stored(x) ? "($(operand(sc, x, EQ)) != 0)" : operand(sc, x, prec; right)
     function op(sym, prec)
-        s = operand(sc, args[1], prec)
+        s = truth(args[1], prec)
         for a in args[2:end]
-            t = operand(sc, a, prec; right=true)
+            t = truth(a, prec; right=true)
             s *= sym in ("+", "-") && startswith(t, "-") ? (sym == "+" ? " - " : " + ") * t[2:end] : " $sym " * t
         end
         return s, prec
@@ -1484,7 +1496,7 @@ function render(sc::Scope, i, ex::Expr)
     # `-(-x)` is `x`, exactly.
     unary(sym) = (t = operand(sc, args[1], UNARY); sym == "-" && startswith(t, "-") ? (t[2:end], PRIMARY) : (sym * t, UNARY))
     # A `math.h` function on a `float` is the `f` variant: `sqrtf`, `fabsf`, `powf`.
-    fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$name$(hdr == "math.h" && ctype(T) == "float" ? "f" : "")(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
+    fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$name$(hdr == "math.h" && T === Float32 ? "f" : "")(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
     floating = T <: AbstractFloat
     # `zero(x)`, `one(T)`: the literal of the result's type.
     f in (Base.zero, Base.one) && n == 1 && T <: Number && return value(sc, f === Base.zero ? zero(T) : one(T)), PRIMARY
@@ -1597,7 +1609,7 @@ function render(sc::Scope, i, ex::Expr)
         p = ci.ssavaluetypes[args[3].id].val
         p isa Val || throw(ArgumentError("unsupported power (statement $i)"))
         e = typeof(p).parameters[1]
-        unit = ctype(T) == "float" ? "1.0f" : floating ? "1.0" : "1"
+        unit = T === Float32 ? "1.0f" : floating ? "1.0" : "1"
         e == 0 && return unit, PRIMARY
         e == 1 && return expression(sc, args[2])
         floating || e > 0 || throw(ArgumentError("a negative power of an integer is a DomainError in Julia (statement $i)"))
@@ -1682,7 +1694,7 @@ function render(sc::Scope, i, ex::Expr)
         S in (Float64, Float32) && f === Base.floatmin && (push!(sc.headers, "float.h"); return (S === Float64 ? "DBL_MIN" : "FLT_MIN"), PRIMARY)
         S in (Float64, Float32) && f === Base.typemax && (push!(sc.headers, "math.h"); return "INFINITY", PRIMARY)
         S in (Float64, Float32) && f === Base.typemin && (push!(sc.headers, "math.h"); return "-INFINITY", UNARY)
-        S === Bool && return (f === Base.typemax ? "true" : "false"), PRIMARY
+        S === Bool && return value(sc, f === Base.typemax), PRIMARY
         if S <: Integer && f in (Base.typemax, Base.typemin)
             bits = 8 * sizeof(S)
             S <: Unsigned && return (f === Base.typemax ? "UINT$(bits)_MAX" : "0"), PRIMARY
@@ -1692,7 +1704,7 @@ function render(sc::Scope, i, ex::Expr)
 
     # Conversions: a call to a type.
     f isa Type && isstruct(T) && return compound(sc, T, args), PRIMARY
-    f isa Type && n == 1 && return "($(ctype(T)))" * operand(sc, args[1], UNARY), UNARY
+    f isa Type && n == 1 && return "($(ctype(T)))" * truth(args[1], UNARY), UNARY
 
     # Arrays, as scalars: an element, or a size.
     f === Base.getindex && return index(sc, args[1], args[2:end]), PRIMARY
@@ -1832,7 +1844,7 @@ end
 
 # A Julia value as a C initializer: numbers, characters, strings, arrays in row-major
 # nesting, tuples and structs field by field.
-initializer(x::Bool) = x ? "true" : "false"
+initializer(x::Bool) = booltype[] === Bool ? (x ? "true" : "false") : (x ? "1" : "0")
 initializer(x::Integer) = string(x)
 initializer(x::AbstractFloat) = isinf(x) ? (x > 0 ? "INFINITY" : "-INFINITY") : isnan(x) ? "NAN" : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(Float64(x))
 initializer(x::Irrational) = repr(Float64(x))
@@ -2191,7 +2203,7 @@ function value(sc::Scope, x)
         return "($(ctype(T))){$(join(sc.slotkinds[x.id].fields, ", "))}"
     end
     x isa Core.SlotNumber && return sc.names[x.id]
-    x isa Bool            && return x ? "true" : "false"
+    x isa Bool            && return booltype[] === Bool ? (x ? "true" : "false") : (x ? "1" : "0")
     x isa Char            && return charliteral(x)
     x isa AbstractString  && return "\"" * cstring(x) * "\""
     x isa Integer         && return string(x)

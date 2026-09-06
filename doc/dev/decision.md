@@ -1447,3 +1447,30 @@ memory in every other file and can't fold into `v * v / (c * c)`;
 it is where a C programmer puts one, next to its comment. A plain `const`
 in a C header would be a duplicate symbol at link time, which is what the
 `static` is for.
+
+---
+
+## 2026-09-07 — C23 float types, and an integer as `bool`
+
+**Decision.** `c23float=true` spells `Float64` and `Float32` as `_Float64`
+and `_Float32` wherever `double` and `float` would have been; a printed
+one is cast to `double` for `printf`, since a `_FloatN` isn't promoted
+through `...`. `bool=Int32` (any of Julia's integer types) spells `Bool`
+as that integer wherever it appears — parameters, results, fields,
+elements, and the mangled names that mention the type — and the C then
+writes `0` and `1` and reads any nonzero value as true: a truth value
+read from storage (a parameter, a field, an element, a global) enters
+arithmetic or a comparison as `(b != 0)`, while one computed on the spot,
+a comparison's result, is used as it is; in a condition either is used
+as it is, since C already reads it that way. Along the way, a function
+whose whole body is a literal, `f() = true`, now has its source comment
+above the `return`: the IR gives that statement no line, and it takes
+the definition's.
+
+**Why.** Both are the caller's business, not the mathematics': a code
+base on C23 wants the interchange types spelled as such, and a code base
+with no `bool` in its interfaces — an older C, or an ABI shared with
+something that has no `bool` — wants integers there instead, at the
+declared cost that the names change with the type. The read rule is C's
+own, and it is what keeps a `2` handed in from a caller from being
+compared unequal to `true`.

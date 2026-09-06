@@ -39,7 +39,13 @@ end
 function statementlines(mi::Core.MethodInstance, n::Integer)
     ci = Base.uncompressed_ast(mi.def)
     length(ci.code) == n || return zeros(Int, n)
-    return [Base.IRShow.getdebugidx(ci.debuginfo, i)[1] for i in 1:n]
+    lines = Int[Base.IRShow.getdebugidx(ci.debuginfo, i)[1] for i in 1:n]
+    # A statement the IR gives no line — the `return true` that is all of `f() = true` —
+    # belongs to the line before it, or to the definition's when it comes first.
+    for k in 1:n
+        lines[k] > 0 || (lines[k] = k == 1 ? mi.def.line : lines[k-1])
+    end
+    return lines
 end
 
 """
