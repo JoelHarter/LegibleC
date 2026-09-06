@@ -28,7 +28,7 @@ the C boxes was added by a person: the `// @orbit.jl:18:` lines, the
 `// beta = temp1_X \ temp2_X_y` steps, and the `///` helper descriptions
 are all the transpiler's.
 
-**A physicist's line, names and all.** The Julia:
+**Julia:** a physicist's line, names and all.
 
 ```julia
 ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
@@ -36,7 +36,8 @@ are all the transpiler's.
 
 <p align="center"><b>⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇</b></p>
 
-The C, comment included — the transpiler wrote that too:
+**C:** generated from only the Julia above, comment included — the
+transpiler wrote that too.
 
 ```c
 // @showcase.jl:7: ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
@@ -45,8 +46,8 @@ double xddot = -2 * zeta * omega0 * xdot - omega0 * omega0 * x;
 
 ---
 
-**Linear algebra, solve included** — the normal equations of a least-squares
-fit. The Julia:
+**Julia:** linear algebra, solve included — the normal equations of a
+least-squares fit.
 
 ```julia
 β = (X' * X) \ (X' * y)
@@ -54,8 +55,8 @@ fit. The Julia:
 
 <p align="center"><b>⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇ ⬇</b></p>
 
-The C. Every comment here is generated: the source line above the block,
-and the step after each call:
+**C:** generated from only the Julia above. Every comment is generated
+too: the source line above the block, and the step after each call.
 
 ```c
 // @orbit.jl:18: β = (X' * X) \ (X' * y)
