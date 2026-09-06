@@ -16,7 +16,7 @@ A target is a function with one concrete method, a `MethodInstance`, or a
 tuple of a function and argument types — where a type followed by integers is
 an array of that element type and size. Options: `outfile`, `outpath`,
 `templimit`, `staticarray` (on), `source` (on), `precise`, `portable`, `width`
-(100), `spelling` (your own C names for characters, `naming.md`). One
+(100), `spelling` (your own C names for characters, `../naming.md`). One
 `.c` file comes out, with
 prototypes, the helpers it needs, and the functions.
 
@@ -31,19 +31,19 @@ prototypes, the helpers it needs, and the functions.
 | returning a scalar | `return x;` |
 | returning an array | through a trailing `out` parameter |
 | `return nothing`, a `Nothing` result | `void` |
-| tuples, multiple return values | yes, as a generated struct (`struct.md`) |
-| calling another user function | yes; brought in on demand if not listed, recursion included (`call.md`) |
-| `ccall`, `@ccall` | yes: the call itself, with a header or a prototype (`call.md`) |
-| docstrings and comments | carried into the C (see `comment.md`) |
-| `print`, `println`, to `stdout` or `stderr`; `"x = $x"`; `@show`; `@printf` | yes, as `printf` and one array helper (`io.md`) |
+| tuples, multiple return values | yes, as a generated struct (`../struct.md`) |
+| calling another user function | yes; brought in on demand if not listed, recursion included (`../call.md`) |
+| `ccall`, `@ccall` | yes: the call itself, with a header or a prototype (`../call.md`) |
+| docstrings and comments | carried into the C (see `../comment.md`) |
+| `print`, `println`, to `stdout` or `stderr`; `"x = $x"`; `@show`; `@printf` | yes, as `printf` and one array helper (`../io.md`) |
 | `@sprintf`, `string(…)` as a value, `show`, `display`, `printstyled`, files | not yet |
 
 ## Scalar types
 
 `Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `Char`,
-`String`. See `math/scalar.md` for the C spelling of each. `struct` (immutable
+`String`. See `../math/scalar.md` for the C spelling of each. `struct` (immutable
 by value, mutable through a pointer, parametric at concrete types) and `Tuple`
-— see `struct.md`. Not yet: complex, `Int128`, `Float16`, `Rational`,
+— see `../struct.md`. Not yet: complex, `Int128`, `Float16`, `Rational`,
 `BigInt`, `@enum`, `Union{T, Nothing}`.
 
 ## Characters and strings
@@ -96,7 +96,7 @@ both languages, read-only.
 
 Any Julia name, including Unicode (`ω` → `omega`, `x₁` → `x1`, `ẋ` → `xdot`),
 reassignment, and reassigning a loop variable's name outside the loop. See
-`naming.md` for the conversion and collision rules.
+`../naming.md` for the conversion and collision rules.
 
 ## Arrays
 
@@ -127,10 +127,10 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `B = A`, `B = A'`, `A = A * A` | yes (copies, and a temp when the destination is an operand) |
 | `.==`, `.<`, `.<=`, `.>`, `.>=`, `.!=`, `.&`, `.\|`, `.!`, `ifelse.` | yes, a `Bool` array |
 | a range in a variable, `A[:, 1] .= 0` | not yet |
-| runtime-sized `Array` arguments (`staticarray=false`) | not yet — see `dev/map.md` §3.4 for the VLA design |
+| runtime-sized `Array` arguments (`staticarray=false`) | not yet — see `../dev/map.md` §3.4 for the VLA design |
 
 ## Comments
 
 Every comment before and inside the function is carried into the C, and by
 default each line of code too, as `file:line: code`. A docstring becomes a
-Doxygen block. See `comment.md`.
+Doxygen block. See `../comment.md`.

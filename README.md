@@ -149,15 +149,15 @@ it needs, the functions — and anything a listed function calls comes with
 it. `transpile` is the package's one exported name, so your own functions
 can be named anything.
 
-[doc/guide.md](doc/guide.md) is the user guide: targets, every option,
-calling the C, how names come out and how to override them.
-[doc/syntax.md](doc/syntax.md) is the one-page list of every piece of Julia
-accepted.
+[doc/guide/](doc/guide/README.md) is the user guide: what's accepted,
+targets, every option, calling the C, how names come out and how to
+override them.
 
 ## Documentation
 
 - [doc/philosophy.md](doc/philosophy.md) — the tenets behind every
   decision: logic, speed, craft, generality, in that order.
+- [doc/guide/](doc/guide/README.md) — the user guide.
 - [doc/](doc/) — how the transpiler works, one topic per file; its README
   gives a reading order.
 - [doc/dev/](doc/dev/) — the decision log, and the survey of what could

@@ -6,7 +6,7 @@ the open items — the decisions taken so far and the two-way survey of what
 could still map between Julia and C — lives in [doc/dev/](doc/dev/):
 [decision.md](doc/dev/decision.md) and [map.md](doc/dev/map.md). What the
 transpiler does today is in [doc/](doc/), starting with
-[syntax.md](doc/syntax.md).
+[syntax.md](doc/guide/syntax.md).
 
 ⬜ Readability (philosophy.md, Craft)
     ✅ Collapse single-use temps into expressions: `d = (a + b) * c / 2;` instead of three temps — done 2026-09-05, `doc/copy.md` item 5
@@ -47,7 +47,7 @@ transpiler does today is in [doc/](doc/), starting with
     ✅ Tuples as values, multiple return values — done 2026-09-04, `struct.md`
     ✅ Structs → C structs — done 2026-09-04, `struct.md`: by value, mutable through a pointer, parametric, nested
     ✅ Printing (`print`, `println`, `@printf`, `@show`) — done 2026-09-05, `doc/io.md`
-    ✅ `Char` (ASCII `char`) and `String` (`const char *`): literals, comparison, `ctype.h` classes, `length`/`ncodeunits`/`s[i]`, printing — done 2026-09-06, `doc/syntax.md`
+    ✅ `Char` (ASCII `char`) and `String` (`const char *`): literals, comparison, `ctype.h` classes, `length`/`ncodeunits`/`s[i]`, printing — done 2026-09-06, `doc/guide/syntax.md`
     ⬜ Strings built at run time: `@sprintf`, `string(…)`, concatenation, `split`, `for c in s` — needs buffers and an owner
     ⬜ Files: `open`, `close`, `print(io, …)`, `read`, `readline`, `eachline` — into `src/io.jl`, the stream-first helpers already take a `FILE *`
     ⬜ `try`/`catch`, comprehensions, closures — decide which of these have any C meaning at all
