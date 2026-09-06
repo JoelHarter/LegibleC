@@ -79,10 +79,11 @@ formula. The everyday ones are a few lines:
 /// out = A * b
 static inline void mul_4x2_2(const double A[4][2], const double b[2], double out[restrict 4]) {
     for (int i = 0; i < 4; i++) {
-        out[i] = 0.0;
+        double sum = 0.0;
         for (int k = 0; k < 2; k++) {
-            out[i] += A[i][k] * b[k];
+            sum += A[i][k] * b[k];
         }
+        out[i] = sum;
     }
 }
 ```

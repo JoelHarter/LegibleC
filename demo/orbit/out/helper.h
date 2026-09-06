@@ -39,10 +39,11 @@ static inline double dot_4(const double a[4], const double b[4]) {
 /// out = A * b
 static inline void mul_4x2_2(const double A[4][2], const double b[2], double out[restrict 4]) {
     for (int i = 0; i < 4; i++) {
-        out[i] = 0.0;
+        double sum = 0.0;
         for (int k = 0; k < 2; k++) {
-            out[i] += A[i][k] * b[k];
+            sum += A[i][k] * b[k];
         }
+        out[i] = sum;
     }
 }
 
@@ -50,10 +51,11 @@ static inline void mul_4x2_2(const double A[4][2], const double b[2], double out
 /// out = Aᵀ * b
 static inline void mul_T4x2_4(const double A[4][2], const double b[4], double out[restrict 2]) {
     for (int i = 0; i < 2; i++) {
-        out[i] = 0.0;
+        double sum = 0.0;
         for (int k = 0; k < 4; k++) {
-            out[i] += A[k][i] * b[k];
+            sum += A[k][i] * b[k];
         }
+        out[i] = sum;
     }
 }
 

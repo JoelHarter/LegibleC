@@ -222,6 +222,10 @@ function contraction(a::Type, b::Type, an, bn, R, E::Type)
     end
     out = access(R, "out", [i, j])
     K == 1 && return nest(live([(ii, m), (jj, n)]), ["$out = $term;"])
+    # One output index (a matrix times a vector): accumulate in a local, as a person
+    # writes it. With two, the loops run i, k, j so the inner loop walks a row of `b`
+    # (see decision.md), and each output element is zeroed then accumulated.
+    n == 1 && return nest(live([(ii, m)]), ["$(ctype(E)) sum = $zero;"; nest(live([(kk, K)]), ["sum += $term;"]); "$out = sum;"])
     return nest(live([(ii, m)]), [nest(live([(jj, n)]), ["$out = $zero;"]);
                                    nest(live([(kk, K), (jj, n)]), ["$out += $term;"])])
 end
