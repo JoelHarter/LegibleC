@@ -16,4 +16,4 @@ top of each file says what to look at.
   Julia line becoming two C lines, `sinf` for `Float32`, an expression
   argument carried into both.
 
-More candidates are in the repo's `todo.md`.
+More candidates are in `doc/dev/todo.md`.

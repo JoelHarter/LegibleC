@@ -3,10 +3,10 @@
 Open work, gathered from the "not yet" and "known cost" notes across the
 docs. Nothing here is started unless its box is checked. The thinking behind
 the open items — the decisions taken so far and the two-way survey of what
-could still map between Julia and C — lives in [doc/dev/](doc/dev/):
-[decision.md](doc/dev/decision.md) and [map.md](doc/dev/map.md). What the
-transpiler does today is in [doc/](doc/), starting with
-[syntax.md](doc/guide/syntax.md).
+could still map between Julia and C — lives in [doc/dev/](.):
+[decision.md](decision.md) and [map.md](map.md). What the
+transpiler does today is in [doc/](..), starting with
+[syntax.md](../guide/syntax.md).
 
 ⬜ Readability (philosophy.md, Craft)
     ✅ Collapse single-use temps into expressions: `d = (a + b) * c / 2;` instead of three temps — done 2026-09-05, `doc/copy.md` item 5

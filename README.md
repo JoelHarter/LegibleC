@@ -163,7 +163,7 @@ override them.
   gives a reading order.
 - [doc/dev/](doc/dev/) — the decision log, and the survey of what could
   still map between Julia and C.
-- [todo.md](todo.md) — what's open.
+- [doc/dev/todo.md](doc/dev/todo.md) — what's open.
 
 ## Tests
 

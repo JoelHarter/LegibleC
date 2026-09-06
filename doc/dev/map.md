@@ -3,7 +3,7 @@
 A survey of what could cross between the two languages: the Julia worth
 transpiling, the C worth being able to reach, and proposals for how the
 important ones would map. It's a catalogue and a set of designs to argue
-about, not a plan — the repo's `todo.md` holds the plan. Status marks: ✅ done,
+about, not a plan — `todo.md` beside it holds the plan. Status marks: ✅ done,
 🟡 partly, ⬜ open, ✗ no C meaning worth pursuing.
 
 The lens throughout is `philosophy.md`: fastest C, reading as hand-written, one

@@ -19,4 +19,4 @@ suggested order for a first read:
 14. [io.md](io.md) — printing, and later files.
 
 What's still to be decided is in [dev/](dev/); what's open is in the repo's
-`todo.md`.
+`dev/todo.md`.
