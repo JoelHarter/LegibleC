@@ -42,6 +42,7 @@ amax(v::SVector{4,Float64}) = argmax(v)
 amin(v::SVector{4,Float64}) = argmin(v)
 ext(v::SVector{4,Float64}) = extrema(v)
 spread(v::SVector{4,Float64}) = ((lo, hi) = extrema(v); hi - lo)
+anyneg(v::V3) = any(v .< 0.0)
 
 v = SVector(1.0, -2.0, 3.0); A = SMatrix{2,3}([1.0 2.0 3.0; 4.0 5.0 6.0])
 check("reduce", [Case(total, v), Case(product, A), Case(biggest, A), Case(len, v), Case(allpos, SVector(true, true, false)),
@@ -55,7 +56,7 @@ check("reduce", [Case(total, v), Case(product, A), Case(biggest, A), Case(len, v
                  Case(cubesum, SArray{Tuple{2,2,2}}(1.0:8.0...)), Case(diffs, SVector(1.0, 4.0, 9.0, 16.0, 25.0)),
                  Case(diff1, A), Case(diff2, A), Case(cums, v), Case(cums2, A), Case(cump, SVector(1, 2, 3, 4)), Case(pair, SVector(1.0, 3.0)),
                  Case(cnt, SVector(true, false, true)), Case(amax, SVector(1.0, 7.0, 7.0, 2.0)), Case(amin, SVector(3.0, -1.0, 5.0, -1.0)),
-                 Case(ext, SVector(3.0, -1.0, 5.0, 2.0)), Case(spread, SVector(3.0, -1.0, 5.0, 2.0))])
+                 Case(ext, SVector(3.0, -1.0, 5.0, 2.0)), Case(spread, SVector(3.0, -1.0, 5.0, 2.0)), Case(anyneg, v), Case(anyneg, SVector(1.0, 2.0, 3.0))])
 @testset "along a dimension" begin
     # The dimension sits on the operation's name; a vector leaves it off, except a
     # reduction, whose plain name is the sum to a scalar.

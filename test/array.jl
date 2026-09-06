@@ -110,11 +110,12 @@ ge0(v::V3) = v .>= 0.0
 sel(c::SVector{3,Bool}, a::V3, b::V3) = ifelse.(c, a, b)
 both(c::SVector{3,Bool}, d::SVector{3,Bool}) = c .& .!d
 squares(v::V3) = v .^ 2 .+ v .^ 3 .+ v .^ -1 .+ v .^ 5
+lifted(v::V3) = exp.(v) .+ 1.0
 append!(cases, [Case(coef, A), Case(zer, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0)), Case(fil, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0), 2.5),
                 Case(filint, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0)), Case(into, MMatrix{2,2}(1.0, 2.0, 3.0, 4.0), A),
                 Case(addI, A), Case(subI, A), Case(rsubI, A), Case(twoI), Case(lt, SVector(1.0, 5.0, 3.0), SVector(2.0, 4.0, 3.0)),
                 Case(ge0, SVector(-1.0, 0.0, 1.0)), Case(sel, SVector(true, false, true), SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0)),
-                Case(both, SVector(true, true, false), SVector(true, false, false)), Case(squares, SVector(1.5, 2.0, -0.5))])
+                Case(both, SVector(true, true, false), SVector(true, false, false)), Case(squares, SVector(1.5, 2.0, -0.5)), Case(lifted, v)])
 @testset "array text" begin
     src = csource("arraytext", coef, zer, addI, lt, sel)
     @test occursin("mul_s_2x2(-3.0, A, temp", src) && occursin("mul_s_2x2(2.0, A, temp", src)   # an integer coefficient takes the element type

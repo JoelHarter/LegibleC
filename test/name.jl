@@ -25,6 +25,8 @@ pairnamed(y::Float64, z::Float64) = (x = (y, z); return x)
 unpairnamed(y::Float64, z::Float64) = ((p, q) = pairnamed(y, z); p * q)
 pairbare(y::Float64, z::Float64) = (y, z)
 unpairbare(y::Float64, z::Float64) = ((p, q) = pairbare(y, z); p * q)
+toolong(thisisahugelongvariablenameanditsreallyannoyingtoread::SVector{3,Float64}, andanotherreallylongnamewhywouldanyonedothis::SVector{3,Float64}) =
+    (thisisahugelongvariablenameanditsreallyannoyingtoread + andanotherreallylongnamewhywouldanyonedothis) * 2.0
 physics(ħ::Float64, ∂::Float64, ∇::Float64, ε::Float64, ϵ::Float64, φ::Float64, ℓ::Float64, ∞::Float64, ð::Float64) = ħ + ∂ + ∇ + ε + ϵ + φ + ℓ + ∞ + ð
 function keyword(exp::Float64, long::Float64)
     omega = exp + long
@@ -106,6 +108,8 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test occursin("return x;", src)
     @test occursin("return a + c * c;", src)
     @test occursin("double result_ = fabs(a * result);", src) && occursin("return result_;", src)   # `result` is taken
+    long = csource("long", toolong)
+    @test occursin("double temp1[3];\n    add_3(", long)                                          # past `templimit`, the suffix is dropped
     @test occursin("void outtaken(const double out[3], const double v[3], double out_[restrict 3])", src)
     @test occursin("double add_3_[3];", src) && occursin("add_3(u, v, add_3_);", src)
     @test occursin("double underscored(double x_, double Y__)", src)

@@ -99,7 +99,7 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ A file: `transpile("physics.jl")` includes it into a fresh module and does the same
     ⬜ The companion `.h` (also under Project) — constants, typedefs, and public helpers are what a C caller needs to see
 
-⬜ Demos (`demo/`, created 2026-09-06, empty; each is a Julia file, its checked-in C, and a few lines on what to look at). The list below is suggestions, not a plan:
+⬜ Demos (`demo/`; each is a folder with a Julia file, its checked-in `out/`, and a line on what to look at; `orbit`, `showcase` and `sincos` are there since 2026-09-06). The list below is suggestions, not a plan:
     ⬜ Orbit: the README's `orbit` plus a few steps of integration in a loop — arrays, a reduction, reassignment, the copy comment, a loop
     ⬜ Kalman filter, one predict/update step: small matrices, `*`, `'`, `\`, `inv`, `I` — the linear-algebra helpers side by side, and `A + Q` reading as the textbook equation
     ⬜ Quaternion rotation and a rigid body: a `struct` with array fields, `cross`, `norm`, a normalize step — structs by value and Doxygen from docstrings

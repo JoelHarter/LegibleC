@@ -20,8 +20,19 @@ nodoc(x::Float64) = x * x
 steps(A::SMatrix{3,3,Float64,9}, b::SVector{3,Float64}, c::SVector{3,Float64}, D::SVector{3,Float64}) = (A .+ b) \ c + D
 built(A::SMatrix{3,3,Float64,9}, B::SMatrix{3,3,Float64,9}) = (C = A * B'; [C A; B C] .* 2.0)
 single(A::SMatrix{3,3,Float64,9}, B::SMatrix{3,3,Float64,9}) = A * B
+function longexpr(a::Float64, b::Float64)
+    t = (a + b) *
+        (a - b)          # continuation line lands after the C for the expression
+    t
+end
+function brackets(u::SVector{3,Float64}, v::SVector{3,Float64})
+    w = (
+        u + v
+    )   # a line that is only a closing bracket keeps this comment, not the bracket
+    -w
+end
 
-src = csource("comment", scaled, project, nodoc, steps, built, single)
+src = csource("comment", scaled, project, nodoc, steps, built, single, longexpr, brackets)
 @testset "comment" begin
     @test occursin("/**", src) && occursin("Scales a 2x2 matrix, then adds it to itself.", src)
     @test occursin("Julia signature: scaled(", src) && occursin("@param[in]  A    2×2-matrix", src) && occursin("@param[in]  s    scalar", src)
@@ -48,5 +59,9 @@ src = csource("comment", scaled, project, nodoc, steps, built, single)
     @test occursin("mul_2x2_s(A, s, B);\n\n    // comment.jl:", src) && occursin("mul_2x2_s(A, s, B);\n\n    double C[2][2];", bare)
     @test occursin(") {\n    // trailing on the signature\n    // Scale first.", src) && occursin("    return x * x;\n}", src)
     @test !occursin("\n\n\n", src) && !occursin("\n\n}", src)
+    # A multi-line expression: its C at the first line, the continuation lines after it
+    # (the known imprecision); a line that is only a bracket contributes its comment only.
+    @test occursin("    double t = (a + b) * (a - b);\n\n    // comment.jl:", src) && occursin("# continuation line lands after the C for the expression", src)
+    @test occursin("// a line that is only a closing bracket keeps this comment, not the bracket", src) && !occursin(r"// comment\.jl:\d+: \)", src)
 end
 end
