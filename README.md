@@ -1,4 +1,4 @@
-# newt
+# LegibleC
 
 A Julia-to-C transpiler for numeric code. You write Julia — static arrays,
 structs, tuples, loops, linear algebra — and get C that a careful C
