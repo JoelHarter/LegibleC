@@ -205,7 +205,8 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, st
     for (k, (mi, _)) in enumerate(instances)
         haskey(synthetics, mi) || continue
         f, sig = synthetics[mi]
-        julia = (f isa Symbol ? string(f) : f isa Broadcast ? string(nameof(f.f)) * "." : string(nameof(f))) * "(" * join(("::" * string(T <: Shaped ? juliatype(T) : T) for T in sig), ", ") * ")"
+        julia = (f isa Symbol ? string(f) : f isa Broadcast ? string(nameof(f.f)) * "." : string(nameof(f))) * "(" *
+                join(("::" * replace(string(T <: Shaped ? juliatype(T) : T), "StaticArraysCore." => "") for T in sig), ", ") * ")"
         h = onlycall(functions[k][3], prog.helpers)
         if h === nothing
             # The stand-in stays; its Doxygen block names the operator, not the stand-in.
