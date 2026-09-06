@@ -1246,3 +1246,33 @@ The typedef sits with the
 prototype because C needs the type before its first use and the prototype
 is that use; together they are the function's interface, which is what a
 later companion header will lift out.
+
+---
+
+## 2026-09-06 — Globals, struct types, and the calling scope
+
+**Decision.** A global a function reads is pulled into the program like a
+callee: `const double g = 9.81;` near the top of the functions file, and
+`0.5 * g * (t * t)` where the literal used to be. `const` follows Julia's
+binding; a plain global must be typed (`k::Float64 = 2.0`) to be read by a
+function, since an untyped one has no type Julia compiles against either.
+A variable can also be listed by keyword, `transpile(fall; g, μ)`, whether
+or not anything reads it; its name is looked up in `scope` to decide
+`const`, and a value with no binding there is a constant. `@transpile`
+sets `scope` to the module the call is written in. `:name => value` and a
+`GlobalRef` are the escape hatches for a name that is an option's or a
+binding in another module. A struct type is a target on its own, with its
+docstring as a Doxygen block. Definitions are read from files: a method
+whose file is a REPL line or `none` is refused.
+
+**Why.** "One call generates everything" means a function's globals are
+part of everything, so they come along the way callees do, and a constant
+should read as its name, not its digits. A value carries no name, so the
+keyword carries it; the keyword form is a plain call, composes with a
+splatted `NamedTuple`, and needs no macro — except that a function cannot
+see its caller's scope, which is the one job a macro exists for, so
+`@transpile` supplies `scope` and nothing else. `Main` is not special: the
+lookup happens wherever the call was written. The file rule makes the
+output regenerable from the files it came from, which is what one source
+of truth means; it cannot apply to globals, since Julia records where a
+method was defined but not where a global was assigned.

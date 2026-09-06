@@ -7,7 +7,7 @@ using StaticArrays
 using LinearAlgebra
 using Printf
 
-export transpile
+export transpile, @transpile
 
 include("c.jl")          # the emitter, which includes the rest
 include("transpile.jl")  # the API: targets to instances, names, the file

@@ -53,7 +53,7 @@ Each function keeps its Julia name in C. If the same function is transpiled at m
 than one signature in a single call, those get the argument types appended
 (`fun1_Float64_Float64`) so the names don't collide.
 """
-function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, Vararg{Union{DataType, Integer}}}}...;
+function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, Vararg{Union{DataType, Integer}}}, Type, Pair{Symbol, <:Any}, GlobalRef}...;
                    outfile::AbstractString="juliatranspiled", outpath::AbstractString=pwd(),
                    templimit::Integer=40,
                    # On by default only until dynamic arrays are supported; then it flips
@@ -64,21 +64,61 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    width::Integer=100,
                    portable::Bool=false,
                    tempsuffix::Bool=true,
-                   spelling::AbstractDict=Dict{Char, String}())
+                   spelling::AbstractDict=Dict{Char, String}(),
+                   scope::Module=Main,
+                   variables...)
     LegibleC.spelling[] = checkspelling(spelling)
     try
-        return transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable, suffix=tempsuffix)
+        return transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable, suffix=tempsuffix, scope, variables)
     finally
         LegibleC.spelling[] = Dict{Char, String}()
     end
 end
 
-function transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable, suffix)
+"""
+    @transpile(targets...; variables..., options...)
+
+`transpile`, with `scope` set to the module the call is written in, so that a variable
+given by keyword is looked up where you wrote it: `@transpile(fall, Point; g, μ,
+outfile="body")`.
+"""
+macro transpile(args...)
+    params = [a for a in args if a isa Expr && a.head === :parameters]
+    rest = [a for a in args if !(a isa Expr && a.head === :parameters)]
+    # Keywords: a bare `k` is `k=k`; each value is evaluated where the macro was written.
+    kws = Any[a isa Symbol ? Expr(:kw, a, esc(a)) : a isa Expr && a.head === :kw ? Expr(:kw, a.args[1], esc(a.args[2])) : esc(a)
+              for a in (isempty(params) ? [] : params[1].args)]
+    push!(kws, Expr(:kw, :scope, __module__))
+    return Expr(:call, GlobalRef(@__MODULE__, :transpile), Expr(:parameters, kws...), esc.(rest)...)
+end
+
+# Where a method was defined, if that is a file: the transpiler works from files, so a
+# definition typed at the REPL (or evaluated from a string) is refused.
+function fromfile(mi::Core.MethodInstance)
+    file = string(mi.def.file)
+    (startswith(file, "REPL[") || file == "none" || isempty(file)) &&
+        throw(ArgumentError("$(mi.def.name) is defined at the REPL, not in a file; the transpiler reads definitions from files"))
+end
+
+function transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable, suffix, scope, variables)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
     instances = Tuple{Core.MethodInstance, Vector{Type}}[]
+    types = Type[]
+    values = Any[]                    # (module or nothing, name, value, constant or nothing)
     for t in target
+        if t isa Type
+            isconcretetype(t) && isstruct(t) || throw(ArgumentError("$t is not a concrete struct type"))
+            push!(types, t)
+            continue
+        elseif t isa Pair
+            push!(values, (nothing, t.first, t.second, nothing))
+            continue
+        elseif t isa GlobalRef
+            push!(values, (t.mod, t.name, getfield(t.mod, t.name), nothing))
+            continue
+        end
         if t isa Function
             mi, _ = concretemethod(t)
             sig = argtypes(mi)
@@ -94,7 +134,14 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
                 throw(ArgumentError("$mi is not a concrete specialization"))
             sig = argtypes(mi)
         end
+        fromfile(mi)
         push!(instances, (mi, sig))
+    end
+    # A variable given by keyword: its binding is looked for in `scope`; a value with no
+    # binding there is a constant.
+    for (name, value) in pairs(variables)
+        bound = isdefined(scope, name) && getfield(scope, name) === value
+        push!(values, (bound ? scope : nothing, name, value, bound ? nothing : true))
     end
     # Two instances that are the same method at signatures C can't tell apart — a
     # static and a mutable array of the same size, say — are one C function.
@@ -104,11 +151,21 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     prog = Program(; precise, width, portable, suffix)
     union!(prog.names, names)
     for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
+    for T in types
+        structdef!(prog, T)
+        # The struct's docstring, as a Doxygen block above its typedef.
+        doc = strip(string(Base.Docs.doc(T)))
+        startswith(doc, "No documentation found") && continue
+        k = findfirst(p -> p.first === T, prog.structs)
+        prog.structs[k] = T => "/**\n" * join(" * " .* split(doc, "\n"), "\n") * "\n */\n" * prog.structs[k].second
+    end
+    for (mod, name, value, constant) in values; global!(prog, mod, name, value; constant); end
     generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source, blocked)
     functions = [generate(n, mi, sig) for (n, (mi, sig)) in zip(names, instances)]
     # A call to a function that wasn't asked for brings it in, and it may call others.
     while !isempty(prog.pending)
         mi, sig, n = popfirst!(prog.pending)
+        fromfile(mi)
         push!(instances, (mi, sig))
         push!(names, n)
         push!(functions, generate(n, mi, sig))
@@ -169,6 +226,8 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         println(io)
         foreach(m -> println(io, m), macros); isempty(macros) || println(io)
         for (name, def) in structs; name in placed || (print(io, def); println(io)); end
+        for g in prog.globals; println(io, globaldecl(g)); end
+        isempty(prog.globals) || println(io)
         for name in sort!(collect(keys(prog.foreign))); println(io, prog.foreign[name]); end
         isempty(prog.foreign) || println(io)
         # Each function's own return struct, right above its prototype, once.

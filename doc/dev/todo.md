@@ -88,12 +88,13 @@ transpiler does today is in [doc/](..), starting with
     ✅ A mutable array passed to a user function that writes it kept its `const` here — fixed 2026-09-05 through the callee's effects (`effects!`)
     ⬜ A *mutable* array parameter that is rebound and then mutated (`a, b = b, a; a[1] = 0.0` with `MVector`s): Julia mutates the caller's `b`, the C mutates a local copy, because a reassigned parameter becomes a fresh variable. Exactly right for immutable arrays; a divergence for mutable ones. Needs the parameter to stay a pointer to the caller's storage when it's mutable
 
-⬜ Targets beyond functions (`transpile` overloads; discussed 2026-09-06, order: struct, operator, variable, then the rest)
-    ⬜ A struct definition: `transpile(Point)`, `transpile(Point{Float64})` — the existing typedef emitter, field types first; the struct's docstring as a Doxygen block on the typedef
+⬜ Targets beyond functions (`transpile` overloads)
+    ✅ A struct definition: `transpile(Point)` — done 2026-09-06, with the docstring as a Doxygen block
     ⬜ An `@enum` type → a C `enum`
     ⬜ A math operator with types: `(+, SVector{3,Float64}, SVector{3,Float64})` generates the helper instead of transpiling Julia's method; requested helpers become ordinary functions with prototypes, not `static inline`; broadcasts as a symbol `(:.*, T, T)`; along-a-dimension as `(sum, T; dims=1)`
-    ⬜ A variable: `transpile(:g => g)` and a macro `@transpile g fall Point` that captures names and checks `isconst`; the initializer machinery moves from `test/check.jl` (`cliteral`) into `src`; values sit after the typedefs and before the helpers
-    ⬜ Functions read a global that's in the same call by its C name instead of inlining the literal (array globals fail today: `unsupported value`)
+    ✅ A variable: by keyword, `transpile(fall; g)`, `@transpile(…; g)` for the calling scope, `:name => value` and `GlobalRef` as escape hatches — done 2026-09-06; `initializer` moved into `src`
+    ✅ Functions read a global by its C name; the global is pulled in like a callee — done 2026-09-06; a mutable global must be typed (`k::Float64 = 2.0`)
+    ✅ Definitions come from files: a REPL-defined function is refused — done 2026-09-06
     ⬜ Functions that write globals (`global count += 1`) → assignment to the C variable
     ⬜ A module: `transpile(MyModule)` walks its names — functions, structs, constants
     ⬜ A file: `transpile("physics.jl")` includes it into a fresh module and does the same

@@ -31,6 +31,18 @@ mutable struct Program
     effects::Dict{Core.MethodInstance, Set{Symbol}}                # what a user function does besides compute (see `effects!`)
     kinds::Dict{Core.MethodInstance, Any}                          # the C struct a tuple-returning function returns (see `returnkind!`)
     tupledefs::Vector{Pair{String, String}}                        # those typedefs, name => text
+    globals::Vector{Any}                                           # the program's global variables, in order (see `global!`)
+end
+
+# A global variable in the output: its C name, the Julia binding it came from (module and
+# name; the module is `nothing` for a value listed with no binding behind it), its
+# value, and whether the C declares it `const`.
+struct Global
+    cname::String
+    mod::Union{Module, Nothing}
+    name::Symbol
+    value
+    constant::Bool
 end
 
 # How a tuple is laid out in C: the struct's name and its field names — `step_t` with
@@ -43,7 +55,7 @@ end
 Program(; precise::Bool=false, width::Integer=100, portable::Bool=false, suffix::Bool=true) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
-            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[])
+            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[])
 
 # The mathematical constants, for when the output defines its own macros (`portable`):
 # each is emitted as the double it rounds to, in the shortest form that reads back to
@@ -1317,6 +1329,9 @@ end
 # Anything named contributes its name, minus a leading `temp<N>` (and its `_`), split
 # at `_` — the same rule whether the name is one of our temps or the user's own.
 function contribution(sc::Scope, x)
+    x isa Core.SSAValue && sc.ci.code[x.id] isa GlobalRef && return contribution(sc, sc.ci.code[x.id])
+    x isa GlobalRef && (v = getfield(x.mod, x.name); !builtin(x, v)) &&
+        return filter(!isempty, split(global!(sc.prog, owner(x), x.name, v).cname, "_"))
     x isa Core.SSAValue || x isa Core.SlotNumber || return String[]
     x isa Core.SSAValue && !(x.id in sc.inlined) && !haskey(sc.expr, x.id) && return String[]   # a constant load
     x isa Core.SSAValue && x.id in sc.inlined && return unique(reduce(vcat, (contribution(sc, a) for a in sc.ci.code[x.id].args[2:end]); init=String[]))
@@ -1659,6 +1674,56 @@ end
 
 # ---- structs and tuples -------------------------------------------------------------
 
+# The module that owns a global's binding: `Inf` read in a module that imports it is
+# `Base.Inf`; a user's `g` is theirs wherever it was read.
+owner(x::GlobalRef) = Base.binding_module(x.mod, x.name)
+
+# Is this global Julia's own — a function, a type, a module, `pi`, `Inf` — rather than a
+# value of the user's?
+builtin(x::GlobalRef, v) = v isa Function || v isa Type || v isa Module || v isa Irrational || nameof(Base.moduleroot(owner(x))) in known
+
+# The type of a global's value as the transpiler sees types: a regular array carries
+# its size, as a sized argument does.
+globaltype(v) = v isa AbstractArray && shape(normalize(typeof(v))) === nothing ? shaped(eltype(v), size(v)) : normalize(typeof(v))
+
+# A global variable of the program, registered once per binding (or per name, for a
+# value with no binding): `g` in `const g = 9.81` is `const double g = 9.81;`. Named
+# like anything else, with `_` on a collision.
+function global!(prog::Program, mod::Union{Module, Nothing}, name::Symbol, value; constant::Union{Bool, Nothing}=nothing)
+    for g in prog.globals
+        (g.mod === mod && g.name === name) && return g
+    end
+    T = globaltype(value)
+    (isstruct(T) && ismutabletype(T)) && throw(ArgumentError("the global $name is a mutable struct; the C caller owns those"))
+    structdef!(prog, T)
+    isconst = constant !== nothing ? constant : mod !== nothing ? Base.isconst(mod, name) : true
+    cname = free(identifier(string(name)), union(prog.names, reserved))
+    push!(prog.names, cname)
+    g = Global(cname, mod, name, value, isconst)
+    push!(prog.globals, g)
+    return g
+end
+
+# A global's declaration with its value: `const double v[3] = {1.0, 2.0, 3.0};`.
+function globaldecl(g::Global)
+    T = globaltype(g.value)
+    return (g.constant && !(T <: AbstractString) ? "const " : "") * declare(T, g.cname) * " = " * initializer(g.value) * ";"
+end
+
+# A Julia value as a C initializer: numbers, characters, strings, arrays in row-major
+# nesting, tuples and structs field by field.
+initializer(x::Bool) = x ? "true" : "false"
+initializer(x::Integer) = string(x)
+initializer(x::AbstractFloat) = isinf(x) ? (x > 0 ? "INFINITY" : "-INFINITY") : isnan(x) ? "NAN" : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(Float64(x))
+initializer(x::Irrational) = repr(Float64(x))
+initializer(x::Char) = charliteral(x)
+initializer(x::AbstractString) = "\"" * cstring(x) * "\""
+initializer(x::Union{LinearAlgebra.Adjoint{<:Any, <:AbstractVector}, LinearAlgebra.Transpose{<:Any, <:AbstractVector}}) = initializer(parent(x))
+initializer(x::AbstractVector) = "{" * join(initializer.(x), ", ") * "}"
+initializer(x::AbstractArray) = "{" * join((initializer(selectdim(x, 1, i)) for i in 1:size(x, 1)), ", ") * "}"
+initializer(x::Tuple) = "{" * join(initializer.(x), ", ") * "}"
+initializer(x) = "{" * join((initializer(getfield(x, k)) for k in 1:fieldcount(typeof(x))), ", ") * "}"
+
 # The typedef for a struct or tuple type, added to the program once, after the types
 # of its fields. Anything that isn't a struct or tuple is ignored.
 function structdef!(prog::Program, T::Type)
@@ -1984,7 +2049,18 @@ function value(sc::Scope, x)
     x isa AbstractFloat   && return isinf(x) ? (push!(sc.headers, "math.h"); x > 0 ? "INFINITY" : "-INFINITY") :
                                     isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(x)
     x isa Irrational      && return x === pi ? constant(sc, "PI") : x === ℯ ? constant(sc, "E") : repr(Float64(x))
-    x isa GlobalRef       && return value(sc, getfield(x.mod, x.name))
+    if x isa GlobalRef
+        # A global the function reads: a function, type or Julia constant is itself; a
+        # value of the user's becomes a global variable of the program, by name.
+        v = getfield(x.mod, x.name)
+        builtin(x, v) && return value(sc, v)
+        g = global!(sc.prog, owner(x), x.name, v)
+        # A plain global read here has no type Julia can rely on, and neither can the C;
+        # `k::Float64 = 2.0` gives it one.
+        g.constant || Core.get_binding_type(g.mod, g.name) !== Any ||
+            throw(ArgumentError("the global $(x.name) is neither const nor typed, so its type isn't known where it is used; write `const $(x.name) = …` or `$(x.name)::T = …`"))
+        return g.cname
+    end
     throw(ArgumentError("unsupported value: $(repr(x))"))
 end
 
@@ -2005,7 +2081,7 @@ constant(sc::Scope, name) = sc.prog.portable ? (push!(sc.prog.macros, name); "LE
 function valuetype(sc::Scope, x)
     x isa Core.SSAValue   && return get(sc.shapes, x.id, widen(sc.ci.ssavaluetypes[x.id]))
     x isa Core.SlotNumber && return get(sc.slotshapes, x.id, widen(sc.ci.slottypes[x.id]))
-    x isa GlobalRef       && return typeof(getfield(x.mod, x.name))
+    x isa GlobalRef       && return globaltype(getfield(x.mod, x.name))
     return typeof(x)
 end
 
