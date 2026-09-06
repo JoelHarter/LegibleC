@@ -40,8 +40,8 @@ jobs:
           path: stackmath
       - name: publish when changed
         run: |
-          rm -f stackmath/*.c stackmath/*.h
-          cp aux/stackmath/out/*.c aux/stackmath/out/*.h stackmath/
+          rm -f stackmath/src/*.c stackmath/src/*.h
+          cp aux/stackmath/out/*.c aux/stackmath/out/*.h stackmath/src/
           cd stackmath
           git add -A
           if git diff --cached --quiet; then echo "stackmath unchanged"; exit 0; fi
