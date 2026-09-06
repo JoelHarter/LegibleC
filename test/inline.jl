@@ -33,7 +33,7 @@ src = csource("inline", hyp, poly, cubed, modded, signs, inloop, folded, cancell
     @test occursin("double temp2_x = sqrt(x[0] + x[1]);", src) && occursin("temp2_x * temp2_x", src)
     @test occursin("temp1_a = a + 1;", src) && occursin("temp2_a = a * 2;", src)     # mod and integer max repeat their operands
     @test occursin("a - b + (a + b) + a - b * a", src)                                # signs: `+ -b` is `- b`, `- -b` is `+ b`, `-(-a)` is `a`
-    @test occursin("for (int64_t i = 1; i <= n - 1; i++) {", src) && occursin("s = s + v[i - 1] * sqrt(v[i]);", src)
+    @test occursin("for (int64_t i = 1; i <= n - 1; i++) {", src) && occursin("s += v[i - 1] * sqrt(v[i]);", src)
     @test occursin("div_3_s(x, -(r * r * r), out);", src)                             # a folded sign wraps an expression
     @test occursin("div_3_s(x, s, out);", src)                                        # `-x / -s`: the signs cancel
     @test occursin("(double)(a + b) / 2.0", src)                                      # the cast binds tighter than `+`

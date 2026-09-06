@@ -39,6 +39,7 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | Julia | C | note |
 |---|---|---|
 | `+ - *` | `+ - *` | |
+| `x += e`, `x = x * e`; `n += 1` | `x += e`, `x *= e`; `n++` for an integer | only when `e` is one operand: `x = x + y - z` stays as written |
 | `/` | `/` | Julia's `/` is always floating: two integers get `.0` on a literal or a cast on a variable, `(double)a / (double)b` |
 | `a \ b` | `b / a` | |
 | `÷`, `%` | `/`, `%` | both truncate toward zero in both languages |

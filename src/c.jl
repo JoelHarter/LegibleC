@@ -327,6 +327,16 @@ function emitexpr!(lines, sc::Scope, prefix::AbstractString, expr::AbstractStrin
     emit!(lines, sc, line * ";")
 end
 
+# `x = x + e` as `x += e`, and an integer's `x + 1` as `x++`: only when `e` is a whole
+# operand at the top level, so `x = x + y - z` stays as written (`x += y - z` would be
+# a different sum). Nothing if the statement isn't of that shape.
+function compound(x::AbstractString, T::Type, text::AbstractString)
+    pieces = splitexpr(text)
+    length(pieces) == 3 && pieces[1] == x && pieces[2] in ("+", "-", "*", "/") || return nothing
+    pieces[3] == "1" && pieces[2] in ("+", "-") && T <: Integer && return x * pieces[2]^2
+    return "$x $(pieces[2])= $(pieces[3])"
+end
+
 # The top-level operands of `expr` interleaved with the operators between them, for
 # whichever class of operator present binds least tightly: `["a", "+", "b * c", "-", "d"]`.
 # Binary operators are rendered with a space on each side; nothing else in an
@@ -531,7 +541,9 @@ function statement!(lines, sc::Scope, i, st)
         elseif rhs isa Expr && rhs.head === :call && (callee_or_nothing(ci, rhs.args[1]) === Core.tuple || (callee_or_nothing(ci, rhs.args[1]) isa Type && isstruct(T)))
             compound!(lines, sc, i, T, rhs.args[2:end], x; declared=!here)
         else
-            emitexpr!(lines, sc, (here ? ctype(T) * " " : "") * "$x = ", rhs isa Expr ? first(render(sc, i, rhs)) : value(sc, rhs))
+            text = rhs isa Expr ? first(render(sc, i, rhs)) : value(sc, rhs)
+            short = here ? nothing : compound(x, T, text)
+            short === nothing ? emitexpr!(lines, sc, (here ? ctype(T) * " " : "") * "$x = ", text) : emit!(lines, sc, short * ";")
         end
         if fresh && !here
             s = slot.id

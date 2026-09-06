@@ -18,8 +18,8 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ Rebinding is free: `A, B = B, A` on immutable values should swap which C variable each name refers to and emit nothing, instead of the three-copy swap (correct today, but five `copy_2x2` calls where a person writes none). Same idea as forwarding an SSA copy, applied to a slot whose old value is dead
     ⬜ Rewrite loop variables used only as indices to the C idiom: `for (i = 0; i < n; i++) v[i]` instead of `v[i - 1]`
     ⬜ `return a > b && b > c;` when both branches of a value-`&&`/`||` just return
-    ⬜ A statement-form `x > 0 && (n += 1)` becomes `if (…) { n = n + 1; continue; }`; a person writes `if (…) n++;` — and `n = n + 1` itself should be `n++` / `n += 1`
-    ⬜ Hoist a loop bound that is a call: `for (…; i <= (int64_t)strlen(s); …)` recomputes it every iteration; Julia's `1:ncodeunits(s)` evaluates once, and a person writes `int64_t n = strlen(s);` first
+    ✅ `x = x + e` is `x += e`, an integer's `n + 1` is `n++`; the redundant `continue` a trailing `x && (n += 1)` produced is gone — done 2026-09-06
+    ✅ A loop bound that is a call is computed once before the loop — done 2026-09-06
     ⬜ `return c ? x : y;` for a ternary whose branches both return
     ⬜ Continuation lines of a multi-line expression land after its C; put them before it (`comment.md`)
     ✅ One-line `///` Doxygen comment on each generated helper — done 2026-09-03, `src/prose.jl`

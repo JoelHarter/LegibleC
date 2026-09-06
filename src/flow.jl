@@ -178,6 +178,13 @@ function forloop!(lines, sc::Scope, F::For)
     T = ctype(widen(sc.ci.slottypes[F.var]))
     lo = bound(sc, F.lo)
     hi = bound(sc, F.hi)
+    # A bound that is a call — `1:ncodeunits(s)` — is computed once, before the loop,
+    # as Julia's range is; in the header it would run every iteration.
+    if F.hi isa Core.SSAValue && F.hi.id in sc.inlined && occursin("(", hi)
+        t = temp!(sc, nothing, contribution(sc, F.hi))
+        emit!(lines, sc, "$T $t = $hi;")
+        hi = t
+    end
     if F.array !== nothing
         # `for x in v`: a 0-based index the Julia never named, then the element.
         k = indices(1; taken=sc.names)[1]
@@ -283,6 +290,11 @@ function ifelse!(lines, sc::Scope, i::Int, hi::Int; chained::Bool=false)
        !any(code[last].label in l for l in sc.loops)
         elselo, elsehi = target, code[last].label - 1
         after = code[last].label
+        push!(sc.skipped, last)
+    elseif last !== nothing && code[last] isa Core.GotoNode && any(code[last].label == cont for (_, cont) in sc.loops) &&
+           nextlive(sc, code[last].label) == nextlive(sc, target)
+        # A jump to the loop's next iteration from the end of the body — how `x && (n += 1)`
+        # lowers as the last statement of a loop — is where the body was going anyway.
         push!(sc.skipped, last)
     end
     cond = condition(sc, conds, op)
