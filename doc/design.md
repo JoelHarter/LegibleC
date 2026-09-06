@@ -52,6 +52,7 @@ transpile time, never C that compiles and does the wrong thing.
 
 | file | holds |
 |---|---|
+| `LegibleC.jl` | the package's module: dependencies, the export, the two includes below |
 | `transpile.jl` | the `transpile` API, target resolution, the `Program` that spans one output file, the file writer |
 | `c.jl` | the IR walk: `Scope`, `analyze!`, `statement!`, values and temps, constructions, broadcasts, array calls, solves, slices, user calls, `ccall`, structs and tuples |
 | `flow.jl` | recognising `if`/`while`/`for`/`&&`/`||`/`?:` in the lowered jumps, and rendering conditions inline |

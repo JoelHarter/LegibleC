@@ -1,16 +1,4 @@
-# Everything lives in the module `LegibleC`, so that a user's own `shape` or `index` — or
-# a function of theirs named like any of the transpiler's internals — is a different
-# name. `include`-ing this file also brings `transpile` into scope, which is the one
-# name a user needs.
-module LegibleC
-
-using StaticArrays
-using LinearAlgebra
-using Printf
-
-export transpile
-
-include("c.jl")
+# The API: targets to method instances, C names, and the output file.
 
 """
     transpile(target...; outfile="juliatranspiled", outpath=pwd()) -> path
@@ -230,6 +218,3 @@ function concretemethod(f::Function, T::DataType...)
     return mi, T_return
 end
 
-end # module LegibleC
-
-using .LegibleC

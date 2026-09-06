@@ -1131,3 +1131,20 @@ comparison, a byte count and a print carry any Unicode through unchanged,
 and `length` counts characters with the one loop a C programmer writes for
 it. What's left out — concatenation, `string(…)`, `@sprintf` — needs a
 buffer and an owner, which is a design question on its own.
+
+---
+
+## 2026-09-06 — A package, unregistered
+
+**Decision.** The repo is a Julia package: `Project.toml` with the name, a
+UUID, version `0.1.0`, the dependencies and their compat bounds;
+`src/LegibleC.jl` is the module file and includes `c.jl` and
+`transpile.jl`. It is installed with `] dev` (or `] add` by URL) and used
+with `using LegibleC`. The `include("src/transpile.jl")` entry and the
+`using .LegibleC` after the module are gone. Registration in General waits.
+
+**Why.** Precompilation — `using LegibleC` is cached instead of re-parsed
+every session — and explicit, bounded dependencies, so the transpiler no
+longer relies on the caller having loaded StaticArrays first. A version to
+pin, `] test`, and a `using` line that doesn't break when a folder moves.
+Registration is a one-time step later; nothing here depends on it.

@@ -4,9 +4,9 @@
 # value is the reference; the C has to agree to rounding. Any function whose C won't
 # compile, or whose result differs, fails its test with both values shown.
 using Test, StaticArrays, LinearAlgebra
-include(joinpath(@__DIR__, "..", "src", "transpile.jl"))
+using LegibleC
 # The internals the harness needs to build a `main` around the generated C.
-using .LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames, charliteral
+using LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames, charliteral
 
 const flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 

@@ -136,7 +136,8 @@ be read by a person who didn't write it.
 ## Using it
 
 ```julia
-include("src/transpile.jl")
+] dev /path/to/LegibleC        # or: ] add https://github.com/JoelHarter/LegibleC
+using LegibleC
 transpile(f, g, (h, Float64, 3, Float64, 2, 3); outfile="name", outpath=dir)
 ```
 
@@ -145,9 +146,8 @@ argument types spelled out, where a type followed by integers is an array of
 that element type and size. Arrays are `StaticArrays` types, or `Array`s
 given a size in the call. One `.c` file comes out — prototypes, the helpers
 it needs, the functions — and anything a listed function calls comes with
-it. Everything lives in the module `LegibleC`; the `include` brings
-`transpile` into scope and nothing else, so your own functions can be named
-anything.
+it. `transpile` is the package's one exported name, so your own functions
+can be named anything.
 
 [doc/syntax.md](doc/syntax.md) is the one-page list of every piece of Julia
 accepted, and of every option.
