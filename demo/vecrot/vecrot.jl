@@ -1,4 +1,4 @@
-# A quaternion with only multiplication defined, and a vector rotated by one. Run it to produce out/ next to it. Look at: the struct by value, `Base.:*` on it coming out as `mul`, `q * p * conjugate(q)` as two calls, and `sincos` as its two lines.
+# A quaternion with only multiplication defined, and a vector rotated by one. Run it to produce out/ next to it. Look at: the struct by value, `Base.:*` on it coming out as `mul_Quaternion_Quaternion`, `q * p * conjugate(q)` as two calls, and `sincos` as its two lines.
 using LegibleC
 using StaticArrays
 

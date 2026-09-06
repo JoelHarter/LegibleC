@@ -1949,7 +1949,7 @@ function register!(prog::Program, f, spec)
     mi === nothing && return nothing
     nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
     haskey(prog.calls, mi) && return (mi, sig, prog.calls[mi])
-    base = qualified(fname(mi.def.name), mi.def.module)
+    base = qualified(operatorname(mi.def.name, sig), mi.def.module)
     taken = union(prog.names, keys(prog.helpers), reserved)
     name = base in taken ? free(join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_"), taken) : free(base, reserved)
     push!(prog.names, name)

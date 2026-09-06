@@ -69,6 +69,18 @@ const operators = Dict(:* => "mul", :+ => "add", :- => "sub", :/ => "div", :\ =>
                        :!= => "ne", :< => "lt", :<= => "le", :> => "gt", :>= => "ge", :! => "not")
 fname(name::Symbol) = get(operators, name, string(name))
 
+# The C name of a user's method of a Julia operator, by the helper scheme: the
+# operator's word, then each input's kind — a struct's name, an array's shape, `s` for
+# a scalar — `mul_Quaternion_Quaternion`, `mul_Quaternion_s`; `add` and `sub` (and the
+# comparisons) on two of a kind write it once, `add_Quaternion`, as `add_2x2` does.
+function operatorname(name::Symbol, sig)
+    haskey(operators, name) || return string(name)
+    piece(T) = isstruct(T) ? structname(T) : T <: AbstractArray ? dims(T) : "s"
+    pieces = [piece(T) for T in sig]
+    once = name in (:+, :-, :(==), :!=, :<, :<=, :>, :>=) && allequal(pieces)
+    return operators[name] * "_" * (once ? pieces[1] : join(pieces, "_"))
+end
+
 """
     qualified(name, mod) -> String
 

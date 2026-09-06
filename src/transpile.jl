@@ -293,7 +293,7 @@ end
 # C names for the instances: each Julia name made C-valid, instances that share a name
 # told apart by `mangled`, and the results kept clear of reserved words.
 function cnames(instances)
-    base = [qualified(fname(mi.def.name), mi.def.module) for (mi, _) in instances]
+    base = [qualified(operatorname(mi.def.name, sig), mi.def.module) for (mi, sig) in instances]
     names = similar(base)
     for b in unique(base)
         group = findall(==(b), base)

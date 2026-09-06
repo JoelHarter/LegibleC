@@ -19,9 +19,10 @@ pointer. Creating a mutable struct inside transpiled code would need an
 allocation and an ownership rule, so it's refused; the C caller owns those.
 
 A method of a Julia operator on the struct — `Base.:*(a::Quaternion,
-b::Quaternion)` — is the user's function, named by the operator's word since
-C has no operator overloading: `mul(a, b)`, likewise `add`, `sub`, `div`,
-`eq`, `lt`. `a * b * c`, one call in Julia through its fold, is the two
+b::Quaternion)` — is the user's function, named the way a helper is, since
+it is one: the operator's word and each input's kind, `mul_Quaternion_Quaternion`,
+`mul_Quaternion_s`, and `add_Quaternion` for two of a kind, as `add_2x2`.
+`a * b * c`, one call in Julia through its fold, is the two
 binary calls. A struct built to be returned is the literal in the `return`,
 `return (Point){x, y};`, broken one field per line when long; a small struct
 value used once — a constructor, a call returning one — is written where it

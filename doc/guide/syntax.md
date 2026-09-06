@@ -33,7 +33,7 @@ an array of that element type and size. Options: `outfile`, `outpath`,
 | `return nothing`, a `Nothing` result | `void` |
 | tuples, multiple return values | yes, as a generated struct (`../struct.md`) |
 | calling another user function | yes; brought in on demand if not listed, recursion included (`../call.md`) |
-| `Base.:*(a::Quaternion, b::Quaternion) = …`, an operator method on your struct | yes, as `mul(a, b)` (`add`, `sub`, `div`, `eq`, …); `a * b * c` is the two calls |
+| `Base.:*(a::Quaternion, b::Quaternion) = …`, an operator method on your struct | yes, named like a helper: `mul_Quaternion_Quaternion`, `add_Quaternion`, `mul_Quaternion_s`; `a * b * c` is the two calls |
 | `ccall`, `@ccall` | yes: the call itself, with a header or a prototype (`../call.md`) |
 | docstrings and comments | carried into the C (see `../comment.md`) |
 | `print`, `println`, to `stdout` or `stderr`; `"x = $x"`; `@show`; `@printf` | yes, as `printf` and one array helper (`../io.md`) |

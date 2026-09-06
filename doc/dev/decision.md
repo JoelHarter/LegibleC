@@ -1331,8 +1331,8 @@ header must reach it.
 
 **Decision.** A method of a Julia operator on a user struct,
 `Base.:*(a::Quaternion, b::Quaternion)`, is transpiled like any user
-function and named by the operator's word, `mul`, `add`, `sub`, `div`,
-`eq`, …, mangled by types if two such methods collide. `a * b * c`, which
+function and named the way a helper is, since it is one:
+`mul_Quaternion_Quaternion`, `mul_Quaternion_s`, `add_Quaternion`. `a * b * c`, which
 Julia parses as one call resolved to its own fold, is the two binary calls.
 A small struct value used once — a constructor, a call returning one — is
 written where it is used; a struct built to be returned is the literal in
