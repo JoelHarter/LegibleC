@@ -23,7 +23,10 @@ it, because that is the standard it is held to.
 
 Three lines of Julia, and the C each becomes. In each pair, the first box is
 the Julia as its author wrote it, and the second is what LegibleC wrote from
-nothing but that.
+nothing but that — every character of it, the comments included. Nothing in
+the C boxes was added by a person: the `// @orbit.jl:18:` lines, the
+`// beta = temp1_X \ temp2_X_y` steps, and the `///` helper descriptions
+are all the transpiler's.
 
 **A physicist's line, names and all.** The Julia:
 
@@ -77,33 +80,11 @@ static inline void add_3(const double a[3], const double b[3], double out[3]) {
 ```
 
 A solve at 2×2 or 3×3 is written out the way a person writes it. From 4×4
-on, at whatever size the matrix is, it's LU with partial pivoting, three
-helpers that read like the textbook: `pivot_4x4`, `lu_4x4`, and
-
-```c
-/// 4×4-matrix \ 4-vector solve by LU with partial pivoting
-/// out = A \ b
-void solve_4x4_4(const double A[4][4], const double b[4], double out[restrict 4]) {
-    double LU[4][4];
-    int p[4];
-    lu_4x4(A, LU, p);
-    for (int i = 0; i < 4; i++) {
-        out[i] = b[p[i]];
-        for (int k = 0; k < i; k++) {
-            out[i] -= LU[i][k] * out[k];
-        }
-    }
-    for (int i = 3; i >= 0; i--) {
-        for (int k = i + 1; k < 4; k++) {
-            out[i] -= LU[i][k] * out[k];
-        }
-        out[i] /= LU[i][i];
-    }
-}
-```
-
-Everything is on the stack at its static size; this is for the small dense
-systems of control and simulation, not for the BLAS-sized ones.
+on, at whatever size the matrix is, it's LU with partial pivoting: three
+generated helpers, `pivot_4x4`, `lu_4x4` and `solve_4x4_4`, each commented
+like the ones above. Transpile an `A \ b` at 4×4 to read them. Everything
+stays on the stack at its static size; this is for the small dense systems
+of control and simulation, not for the BLAS-sized ones.
 
 **The whole thing** is in [demo/](demo/README.md): each folder is a Julia
 file and the `out/` it produces — a header a caller includes, the
