@@ -28,11 +28,13 @@ That writes an `out/` folder next to where you ran it, and returns the path
 of `out/body.c`. The folder holds:
 
 - `body.h` — what a caller needs: `typedef struct`s for the structs used,
-  the globals as `extern`, and each function's prototype under a Doxygen
-  block made from its docstring, with its own return struct right above it
-  when it returns a tuple. Include this from your C.
-- `body.c` — the functions themselves, the globals with their values, and
-  the `#include`s they need. It includes `body.h`.
+  the constants as `static const` with their values and the comments from
+  their definitions, any other global as `extern`, and each function's
+  prototype under a Doxygen block made from its docstring, with its own
+  return struct right above it when it returns a tuple. Include this from
+  your C.
+- `body.c` — the functions themselves, the mutable globals with their
+  values, and the `#include`s they need. It includes `body.h`.
 - `helper.h` — everything generated that your functions need: small
   helpers as `static inline` functions, each with a two-line comment, and
   prototypes for the larger ones.

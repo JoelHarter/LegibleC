@@ -30,9 +30,10 @@ A global read by a function must be `const` or typed, since an untyped
 mutable global has no type Julia can compile against; the transpiler says
 so if it meets one. A constant defined in a module keeps the comment on
 its definition line — `const c = 299_792_458.0  # speed of light, m/s`
-gives `const double SI_c = 2.99792458e8;  // speed of light, m/s`, in the
-header too — and only the constants a function reads come out, however
-many the module defines.
+gives `static const double CODATA_c = 2.99792458e8;  // speed of light,
+m/s` in the header, where every file that includes it can fold it — and
+only the constants a function reads come out, however many the module
+defines. A mutable global is defined in the `.c` and `extern` in the header.
 
 Listing a variable by keyword, `transpile(fall; g)`, or `; g, μ` for
 several, adds it whether or not anything reads it, so a constant can sit in

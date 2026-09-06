@@ -4,7 +4,7 @@ Every keyword option of `transpile`.
 
 | option | default | what it does |
 |---|---|---|
-| `outfile` | `"juliatranspiled"` | the file name; `.c` is added if missing |
+| `outfile` | `"juliatranspiled"` | the file name; `.c` is added if missing. One name per target, `("body", "body", "fit")`, splits the targets over files, two with the same name sharing one; `nothing` for a name, or for all of `outfile`, names a file after its target. What several files need — a function their targets call, a global, a struct — goes to `common.c` and `common.h`, which they include |
 | `outpath` | `pwd()` | the folder |
 | `source` | `true` | copy each Julia line above its C as `// @file.jl:12: …`; comments are always carried, this controls the code lines |
 | `precise` | `false` | print floats with every digit (`%.17g`) instead of `%g` |

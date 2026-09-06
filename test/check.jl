@@ -71,14 +71,16 @@ function needs its types spelled out) into `name.c`, run every case in C, and te
 each result agrees with Julia's. `extra` is C text placed before `main`, for a function
 a `ccall` needs to exist. Returns the generated C, for tests that look at the text.
 """
-function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra::AbstractString="")
+function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString="", kw...)
     dir = mktempdir()
     fs = unique(c.f for c in cases)
     scope = parentmodule(fs[1])            # the test module: its names are bare
-    path = transpile((targets === nothing ? fs : targets)...; outpath=dir, outfile=name, scope)
+    path = transpile((targets === nothing ? fs : targets)...; outpath=dir, outfile=name, scope, kw...)
+    path isa AbstractString || (path = path[end])
     LegibleC.scope[] = scope               # so the names spelled below match the file's
     cnames = Dict(zip(fs, identifiers([identifier(string(nameof(f))) for f in fs])))
-    main = ["#include <stdio.h>", "#include <math.h>", "#include \"$name.h\"", extra, "int main(void) {"]
+    headers = ["#include \"$h\"" for h in readdir(dirname(path)) if endswith(h, ".h") && h != "helper.h"]
+    main = ["#include <stdio.h>", "#include <math.h>", headers..., extra, "int main(void) {"]
     references = Any[]
     for (k, c) in enumerate(cases)
         passes = String[]
@@ -142,16 +144,18 @@ end
 
 # Transpile and compile only, for a test that checks the text of the C: every file
 # written, headers first and the functions last, as one string.
-function csource(name::AbstractString, targets...; kw...)
+function csource(name, targets...; kw...)
     dir = mktempdir()
     f = findfirst(t -> t isa Function || t isa Tuple, collect(targets))
     scope = f === nothing ? Main : parentmodule(targets[f] isa Tuple ? targets[f][1] : targets[f])
     path = transpile(targets...; outpath=dir, outfile=name, scope, kw...)
+    path isa AbstractString || (path = path[end])
+    last = basename(path)
     out = dirname(path)
     files = readdir(out)
     for f in files
         endswith(f, ".c") && run(`cc $flags -c $(joinpath(out, f)) -o $(joinpath(dir, f * ".o"))`)
     end
-    ordered = [filter(==("helper.h"), files); filter(f -> endswith(f, ".h") && f != "helper.h", files); filter(f -> endswith(f, ".c") && f != name * ".c", files); [name * ".c"]]
+    ordered = [filter(==("helper.h"), files); filter(f -> endswith(f, ".h") && f != "helper.h", files); filter(f -> endswith(f, ".c") && f != last, files); [last]]
     return join((read(joinpath(out, f), String) for f in ordered), "\n")
 end

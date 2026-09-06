@@ -3,6 +3,9 @@
 How to call the generated C: what each Julia type becomes on the C side.
 
 Include `<outfile>.h`, compile `out/*.c` with your own files, and call.
+With the targets split over several files (`outfile=("a", "b")`), include
+the header of each file you call into; what they share is in `common.h`,
+which they include themselves.
 
 **Scalars** are what they look like: `double`, `int64_t`, `bool`, `char`.
 A scalar result is the return value.

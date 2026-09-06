@@ -1411,3 +1411,33 @@ an operand a square writes twice is not inlined, which is about
 expressions with work in them; a name costs nothing to repeat, and
 `temp1 * temp1` for `c²` was the one unreadable line in the relativity
 demo.
+
+---
+
+## 2026-09-07 — Several output files, and constants in the header
+
+**Decision.** `outfile` takes one name per target, `("body", "body",
+"fit")`, and the targets are split over those files, two with the same
+name sharing one; `nothing` as a name, or as all of `outfile`, names a
+file after its target. Each file has its header. A function no one asked
+for goes to the file whose targets reach it through calls; one reached
+from several files goes to `common.c`, with `common.h`, as does a global,
+a struct or a return struct that several files mention. A file includes
+another's header when its text names something placed there; a return
+struct goes with the function it is named after. Headers that would
+include each other in a circle — a struct listed with one file while
+another's prototypes need it — are refused with a message. Constants now
+sit in the header as `static const`, with their comments; only mutable
+globals are defined in the `.c` and `extern` in the header. `transpile`
+returns the paths in file order when there are several.
+
+**Why.** A library of any size is several files, and the split a person
+would make is by what each file is about, which the order of the targets
+already expresses. Shared code must be compiled once, so it needs a home
+every file can include, and `common` is the name C programmers give that
+home. A constant in the `.c` behind an `extern` is a load from memory in
+every other file and can't fold into `v * v / (c * c)`; `static const` in
+the header is a compile-time constant everywhere, and it is where a C
+programmer puts one, next to its comment. A plain `const` in a C header
+would be a duplicate symbol at link time, which is what the `static` is
+for.

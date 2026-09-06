@@ -3,10 +3,10 @@
 """
     transpile(target...; outfile="juliatranspiled", outpath=pwd()) -> path
 
-Transpile one or more targets into `outpath/out/`: `<outfile>.c` with the functions,
-`helper.h` and `helper.c` with the generated helpers they need. Returns the path of
-the functions file. Each
-`target` is one of:
+Transpile one or more targets into `outpath/out/`: `<outfile>.c` with the functions
+and `<outfile>.h` for callers, `helper.h` and `helper.c` with the generated helpers
+they need. Returns the path of the functions file — the paths, in file order, when
+there are several. Each `target` is one of:
 
 - a `Function` — must have exactly one method with all-concrete argument types
 - a `Core.MethodInstance` — must be a concrete specialization
@@ -24,6 +24,12 @@ a target that can't be resolved throws an `ArgumentError`.
 Options:
 
 - `outfile`: name of the functions file; `.c` is appended if not already present.
+  To split the targets over several files, give one name per target, in order —
+  `outfile=("body", "body", "fit")` — where two targets with the same name share a
+  file, and `nothing` names a file after its target; `outfile=nothing` gives every
+  target a file of its own, named after it. A function the targets of several files
+  call, or a global or struct several files use, goes to `common.c` and `common.h`,
+  which the files that need it include.
 - `outpath`: the folder whose `out/` subfolder receives the files; defaults to
   Julia's current working directory.
 - `templimit`: longest name an intermediate value may be given before its
@@ -54,7 +60,7 @@ than one signature in a single call, those get the argument types appended
 (`fun1_Float64_Float64`) so the names don't collide.
 """
 function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, Vararg{Union{DataType, Integer}}}, Type, Pair{Symbol, <:Any}, GlobalRef}...;
-                   outfile::AbstractString="juliatranspiled", outpath::AbstractString=pwd(),
+                   outfile::Union{AbstractString, Nothing, Tuple, AbstractVector}="juliatranspiled", outpath::AbstractString=pwd(),
                    templimit::Integer=40,
                    # On by default only until dynamic arrays are supported; then it flips
                    # to off, and static becomes something you opt into.
@@ -101,16 +107,20 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     instances = Tuple{Core.MethodInstance, Vector{Type}}[]
     types = Type[]
     values = Any[]                    # (module or nothing, name, value, constant or nothing)
+    became = Any[]                    # per target: (:fn, method, C signature), (:type, T) or (:value, k)
     for t in target
         if t isa Type
             isconcretetype(t) && isstruct(t) || throw(ArgumentError("$t is not a concrete struct type"))
             push!(types, t)
+            push!(became, (:type, t))
             continue
         elseif t isa Pair
             push!(values, (nothing, t.first, t.second, nothing))
+            push!(became, (:value, length(values)))
             continue
         elseif t isa GlobalRef
             push!(values, (t.mod, t.name, getfield(t.mod, t.name), nothing))
+            push!(became, (:value, length(values)))
             continue
         end
         if t isa Function
@@ -129,6 +139,7 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
             sig = argtypes(mi)
         end
         push!(instances, (mi, sig))
+        push!(became, (:fn, mi.def, csignature(sig)))
     end
     # A variable given by keyword: its binding is looked for in `scope`; a value with no
     # binding there is a constant.
@@ -152,7 +163,12 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         k = findfirst(p -> p.first === T, prog.structs)
         prog.structs[k] = T => "/**\n" * join(" * " .* split(doc, "\n"), "\n") * "\n */\n" * prog.structs[k].second
     end
-    for (mod, name, value, constant) in values; global!(prog, mod, name, value; constant); end
+    globals = [global!(prog, mod, name, value; constant) for (mod, name, value, constant) in values]
+    # Each target's C name, which is also the default name of its file.
+    targetnames = [k[1] === :fn ? names[findfirst(inst -> (inst[1].def, csignature(inst[2])) == (k[2], k[3]), instances)] :
+                   k[1] === :type ? structname(k[2]) : globals[k[2]].cname for k in became]
+    files = filenames(outfile, targetnames)
+    home = Dict{String, String}(zip(targetnames, files))     # a target's C name -> its file
     generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source, blocked)
     functions = [generate(n, mi, sig) for (n, (mi, sig)) in zip(names, instances)]
     # A call to a function that wasn't asked for brings it in, and it may call others.
@@ -172,95 +188,221 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         any(v -> haskey(prog.helpers, v), functions[k][4]) || continue
         functions[k] = generate(n, mi, sig; blocked=keys(prog.helpers))
     end
-    # The files in `out/`: `helper.h`/`.c` for everything generated that the user's
-    # functions need — `add_3`, `solve_4x4_4`, `powi`, `printarray_F64` — and
-    # `<outfile>.c` for the user's functions. The header holds what the helpers need —
-    # standard includes, constants, typedefs — plus prototypes of the out-of-line
-    # helpers and the inline ones themselves; the `.c` holds the out-of-line ones. The
-    # helper files are written only when there is a helper. A function's own return
-    # struct sits right above its prototype.
     dir = joinpath(outpath, "out")
     mkpath(dir)
-    base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
+    writehelpers(dir, prog)
+    return writefiles(dir, prog, unique(files), home, names, functions)
+end
+
+# The file each target goes to, without the `.c`: one name for all, or one per target,
+# where `nothing` stands for the target's own C name — and every target's file when
+# `outfile` itself is `nothing`.
+function filenames(outfile, targetnames)
+    trim(f) = (f = String(f); endswith(f, ".c") ? f[1:end-2] : f)
+    files = if outfile isa AbstractString
+        fill(trim(outfile), length(targetnames))
+    else
+        given = outfile === nothing ? fill(nothing, length(targetnames)) : collect(outfile)
+        length(given) == length(targetnames) || throw(ArgumentError("outfile names $(length(given)) files for $(length(targetnames)) targets"))
+        [f === nothing ? n : trim(f) for (f, n) in zip(given, targetnames)]
+    end
+    for f in files
+        f == "helper" && throw(ArgumentError("`helper.c` is the file the generated helpers go to; name the functions' file something else"))
+        f == "common" && length(unique(files)) > 1 && throw(ArgumentError("`common.c` is the file the functions shared between the others go to; name the target's file something else"))
+    end
+    return files
+end
+
+# Does the C text mention the name — a function, as a call; anything else, as a word?
+mentions(text, name; call::Bool=false) = occursin(Regex("\\b\\Q$name\\E" * (call ? "\\(" : "\\b")), text)
+
+# Each file includes the standard headers its own text uses, found by the names each
+# header provides — `int64_t`, `bool`, `memcpy`, `sqrt`, `printf`, … — not the union of
+# what the program uses.
+includes(text) = [h for (h, pattern) in standard if occursin(pattern, text)]
+
+# `#define`s for the portable constants, each written where it is used.
+macros(prog::Program) = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the double nearest $(constants[m])" for m in sort!(collect(prog.macros))]
+
+# `helper.h` and `helper.c`: everything generated that the user's functions need —
+# `add_3`, `solve_4x4_4`, `powi`, `printarray_F64`. The header holds what the helpers
+# need — standard includes, constants, typedefs — plus prototypes of the out-of-line
+# helpers and the inline ones themselves; the `.c` holds the out-of-line ones, and is
+# written only when there is one. Returns the names of the structs the header defines.
+function writehelpers(dir, prog::Program)
     order = helperorder(prog.helpers)
-    # Each file includes the standard headers its own text uses, found by the names
-    # each header provides — `int64_t`, `bool`, `memcpy`, `sqrt`, `printf`, … — not
-    # the union of what the program uses.
-    includes(text) = [h for (h, pattern) in standard if occursin(pattern, text)]
-    macros = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the double nearest $(constants[m])" for m in sort!(collect(prog.macros))]
-    structs = [(structname(T), def) for (T, def) in prog.structs]
-    placed = Set{String}()
-    groups = [("helper", order)]
-    for (file, names) in groups
-        isempty(names) && continue
-        text = join((prog.helpers[n] for n in names), "\n")
-        inline = [n for n in names if isinline(prog.helpers[n])]
-        outline = [n for n in names if !isinline(prog.helpers[n])]
-        guard = "LEGIBLEC_" * uppercase(file) * "_H"
-        htext = String[]
-        used = [m for m in macros if occursin(split(m)[2], text)]
-        append!(htext, used); isempty(used) || push!(htext, "")
-        for (name, def) in structs; name in placed || !occursin(name, text) || (push!(htext, def); push!(placed, name)); end
-        for name in outline; push!(htext, prototype(prog.helpers[name])); end
-        isempty(outline) || push!(htext, "")
-        for name in inline; push!(htext, prog.helpers[name]); end
-        hbody = join(htext, "\n")
-        ctext = join((prog.helpers[n] for n in outline), "\n")
-        open(joinpath(dir, file * ".h"), "w") do io
-            println(io, "#ifndef $guard\n#define $guard\n")
-            for h in includes(hbody); println(io, "#include <", h, ">"); end
-            isempty(includes(hbody)) || println(io)
-            print(io, rstrip(hbody)); println(io); println(io)
-            println(io, "#endif  // $guard")
+    isempty(order) && return String[]
+    text = join((prog.helpers[n] for n in order), "\n")
+    inline = [n for n in order if isinline(prog.helpers[n])]
+    outline = [n for n in order if !isinline(prog.helpers[n])]
+    guard = "LEGIBLEC_HELPER_H"
+    htext = String[]
+    used = [m for m in macros(prog) if occursin(split(m)[2], text)]
+    append!(htext, used); isempty(used) || push!(htext, "")
+    placed = String[]
+    for (T, def) in prog.structs
+        name = structname(T)
+        mentions(text, name) || continue
+        push!(htext, def); push!(placed, name)
+    end
+    for name in outline; push!(htext, prototype(prog.helpers[name])); end
+    isempty(outline) || push!(htext, "")
+    for name in inline; push!(htext, prog.helpers[name]); end
+    hbody = join(htext, "\n")
+    ctext = join((prog.helpers[n] for n in outline), "\n")
+    open(joinpath(dir, "helper.h"), "w") do io
+        println(io, "#ifndef $guard\n#define $guard\n")
+        for h in includes(hbody); println(io, "#include <", h, ">"); end
+        isempty(includes(hbody)) || println(io)
+        print(io, rstrip(hbody)); println(io); println(io)
+        println(io, "#endif  // $guard")
+    end
+    isempty(outline) && return placed
+    open(joinpath(dir, "helper.c"), "w") do io
+        for h in includes(ctext); println(io, "#include <", h, ">"); end
+        println(io, "#include \"helper.h\"")
+        for name in outline; println(io); print(io, prog.helpers[name]); end
+    end
+    return placed
+end
+
+# The functions' files, `<file>.c` with a companion `<file>.h` each: what a caller needs
+# in the header and nothing else — the typedefs, the constants (`static const`, so every
+# file that includes them can fold them), the other globals as `extern`, and each
+# function's documented prototype with its own return struct right above it — and in
+# the `.c` the includes, the mutable globals with their values, and the definitions.
+#
+# With several files, each target goes to its own; a function reached only from one
+# file's targets goes with them, and one reached from several — or a global, a struct,
+# a tuple struct that several files mention — goes to `common`, which every file that
+# needs it includes. A file includes another's header when its text names something
+# placed there. Returns the path of the `.c`, or the paths in file order with several.
+function writefiles(dir, prog::Program, order, home, names, functions)
+    helpertext = join(values(prog.helpers), "\n")
+    helperstructs = [structname(T) for (T, _) in prog.structs if mentions(helpertext, structname(T))]
+    definition = Dict(zip(names, (f[3] for f in functions)))
+    where = Dict{String, String}(home)                  # every placed name -> its file
+    several = length(order) > 1
+    place(files) = length(files) == 1 ? first(files) : several ? "common" : order[1]
+    # A function not asked for goes where the targets that reach it through calls are.
+    # Calls don't go on through a target, which is compiled in its own file.
+    reached = Dict(n => Set{String}() for n in names if !haskey(home, n))
+    for (n, file) in home
+        haskey(definition, n) || continue
+        stack = [n]
+        seen = Set([n])
+        while !isempty(stack)
+            text = definition[pop!(stack)]
+            for c in names
+                c in seen && continue
+                mentions(text, c; call=true) || continue
+                push!(seen, c)
+                haskey(home, c) && continue
+                push!(reached[c], file)
+                push!(stack, c)
+            end
         end
-        # The `.c` holds the out-of-line helpers; with none, there is no file.
-        isempty(outline) && continue
-        open(joinpath(dir, file * ".c"), "w") do io
+    end
+    for (n, files) in reached; where[n] = place(files); end
+    # Everything else goes where it is mentioned: by one file's functions, there; by
+    # several, to `common`.
+    filetext = Dict(f => join([functions[k][1] * "\n" * functions[k][3] for k in 1:length(names) if where[names[k]] == f], "\n") for f in order)
+    spread(name; call=false) = place(Set(f for f in order if mentions(filetext[f], name; call)))
+    for g in prog.globals; haskey(where, g.cname) || (where[g.cname] = spread(g.cname)); end
+    for (T, _) in prog.structs
+        n = structname(T)
+        haskey(where, n) && continue
+        where[n] = n in helperstructs ? "helper" : spread(n)
+    end
+    # A function's return struct goes with the function it is named after, `step_t` with `step`.
+    for (n, _) in prog.tupledefs
+        haskey(where, n) && continue
+        owner = endswith(n, "_t") ? get(where, n[1:end-2], nothing) : nothing
+        where[n] = owner === nothing ? spread(n) : owner
+    end
+    for n in keys(prog.foreign); haskey(where, n) || (where[n] = spread(n; call=true)); end
+    "common" in values(where) && !("common" in order) && (order = ["common"; order])
+    # What each file defines, for the includes: functions and foreign wrappers are looked
+    # for as calls, the rest as words.
+    entities = Dict(f => Tuple{String, Bool}[] for f in order)
+    for (n, f) in where
+        haskey(entities, f) && push!(entities[f], (n, haskey(definition, n) || haskey(prog.foreign, n)))
+    end
+    needs(text, f) = any(mentions(text, n; call) for (n, call) in entities[f])
+    inheader(g::Global) = g.constant && !(globaltype(g.value) <: AbstractString)
+    included = Dict{String, Vector{String}}()           # file -> the files whose headers its header includes
+    paths = String[]
+    for file in order
+        fns = [k for k in 1:length(names) if where[names[k]] == file]
+        gls = [g for g in prog.globals if where[g.cname] == file]
+        sts = [def for (T, def) in prog.structs if where[structname(T)] == file]
+        tds = [(n, def) for (n, def) in prog.tupledefs if where[n] == file]
+        fgn = [prog.foreign[n] for n in sort!(collect(keys(prog.foreign))) if where[n] == file]
+        # The header: typedefs, then the globals, then each prototype under its comment,
+        # with a return struct right above the first prototype that returns it.
+        body = String[]
+        append!(body, sts)
+        protos = String[]
+        done = Set{String}()
+        for k in fns
+            prototype, above = functions[k][1], functions[k][2]
+            for (n, def) in tds
+                startswith(prototype, n * " ") && !(n in done) || continue
+                push!(protos, def)
+                push!(done, n)
+            end
+            isempty(above) || push!(protos, above)
+            push!(protos, prototype, "")
+        end
+        for (n, def) in tds; n in done || push!(body, def); end
+        for g in gls; push!(body, inheader(g) ? "static " * globaldecl(g) : "extern " * globaldecl(g; value=false)); end
+        isempty(gls) || push!(body, "")
+        append!(body, protos)
+        htext = join(body, "\n")
+        guard = uppercase(identifier(file)) * "_H"
+        header = ["#ifndef $guard", "#define $guard", ""]
+        n0 = length(header)
+        for h in includes(htext); push!(header, "#include <$h>"); end
+        any(mentions(htext, n) for n in helperstructs) && push!(header, "#include \"helper.h\"")
+        included[file] = [f for f in order if f != file && needs(htext, f)]
+        for f in included[file]; push!(header, "#include \"$f.h\""); end
+        length(header) > n0 && push!(header, "")
+        push!(header, rstrip(htext), "", "#endif  // $guard")
+        write(joinpath(dir, file * ".h"), join(header, "\n") * "\n")
+        # The `.c`: the includes it needs beyond its own header, then the mutable globals
+        # with their values, then the definitions.
+        cglobals = [globaldecl(g) for g in gls if !inheader(g)]
+        defs = [functions[k][3] for k in fns]
+        used = [m for m in macros(prog) if occursin(split(m)[2], join(defs, "\n"))]
+        ctext = join([used; cglobals; fgn; defs], "\n")
+        path = joinpath(dir, file * ".c")
+        push!(paths, path)
+        open(path, "w") do io
             for h in includes(ctext); println(io, "#include <", h, ">"); end
+            (any(mentions(ctext, n; call=true) for n in keys(prog.helpers)) || any(mentions(ctext, n) for n in helperstructs)) && println(io, "#include \"helper.h\"")
+            for f in order; f != file && needs(ctext, f) && !(f in included[file]) && println(io, "#include \"$f.h\""); end
             println(io, "#include \"$file.h\"")
-            for name in outline; println(io); print(io, prog.helpers[name]); end
+            println(io)
+            foreach(m -> println(io, m), used); isempty(used) || println(io)
+            foreach(g -> println(io, g), cglobals); isempty(cglobals) || println(io)
+            foreach(x -> println(io, x), fgn); isempty(fgn) || println(io)
+            for (k, d) in enumerate(defs); k == 1 || println(io); print(io, d); end
         end
     end
-    # The companion header, `<outfile>.h`: what a caller needs and nothing else — the
-    # typedefs, the globals as `extern`, and each function's documented prototype, with
-    # its own return struct right above it. The `.c` includes it, and holds the rest.
-    guard = uppercase(identifier(base)) * "_H"
-    header = ["#ifndef $guard", "#define $guard", ""]
-    body = String[]
-    for (name, def) in structs; name in placed || push!(body, def); end
-    for g in prog.globals; push!(body, "extern " * globaldecl(g; value=false)); end
-    isempty(prog.globals) || push!(body, "")
-    for (prototype, above, _, _) in functions
-        for (name, def) in prog.tupledefs
-            startswith(prototype, name * " ") && !(name in placed) || continue
-            push!(body, def); push!(placed, name)
+    # Headers may not include each other in a circle: a struct listed with one file
+    # while another file's prototypes need it can do that.
+    for f in order
+        stack = copy(included[f])
+        seen = Set{String}()
+        while !isempty(stack)
+            g = pop!(stack)
+            g == f && throw(ArgumentError("$f.h and the headers it includes come back to it; a struct listed with one file is needed by another's prototypes — list it with that file, or before it"))
+            g in seen && continue
+            push!(seen, g)
+            append!(stack, included[g])
         end
-        isempty(above) || push!(body, above)
-        push!(body, prototype, "")
     end
-    text = join(body, "\n")
-    n = length(header)
-    for h in includes(text); push!(header, "#include <$h>"); end
-    # A struct the helpers own that a prototype mentions: the header needs theirs.
-    any(occursin(name, text) for name in placed if any(occursin(name, prog.helpers[n]) for n in order)) && push!(header, "#include \"helper.h\"")
-    length(header) > n && push!(header, "")
-    push!(header, rstrip(text), "", "#endif  // $guard")
-    write(joinpath(dir, base * ".h"), join(header, "\n") * "\n")
-    path = joinpath(dir, base * ".c")
-    cbody = join([macros; [globaldecl(g) for g in prog.globals]; [prog.foreign[n] for n in sort!(collect(keys(prog.foreign)))]; [d for (_, _, d, _) in functions]], "\n")
-    open(path, "w") do io
-        for h in includes(cbody); println(io, "#include <", h, ">"); end
-        for (file, names) in groups; isempty(names) || println(io, "#include \"$file.h\""); end
-        println(io, "#include \"$base.h\"")
-        println(io)
-        foreach(m -> println(io, m), macros); isempty(macros) || println(io)
-        for g in prog.globals; println(io, globaldecl(g)); end
-        isempty(prog.globals) || println(io)
-        for name in sort!(collect(keys(prog.foreign))); println(io, prog.foreign[name]); end
-        isempty(prog.foreign) || println(io)
-        for (k, (_, _, definition, _)) in enumerate(functions); k == 1 || println(io); print(io, definition); end
-    end
-    return path
+    return several || length(paths) > 1 ? paths : paths[1]
 end
 
 # What each standard header provides, as a pattern over the C text that uses it.
