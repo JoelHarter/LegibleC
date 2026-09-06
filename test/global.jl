@@ -23,14 +23,15 @@ scaled(x::Float64) = k * x
 dist(p::Point) = sqrt((p.x - origin.x)^2 + (p.y - origin.y)^2)
 plain(x::Float64) = x + 1.0
 module Physics
-const c = 3.0e8
+const c = 3.0e8   # the speed of light, m/s
 speed(t::Float64) = c * t
 end
 module Moon; const a = 1737.0; end
 travel(t::Float64) = Physics.speed(t) + Moon.a + Physics.c
 unstable(x::Float64) = u * x
+energy(m::Float64) = m * Physics.c^2
 
-check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(scaled, 3.0), Case(dist, Point(3.0, 4.0))])
+check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(scaled, 3.0), Case(dist, Point(3.0, 4.0)), Case(energy, 2.0)])
 @testset "global" begin
     # A global a function reads is pulled in and referenced by name; `const` follows Julia.
     src = csource("pulled", fall, shifted, scaled, dist)
@@ -58,8 +59,12 @@ check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(sc
     @test_throws ArgumentError csource("untyped", unstable)                            # an untyped mutable global
     @test occursin("\ndouble u = 1.0;", csource("untypedlisted", plain; u, scope=@__MODULE__))   # listed, its value has a type, and the binding isn't const
     # Names carry their module path, relative to the scope: bare in it, prefixed elsewhere.
-    far = csource("far", travel; scope=@__MODULE__)
+    far = csource("far", travel, energy; scope=@__MODULE__)
     @test occursin("const double Physics_c = 3.0e8;", far) && occursin("const double Moon_a = 1737.0;", far)
+    # The comment on the constant's definition comes with it; a name read twice is
+    # written twice, not held in a temp.
+    @test occursin("const double Physics_c = 3.0e8;  // the speed of light, m/s", far) && occursin("Moon_a = 1737.0;\n", far)
+    @test occursin("return m * (Physics_c * Physics_c);", far)
     @test occursin("double Physics_speed(double t)", far) && occursin("return Physics_speed(t) + Moon_a + Physics_c;", far) && occursin("double travel(double t)", far)
     near = csource("near", Physics.speed; scope=Physics)
     @test occursin("const double c = 3.0e8;", near) && occursin("double speed(double t)", near) && occursin("return c * t;", near)

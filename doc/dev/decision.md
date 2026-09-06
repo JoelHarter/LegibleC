@@ -1390,3 +1390,24 @@ transpiler performs and knows the meaning of, while on a struct `'` is
 whatever the author's `adjoint` method does — for a quaternion the
 conjugate, which a mathematician would write q̄ or q*, not qᴴ — so it is
 spelled as written. Complex scalars, when they come, get their own rule.
+
+---
+
+## 2026-09-07 — A constant's comment comes with it; a name is never held in a temp
+
+**Decision.** The trailing comment on a global's definition, `const c =
+299_792_458.0  # speed of light, m/s`, is carried onto its C declaration
+in both the header and the `.c`: `extern const double SI_c;  // speed of
+light, m/s`. It is found by searching the module's file from where the
+module begins (`Base.moduleloc`) for the first line defining the name,
+since Julia keeps no location per binding; a global with no module or no
+file gets none. And `SI.c`, a constant read through its module, is always
+written where it is read — `SI_c * SI_c` for `SI.c^2` — never `temp1 =
+SI_c` first.
+
+**Why.** The comment is the one thing the caller wants to know about
+`SI_c` and it was sitting in the source. The temp came from the rule that
+an operand a square writes twice is not inlined, which is about
+expressions with work in them; a name costs nothing to repeat, and
+`temp1 * temp1` for `c²` was the one unreadable line in the relativity
+demo.

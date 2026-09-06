@@ -28,7 +28,11 @@ becomes a declaration with its value near the top of the functions file:
 Julia binding is, and a plain global when the Julia is `k::Float64 = 2.0`.
 A global read by a function must be `const` or typed, since an untyped
 mutable global has no type Julia can compile against; the transpiler says
-so if it meets one.
+so if it meets one. A constant defined in a module keeps the comment on
+its definition line — `const c = 299_792_458.0  # speed of light, m/s`
+gives `const double SI_c = 2.99792458e8;  // speed of light, m/s`, in the
+header too — and only the constants a function reads come out, however
+many the module defines.
 
 Listing a variable by keyword, `transpile(fall; g)`, or `; g, μ` for
 several, adds it whether or not anything reads it, so a constant can sit in

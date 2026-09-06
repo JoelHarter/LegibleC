@@ -18,5 +18,10 @@ top of each file says what to look at.
   with an array field, `Base.:*` on it coming out as `mul_Quat_Quat` with the
   dot and cross products as helpers, `q'` as `adjoint_Quat` calling
   `conj_Quat`, `q * p * q'` as two calls, `sincos` as its two lines.
+- [relativity/](relativity/relativity.jl) — eight physical constants in a
+  module, and two relativistic corrections that read two of them: only
+  `SI.c` and `SI.G` come out, as `SI_c` and `SI_G` with their values and the
+  comments from their definitions, the other six are never mentioned, and
+  `schwarzschild` comes along because `dilation` calls it.
 
 More candidates are in `doc/dev/todo.md`.

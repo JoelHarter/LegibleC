@@ -392,7 +392,14 @@ function markinlined!(sc::Scope)
     end
     effectful = Set{Int}()
     for (i, st) in enumerate(code)
-        st isa Expr && st.head === :call && get(count, i, 0) == 1 || continue
+        st isa Expr && st.head === :call || continue
+        # `SI.c`, a constant read through its module, is a name: free to repeat, so it
+        # is always written where it's read, `SI_c * SI_c`.
+        if callee_or_nothing(ci, st.args[1]) === Base.getproperty && literal(sc, st.args[2]) isa Module
+            push!(sc.inlined, i)
+            continue
+        end
+        get(count, i, 0) == 1 || continue
         T = widen(ci.ssavaluetypes[i])
         u = findfirst(s -> uses(s, i), code)
         use = code[u]

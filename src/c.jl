@@ -1804,7 +1804,30 @@ end
 # without, for the header's `extern`.
 function globaldecl(g::Global; value::Bool=true)
     T = globaltype(g.value)
-    return (g.constant && !(T <: AbstractString) ? "const " : "") * declare(T, g.cname) * (value ? " = " * initializer(g.value) : "") * ";"
+    decl = (g.constant && !(T <: AbstractString) ? "const " : "") * declare(T, g.cname) * (value ? " = " * initializer(g.value) : "") * ";"
+    note = globalcomment(g)
+    return note === nothing ? decl : decl * "  // " * note
+end
+
+# The trailing comment on a global's definition, `const c = 299_792_458.0  # speed of
+# light, m/s`, carried onto its C declaration. Julia records where a module begins
+# (`Base.moduleloc`) but not where each binding is, so the file is searched from there
+# for the first line that defines the name. `nothing` without a module, a file, or a
+# comment.
+function globalcomment(g::Global)
+    g.mod isa Module && isdefined(Base, :moduleloc) || return nothing
+    loc = Base.moduleloc(g.mod)
+    isempty(string(loc.file)) && return nothing
+    path = Base.find_source_file(string(loc.file))
+    (path === nothing || !isfile(path)) && return nothing
+    lines = readlines(path)
+    pat = Regex("(^|;)\\s*(const\\s+)?\\Q$(g.name)\\E\\s*(::[^=]*)?=[^=]")
+    for k in max(loc.line, 1):length(lines)
+        occursin(pat, lines[k]) || continue
+        _, note = split_comment(lines[k])
+        return note === nothing || isempty(strip(note)) ? nothing : strip(note)
+    end
+    return nothing
 end
 
 # A Julia value as a C initializer: numbers, characters, strings, arrays in row-major
