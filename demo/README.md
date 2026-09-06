@@ -20,7 +20,7 @@ top of each file says what to look at.
   `conj_Quat`, `q * p * q'` as two calls, `sincos` as its two lines.
 - [relativity/](relativity/relativity.jl) — eight physical constants in a
   module, and two relativistic corrections that read two of them: only
-  `SI.c` and `SI.G` come out, as `SI_c` and `SI_G` with their values and the
+  `CODATA.c` and `CODATA.G` come out, as `CODATA_c` and `CODATA_G` with their values and the
   comments from their definitions, the other six are never mentioned, and
   `schwarzschild` comes along because `dilation` calls it.
 

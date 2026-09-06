@@ -411,8 +411,9 @@ function markinlined!(sc::Scope)
         # `f(q).v` would read a field of a temporary, which C allows and nobody writes.
         whole = use isa Core.ReturnNode ||
                 use isa Expr && use.head === :call && !(callee_or_nothing(ci, use.args[1]) in (Base.getproperty, Core.getfield, Base.getindex))
-        small = !any(isarray, fieldtypes(T)) || whole && !(callee_or_nothing(ci, st.args[1]) isa Type)
-        (T <: Union{Number, Char} || isstruct(T) && !ismutabletype(T) && small) && !compiletime(ci.ssavaluetypes[i]) || continue
+        small = T <: Union{Number, Char} || isstruct(T) && !ismutabletype(T) &&
+                (!any(isarray, fieldtypes(T)) || whole && !(callee_or_nothing(ci, st.args[1]) isa Type))
+        small && !compiletime(ci.ssavaluetypes[i]) || continue
         use isa Expr && use.head === :call && duplicates(sc, u, use, i) && continue
         effect = !pure(sc, st) || any(a -> a isa Core.SSAValue && a.id in effectful, st.args[2:end])
         all(k -> effect ? silent(sc, k) : inert(sc, k), i+1:u-1) || continue
