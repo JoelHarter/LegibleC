@@ -20,6 +20,7 @@ nodoc(x::Float64) = x * x
 steps(A::SMatrix{3,3,Float64,9}, b::SVector{3,Float64}, c::SVector{3,Float64}, D::SVector{3,Float64}) = (A .+ b) \ c + D
 built(A::SMatrix{3,3,Float64,9}, B::SMatrix{3,3,Float64,9}) = (C = A * B'; [C A; B C] .* 2.0)
 single(A::SMatrix{3,3,Float64,9}, B::SMatrix{3,3,Float64,9}) = A * B
+#= A block comment directly above the definition. =#
 function longexpr(a::Float64, b::Float64)
     t = (a + b) *
         (a - b)          # continuation line comes before the C, with the first
@@ -64,6 +65,8 @@ src = csource("comment", scaled, project, nodoc, steps, built, single, longexpr,
     # A multi-line expression: its C at the first line, the continuation lines after it
     # (the known imprecision); a line that is only a bracket contributes its comment only.
     @test occursin("    double t = (a + b) * (a - b);\n\n    // @comment.jl:", src) && occursin("# continuation line comes before the C, with the first", src)
-    @test occursin("// a line that is only a closing bracket keeps this comment, not the bracket", src) && !occursin(r"// @comment\.jl:\d+: \)", src)
+    @test occursin(r"    /\* @comment\.jl:\d+-\d+:\n       t = \(a \+ b\) \*\n           \(a - b\)          # continuation line comes before the C, with the first\n    \*/\n    double t = ", src)
+    @test occursin("/* A block comment directly above the definition. */", src)
+    @test occursin(r"    /\* @comment\.jl:\d+-\d+:\n       w = \(\n           u \+ v\n       \)   # a line that is only a closing bracket keeps this comment, not the bracket\n    \*/", src)
 end
 end

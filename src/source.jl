@@ -73,9 +73,12 @@ function leading(src::Source)
             append!(doc, block)
             k = start - 1
         elseif endswith(s, "=#")
+            # A `#= … =#` block above the definition: one `/* … */` block.
             start = something(findprev(l -> occursin("#=", l), src.lines, k), k)
-            block = [strip(replace(l, "#=" => "", "=#" => "")) for l in src.lines[start:k]]
-            append!(out, reverse(comment.(filter(!isempty, block))))
+            block = filter(!isempty, [strip(replace(l, "#=" => "", "=#" => "")) for l in src.lines[start:k]])
+            lines = length(block) == 1 ? ["/* " * block[1] * " */"] :
+                    ["/* " * block[1]; "   " .* block[2:end-1]; "   " * block[end] * " */"]
+            append!(out, reverse(lines))
             k = start - 1
         elseif startswith(s, "#")
             push!(out, comment(s[2:end]))
@@ -120,20 +123,32 @@ up their trailing comment but not their code.
 function body(src::Source, from::Integer, to::Integer; code::Bool=true)
     out = String[]
     inblock = false
-    for k in max(from, 1):min(to, length(src.lines))
+    k = max(from, 1) - 1
+    while (k += 1) <= min(to, length(src.lines))
         line = src.lines[k]
         s = strip(line)
-        if inblock
-            inblock = !occursin("=#", s)
-            t = strip(replace(s, "=#" => ""))
-            isempty(t) || push!(out, comment(t))
-            continue
-        end
         isempty(s) && continue
         if startswith(s, "#=")
-            inblock = !occursin("=#", s[3:end])
-            t = strip(replace(s[3:end], "=#" => ""))
-            isempty(t) || push!(out, comment(t))
+            # A `#= … =#` comment is one `/* … */` block, its lines' indentation kept
+            # relative to the first; `*/` sits on the last line, or alone if `=#` did.
+            e = k
+            while !occursin("=#", e == k ? s[3:end] : src.lines[e]) && e < length(src.lines)
+                e += 1
+            end
+            text = [k == e ? s[3:end] : s[3:end]; [src.lines[j] for j in k+1:e]]
+            text[end] = replace(text[end], "=#" => "")
+            alone = e > k && isempty(strip(text[end]))
+            alone && pop!(text)
+            text = dedent([strip(text[1]); text[2:end]]; by=indentof(line) + 3)   # `#= ` is three wide
+            text = [rstrip(l) for l in text]
+            if length(text) == 1
+                push!(out, "/* " * strip(text[1]) * " */")
+            else
+                push!(out, "/* " * text[1])
+                append!(out, "   " .* text[2:end-1])
+                alone ? push!(out, "   " * text[end], "*/") : push!(out, "   " * text[end] * " */")
+            end
+            k = e
             continue
         end
         text, trailing = split_comment(s)
@@ -143,13 +158,47 @@ function body(src::Source, from::Integer, to::Integer; code::Bool=true)
             trailing === nothing || push!(out, comment(trailing))
         elseif code
             # The line, prefixed `@file:line:`; a short-form definition's line contributes
-            # only its body, since its signature is in the Doxygen block already.
-            push!(out, "// @$(src.name):$k: " * (k == src.first && src.short ? afterdef(s) : s))
+            # only its body, since its signature is in the Doxygen block already. A
+            # statement that runs on over several lines is one block comment, the range
+            # in front and the lines inside with their own indentation kept.
+            e = statementend(src, k)
+            if e > k
+                block = [k == src.first && src.short ? afterdef(s) : s; [src.lines[j] for j in k+1:e]]
+                push!(out, "/* @$(src.name):$k-$e:")
+                append!(out, "   " .* rstrip.(dedent(block; by=indentof(line))))
+                push!(out, "*/")
+                k = e
+            else
+                push!(out, "// @$(src.name):$k: " * (k == src.first && src.short ? afterdef(s) : s))
+            end
         elseif trailing !== nothing
             push!(out, comment(trailing))
         end
     end
     return out
+end
+
+# Lines with `by` columns of leading whitespace removed from all but the first (which
+# arrives already stripped), so the rest keep their indentation relative to it.
+function dedent(lines; by::Integer)
+    return [lines[1]; [indentof(l) >= by ? l[by+1:end] : lstrip(l) for l in lines[2:end]]]
+end
+
+indentof(l::AbstractString) = length(l) - length(lstrip(l))
+
+# The last line of the Julia statement that starts at `line`: where its brackets have
+# closed and the line doesn't end in an operator waiting for its right side.
+function statementend(src::Source, line)
+    depth = 0
+    for k in line:length(src.lines)
+        code, _ = split_comment(strip(src.lines[k]))
+        for c in code
+            c in "([{" && (depth += 1)
+            c in ")]}" && (depth -= 1)
+        end
+        depth <= 0 && !(occursin(r"[-+*/\\^=,&|?:]$", code) && k < length(src.lines)) && return k
+    end
+    return line
 end
 
 # The body of a short-form definition line, `f(x) = body`: what follows the `=` at the

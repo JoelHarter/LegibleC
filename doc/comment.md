@@ -81,7 +81,8 @@ the body.
 | the line is… | what's carried over |
 |---|---|
 | blank | nothing — see *Spacing* below |
-| only a comment (`# …`, or inside `#= =#`) | the comment |
+| only a comment (`# …`) | the comment, as `// …` |
+| a `#= … =#` block | one `/* … */` block, its lines' indentation kept |
 | code, with or without a trailing comment | the whole line, as `@file:line: code` — see below |
 | only closing brackets or `end`, e.g. `end`, `)`, `])` | its trailing comment, if any; not the code |
 | the signature line of a `function … end` | its trailing comment, if any; not the code |
@@ -219,8 +220,10 @@ records its step.
   A line that produces no C (a pure comment, or code that folded away) is
   emitted when the next line that does produce C is reached, so relative order
   is preserved.
-- A Julia statement spanning several lines — brackets still open at the end
-  of a line — is carried whole, every line of it, above its C.
+- A Julia statement spanning several lines — brackets still open, or an
+  operator waiting for its right side, at the end of a line — is one block
+  comment above its C, `/* @file:14-18:` in front, the lines inside with
+  their own indentation, `*/` on its own line.
 - Leading whitespace is dropped; the C's own indentation applies.
 - Generated helpers have no Julia source; they get the `///` line above and nothing else.
 - A function whose source can't be found (defined at the REPL, or via `-e`)

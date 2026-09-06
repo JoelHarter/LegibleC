@@ -51,7 +51,7 @@ src = csource("inline", hyp, poly, cubed, modded, signs, inloop, folded, cancell
     @test occursin("/// integer power of a scalar, by squaring\n/// returns x^n\nstatic inline double powi(double x, int n) {\n    bool neg = n < 0;", src)
     # A long expression wraps at its loosest operators, continuation lines led by the operator.
     @test occursin("    return alpha * beta + beta * gamma_ + gamma_ * delta + delta * alpha + alpha * gamma_\n           + beta * delta + alpha + beta + gamma_ + delta;", src)
-    @test all(length(l) <= 100 for l in split(src, "\n") if startswith(l, "    ") && !startswith(strip(l), "//"))
+    @test all(length(l) <= 100 for l in split(src, "\n") if startswith(l, "    ") && (endswith(l, ";") || endswith(l, "{") || endswith(l, "}")))   # code lines; a quoted Julia line may be longer
 end
 check("inline", [Case(hyp, 3.0, 4.0), Case(poly, 1.0, 2.0, 3.0), Case(cubed, SVector(1.0, 2.0, 2.0)), Case(modded, 7, 3), Case(modded, -7, 3),
                  Case(signs, 1.5, -2.5), Case(inloop, SVector(1.0, 4.0, 9.0), 3), Case(folded, SVector(1.0, 2.0, 2.0), 2.0),

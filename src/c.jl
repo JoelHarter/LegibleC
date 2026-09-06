@@ -479,20 +479,6 @@ function annotate!(lines, sc::Scope, line)
     sc.cursor = line
 end
 
-# The last line of the Julia statement that starts at `line`: where its brackets close.
-function statementend(src, line)
-    depth = 0
-    for k in line:length(src.lines)
-        code, _ = split_comment(strip(src.lines[k]))
-        for c in code
-            c in "([{" && (depth += 1)
-            c in ")]}" && (depth -= 1)
-        end
-        depth <= 0 && return k
-    end
-    return line
-end
-
 # A blank line between the C of one Julia statement and the next, so that each
 # statement — often several C lines — reads as a paragraph. None right after an
 # opening brace; `cfunction` removes any left against a closing one.
