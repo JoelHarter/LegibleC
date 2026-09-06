@@ -27,11 +27,21 @@ mutable struct Program
     portable::Bool                                                 # our own `LEGIBLEC_PI` macros instead of POSIX `M_PI`
     macros::Set{String}                                            # the constants used: "PI", "E"
     effects::Dict{Core.MethodInstance, Set{Symbol}}                # what a user function does besides compute (see `effects!`)
+    kinds::Dict{Core.MethodInstance, Any}                          # the C struct a tuple-returning function returns (see `returnkind!`)
+    tupledefs::Vector{Pair{String, String}}                        # those typedefs, name => text
+end
+
+# How a tuple is laid out in C: the struct's name and its field names — `step_t` with
+# `x` and `xdot` for `return x, ẋ` in `step` — or, with an empty name, a tuple spread
+# into separate C variables (a tuple parameter becomes parameters `t1`, `t2`, …).
+struct Kind
+    cname::String
+    fields::Vector{String}
 end
 Program(; precise::Bool=false, width::Integer=100, portable::Bool=false) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
-            portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}())
+            portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[])
 
 # The mathematical constants, for when the output defines its own macros (`portable`):
 # each is emitted as the double it rounds to, in the shortest form that reads back to
@@ -92,6 +102,9 @@ mutable struct Scope
     # `sincos(x)`: the SSA value stands for the pair `("sin(x)", "cos(x)")`, read out by
     # destructuring; it has no C value of its own.
     pair::Dict{Int, Tuple{String, String}}
+    kind::Union{Kind, Nothing}          # this function's returned tuple, if it returns one
+    kinds::Dict{Int, Kind}              # SSA values holding a tuple of a known layout
+    slotkinds::Dict{Int, Kind}          # slots likewise; a spread parameter has an empty cname
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, prog::Program, copycode::Bool, blocked)
@@ -113,7 +126,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), 1,
-                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}())
+                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}())
 end
 
 include("flow.jl")
@@ -135,6 +148,11 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     sc = Scope(ci, mi, sig, templimit, staticarray, prog, source, blocked)
     sc.resultparam = isarray(rettype)
     sc.rettype = widen(rettype)
+    istuple(sc.rettype) && (sc.kind = returnkind!(prog, mi, name))
+    # A tuple parameter is spread into one parameter per element: `t1`, `t2`, …
+    for i in 2:ci.nargs
+        istuple(slottype(sc, i)) && (sc.slotkinds[i] = Kind("", [sc.names[i] * string(k) for k in 1:length(slottype(sc, i).parameters)]))
+    end
     for T in [sig; sc.rettype]
         structdef!(prog, T)
     end
@@ -162,7 +180,7 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     body = [l for (k, l) in enumerate(body) if !(isempty(l) && (k == length(body) || startswith(lstrip(body[k+1]), "}")))]
     # Anything not declared along the way (a variable assigned only where the walk
     # doesn't look, such as a loop header) is declared at the top.
-    lines = [declare(slottype(sc, i), sc.names[i]) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden) && !(i in sc.declared)]
+    lines = [slotdecl(sc, i) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden) && !(i in sc.declared)]
     # Array parameters the function reassigns are worked on as copies, made here at
     # the top in one block with the reason above it, so the copy doesn't look gratuitous.
     if !isempty(sc.rebound)
@@ -181,20 +199,39 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     end
     append!(lines, body)
 
-    params = [declare(slottype(sc, i), sc.names[i]; constant=isarray(slottype(sc, i)) && !(i in sc.mutated)) for i in 2:ci.nargs]
+    params = String[]
+    for i in 2:ci.nargs
+        T = slottype(sc, i)
+        if haskey(sc.slotkinds, i)
+            for (P, n) in zip(T.parameters, sc.slotkinds[i].fields)
+                push!(params, declare(P, n; constant=isarray(P)))
+            end
+        else
+            push!(params, declare(T, sc.names[i]; constant=isarray(T) && !(i in sc.mutated)))
+        end
+    end
     if sc.resultparam
         # C can't return an array; it comes out through a trailing parameter, which
         # takes the result's name.
         push!(params, declare(sc.rettype, sc.resultname; restrict=true))
         signature = "void $name($(join(params, ", ")))"
     else
-        signature = "$(declare(sc.rettype, name))($(isempty(params) ? "void" : join(params, ", ")))"
+        signature = "$(sc.kind === nothing ? declare(sc.rettype, name) : sc.kind.cname * " " * name)($(isempty(params) ? "void" : join(params, ", ")))"
     end
     comments, doc = sc.src === nothing ? (String[], String[]) : leading(sc.src)
     origin = "$(mi.def.name)($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
              (sc.src === nothing ? "" : ", $(sc.src.name):$(sc.src.first)")
     what(T) = isarray(T) ? describe(T) : T === Char ? "character" : T <: AbstractString ? "string" : T <: Number ? "scalar" : ""
-    params = [(i in sc.mutated ? "in,out" : "in", sc.names[i], what(slottype(sc, i))) for i in 2:ci.nargs]
+    params = Tuple{String, String, String}[]
+    for i in 2:ci.nargs
+        if haskey(sc.slotkinds, i)
+            for (P, n) in zip(slottype(sc, i).parameters, sc.slotkinds[i].fields)
+                push!(params, ("in", n, what(P)))
+            end
+        else
+            push!(params, (i in sc.mutated ? "in,out" : "in", sc.names[i], what(slottype(sc, i))))
+        end
+    end
     sc.resultparam && push!(params, ("out", sc.resultname, describe(sc.rettype) * ", the return value"))
     block = doxygen(doc, origin, params)
     return signature * ";", join([comments; block; signature * " {"; [isempty(l) ? l : "    " * l for l in lines]; "}"], "\n") * "\n", sc.names
@@ -402,6 +439,12 @@ separate!(lines, sc::Scope) = isempty(lines) || isempty(last(lines)) || endswith
 # The type of a slot, shaped if it holds an array.
 slottype(sc::Scope, i) = get(sc.slotshapes, i, widen(sc.ci.slottypes[i]))
 
+# The declaration of a slot: by its type, or by the C struct of the tuple it holds.
+slotdecl(sc::Scope, i) = haskey(sc.slotkinds, i) ? sc.slotkinds[i].cname * " " * sc.names[i] : declare(slottype(sc, i), sc.names[i])
+
+# The layout of the tuple an IR value holds, if it is one of a known layout.
+tuplekind(sc::Scope, x) = x isa Core.SSAValue ? get(sc.kinds, x.id, nothing) : x isa Core.SlotNumber ? get(sc.slotkinds, x.id, nothing) : nothing
+
 # Emit the C for one IR statement, appending to `lines`.
 function statement!(lines, sc::Scope, i, st)
     ci = sc.ci
@@ -462,14 +505,33 @@ function statement!(lines, sc::Scope, i, st)
         mi, _, name = userinstance!(sc, callee(ci, st.args[1]), st.args[2:end])
         R = returntype(mi)
         if isarray(R)
-            t = temp!(sc, i, parts(sc, st))
+            t = temp!(sc, i, [name])
             emit!(lines, sc, declare(R, t) * ";")
             emit!(lines, sc, "$name($(callargs(sc, st.args[2:end])), $t);")
         else
             emit!(lines, sc, "$name($(callargs(sc, st.args[2:end])));")
         end
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.tuple && sc.kind !== nothing && onlyreturned(ci, i) &&
+           !any(a -> isarray(valuetype(sc, a)), st.args[2:end])
+        # `return x, ẋ`: the function's own struct, as a literal in the `return`.
+        sc.expr[i] = "($(sc.kind.cname)){$(join((value(sc, a) for a in st.args[2:end]), ", "))}"
+        sc.kinds[i] = sc.kind
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.tuple && consumedbycalls(sc, i)
+        # A tuple built only to be passed to the user's functions: its elements go
+        # separately, so it never exists in C.
+        sc.kinds[i] = Kind("", [value(sc, a) for a in st.args[2:end]])
     elseif st isa Expr && st.head === :call && (callee_or_nothing(ci, st.args[1]) === Core.tuple || (callee_or_nothing(ci, st.args[1]) isa Type && isstruct(T)))
         # A tuple or struct value: `(Point){x, y}`, or field by field when a field is an array.
+        if callee_or_nothing(ci, st.args[1]) === Core.tuple && sc.kind !== nothing && onlyreturned(ci, i)
+            # A returned tuple with an array in it: the function's struct, field by field.
+            emit!(lines, sc, "$(sc.kind.cname) result;")
+            for (F, c, a) in zip(T.parameters, sc.kind.fields, st.args[2:end])
+                isarray(F) ? copy!(lines, sc, value(sc, a), valuetype(sc, a), "result.$c", F) : emit!(lines, sc, "result.$c = $(value(sc, a));")
+            end
+            sc.expr[i] = "result"
+            sc.kinds[i] = sc.kind
+            return
+        end
         dest = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
         compound!(lines, sc, i, T, st.args[2:end], dest; declared=false)
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.indexed_iterate
@@ -520,13 +582,26 @@ function statement!(lines, sc::Scope, i, st)
                 dest = result!(sc, i)
                 arraycall!(lines, sc, i, st, dest; declaration=!sc.resultparam)
             else
-                arraycall!(lines, sc, i, st, temp!(sc, i, parts(sc, st)); declaration=true)
+                arraycall!(lines, sc, i, st, temp!(sc, i, callparts(sc, st)); declaration=true)
             end
         elseif compiletime(ci.ssavaluetypes[i])
             return                                # a type or Val: no C meaning
+        elseif istuple(T) && (r = userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end])) !== nothing
+            # A call to a user function that returns a tuple: its struct, named after it.
+            # Returned straight on, the callee's struct is this function's too.
+            mi, _, cname = r
+            k = returnkind!(sc.prog, mi, cname)
+            sc.kinds[i] = k
+            code = "$cname($(callargs(sc, st.args[2:end])))"
+            if onlyreturned(ci, i)
+                sc.expr[i] = code
+            else
+                name = temp!(sc, i, [cname])
+                emit!(lines, sc, "$(k.cname) $name = $code;")
+            end
         else
             code, _ = render(sc, i, st)
-            name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
+            name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, callparts(sc, st))
             emitexpr!(lines, sc, "$(ctype(T)) $name = ", code)
             haskey(sc.math, i) && step!(lines, sc, "$name = $(sc.math[i])")
         end
@@ -553,11 +628,17 @@ function statement!(lines, sc::Scope, i, st)
         else
             text = rhs isa Expr ? first(render(sc, i, rhs)) : value(sc, rhs)
             short = here ? nothing : compound(x, T, text)
-            short === nothing ? emitexpr!(lines, sc, (here ? ctype(T) * " " : "") * "$x = ", text) : emit!(lines, sc, short * ";")
+            k = tuplekind(sc, rhs)
+            if k === nothing && istuple(T) && rhs isa Expr && rhs.head === :call &&
+               (r = userinstance!(sc, callee_or_nothing(ci, rhs.args[1]), rhs.args[2:end])) !== nothing
+                k = returnkind!(sc.prog, r[1], r[3])   # `t = step(…)`: the callee's struct
+            end
+            k === nothing || isempty(k.cname) || (sc.slotkinds[slot.id] = k)
+            short === nothing ? emitexpr!(lines, sc, (here ? (k === nothing || isempty(k.cname) ? ctype(T) : k.cname) * " " : "") * "$x = ", text) : emit!(lines, sc, short * ";")
         end
         if fresh && !here
             s = slot.id
-            push!(sc.inserts, (sc.blockstart, 0, () -> declare(slottype(sc, s), x) * ";"))
+            push!(sc.inserts, (sc.blockstart, 0, () -> slotdecl(sc, s) * ";"))
         end
         if stable(ci, i, slot.id)
             sc.expr[i] = x
@@ -573,6 +654,7 @@ function statement!(lines, sc::Scope, i, st)
     elseif st isa Core.SlotNumber
         # `%i = x`: a read of a variable. Same rule as above.
         x = sc.names[st.id]
+        haskey(sc.slotkinds, st.id) && (sc.kinds[i] = sc.slotkinds[st.id])
         if stable(ci, i, st.id)
             sc.expr[i] = x
         else
@@ -1051,6 +1133,70 @@ isarray(T) = T <: AbstractArray
 # The named variables behind a call's arguments, for temp naming.
 parts(sc::Scope, ex::Expr) = unique(reduce(vcat, (contribution(sc, a) for a in ex.args[2:end]); init=String[]))
 
+# What a call's temp is named after: the user's function, when it is one (`temp1_step`);
+# otherwise the operands, like any operation.
+function callparts(sc::Scope, ex::Expr)
+    r = userinstance!(sc, callee_or_nothing(sc.ci, ex.args[1]), ex.args[2:end])
+    return r === nothing ? parts(sc, ex) : [r[3]]
+end
+
+# Is the tuple made at statement `i` used only as an argument to the user's functions?
+function consumedbycalls(sc::Scope, i)
+    users = [st for st in sc.ci.code if uses(st, i)]
+    isempty(users) && return false
+    return all(st -> st isa Expr && st.head === :call && userinstance!(sc, callee_or_nothing(sc.ci, st.args[1]), st.args[2:end]) !== nothing, users)
+end
+
+# The C struct a tuple-returning function returns: named after the function, `step_t`,
+# with fields named after the variables it returns (`return x, ẋ` gives `x`, `xdot`).
+# A function that returns another function's tuple straight on returns that function's
+# struct. Otherwise — an expression returned, or returns that disagree — the fields are
+# positional letters. The typedef is written once, when first asked for.
+function returnkind!(prog::Program, mi::Core.MethodInstance, cname::AbstractString)
+    haskey(prog.kinds, mi) && return prog.kinds[mi]
+    ci, R = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
+    R = widen(R)
+    fallback = Kind(structname(R), fieldcnames(R))
+    prog.kinds[mi] = fallback                      # against a cycle of pass-throughs
+    rawtype(t) = t isa Core.Const ? typeof(t.val) : t isa Core.PartialStruct ? t.typ : t
+    slotname(a) = a isa Core.SSAValue && ci.code[a.id] isa Core.SlotNumber ? string(ci.slotnames[ci.code[a.id].id]) :
+                  a isa Core.SlotNumber ? string(ci.slotnames[a.id]) : nothing
+    names = nothing
+    inherited = nothing
+    for st in ci.code
+        st isa Core.ReturnNode && isdefined(st, :val) && st.val isa Core.SSAValue || continue
+        def = ci.code[st.val.id]
+        def isa Expr && def.head === :call || (names = nothing; break)
+        f = callee_or_nothing(ci, def.args[1])
+        if f === Core.tuple
+            ns = [slotname(a) for a in def.args[2:end]]
+            any(isnothing, ns) && (names = nothing; break)
+            names === nothing && inherited === nothing ? (names = ns) : names == ns || (names = nothing; break)
+        elseif f isa Function && !(nameof(Base.moduleroot(parentmodule(f))) in known)
+            types = [rawtype(valuetype_ir(ci, a)) for a in def.args[2:end]]
+            all(T -> T isa Type && isconcretetype(T), types) || (names = nothing; break)
+            spec = Any[T <: Shaped ? T : juliatype(T) for T in types]
+            r = register!(prog, f, spec)
+            r === nothing && (names = nothing; break)
+            k = returnkind!(prog, r[1], r[3])
+            inherited === nothing && names === nothing ? (inherited = k) : inherited == k || (names = nothing; inherited = nothing; break)
+        else
+            names = nothing; break
+        end
+    end
+    kind = inherited !== nothing && names === nothing ? inherited :
+           names !== nothing ? Kind(identifier(cname) * "_t", identifiers(names)) : fallback
+    if kind.cname != fallback.cname && !any(p -> p.first == kind.cname, prog.tupledefs) && inherited === nothing
+        for F in R.parameters
+            structdef!(prog, F)
+        end
+        push!(prog.tupledefs, kind.cname => "typedef struct {\n" * join("    " .* declare.(collect(R.parameters), kind.fields) .* ";", "\n") * "\n} $(kind.cname);\n")
+    end
+    kind.cname == fallback.cname && structdef!(prog, R)
+    prog.kinds[mi] = kind
+    return kind
+end
+
 """
     temp!(sc, i, parts) -> name
 
@@ -1106,7 +1252,14 @@ end
 function contribution(sc::Scope, x)
     x isa Core.SSAValue || x isa Core.SlotNumber || return String[]
     x isa Core.SSAValue && !(x.id in sc.inlined) && !haskey(sc.expr, x.id) && return String[]   # a constant load
-    x isa Core.SSAValue && x.id in sc.inlined && return unique(reduce(vcat, (contribution(sc, a) for a in sc.ci.code[x.id].args[2:end]); init=String[]))
+    if x isa Core.SSAValue && x.id in sc.inlined
+        # A call to the user's function contributes the function's name in place of
+        # its arguments' — `temp1_sq_x = sq(y) + x` — like the temp for its result would.
+        st = sc.ci.code[x.id]
+        r = userinstance!(sc, callee_or_nothing(sc.ci, st.args[1]), st.args[2:end])
+        r === nothing || return [r[3]]
+        return unique(reduce(vcat, (contribution(sc, a) for a in st.args[2:end]); init=String[]))
+    end
     name = replace(value(sc, x), r"^temp\d+_?" => "", "->" => "_", "." => "_")   # a field read contributes its path: p.x -> p_x
     return filter(!isempty, split(name, "_"))
 end
@@ -1466,6 +1619,8 @@ function fieldaccess(sc::Scope, x, f)
     f = literal(sc, f)
     f isa QuoteNode && (f = f.value)
     x isa Core.SSAValue && haskey(sc.pair, x.id) && return sc.pair[x.id][f]   # `sincos`: sin or cos
+    k = tuplekind(sc, x)
+    k !== nothing && return isempty(k.cname) ? k.fields[f] : value(sc, x) * "." * k.fields[f]
     return value(sc, x) * arrow(S) * fieldcname(S, f)
 end
 
@@ -1588,6 +1743,13 @@ function userinstance!(sc::Scope, f, args)
         T <: Shaped && (push!(spec, eltype(T)); append!(spec, shape(T)); continue)
         push!(spec, juliatype(T))
     end
+    return register!(sc.prog, f, spec)
+end
+
+# The instance, signature and C name of user function `f` at the argument spec (types,
+# with a regular array as element type and sizes), registering it to be transpiled if
+# it isn't already. Nothing if it isn't the user's or can't be resolved.
+function register!(prog::Program, f, spec)
     nameof(Base.moduleroot(parentmodule(f))) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
     mi, sig = try
         any(x -> x isa Integer, spec) ? resolve(f, spec) : (m = Base.method_instance(f, Tuple(spec)); m === nothing ? (nothing, nothing) : (m, argtypes(m)))
@@ -1596,13 +1758,13 @@ function userinstance!(sc::Scope, f, args)
     end
     mi === nothing && return nothing
     nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
-    haskey(sc.prog.calls, mi) && return (mi, sig, sc.prog.calls[mi])
+    haskey(prog.calls, mi) && return (mi, sig, prog.calls[mi])
     base = identifier(string(mi.def.name))
-    taken = union(sc.prog.names, keys(sc.prog.helpers), reserved)
+    taken = union(prog.names, keys(prog.helpers), reserved)
     name = base in taken ? free(join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_"), taken) : free(base, reserved)
-    push!(sc.prog.names, name)
-    sc.prog.calls[mi] = name
-    push!(sc.prog.pending, (mi, sig, name))
+    push!(prog.names, name)
+    prog.calls[mi] = name
+    push!(prog.pending, (mi, sig, name))
     return (mi, sig, name)
 end
 
@@ -1622,11 +1784,21 @@ end
 # would have to be materialized first, since the callee expects Julia's real matrix;
 # until that's done, store it in a variable before the call.
 function callargs(sc::Scope, args)
+    out = String[]
     for a in args
         T = valuetype(sc, a)
         istransposed(T) && ndims(T) == 2 && throw(ArgumentError("passing a transposed matrix straight to a function is not supported yet; store it first (B = A')"))
+        k = tuplekind(sc, a)
+        if istuple(T) && k !== nothing
+            # A tuple goes as its elements: the callee takes them as separate parameters.
+            append!(out, isempty(k.cname) ? k.fields : [value(sc, a) * "." * c for c in k.fields])
+        elseif istuple(T)
+            append!(out, [value(sc, a) * "." * c for c in fieldcnames(T)])
+        else
+            push!(out, value(sc, a))
+        end
     end
-    return join((value(sc, a) for a in args), ", ")
+    return join(out, ", ")
 end
 
 # Does the IR value `a` refer to the C variable `x`, looking through the broadcast and
@@ -1737,6 +1909,12 @@ function value(sc::Scope, x)
         sc.ci.code[x.id] isa GlobalRef && return value(sc, sc.ci.code[x.id])
         sc.ci.code[x.id] isa Core.SlotNumber && return sc.names[sc.ci.code[x.id].id]   # a read inside a loop header
         throw(ArgumentError("value of statement $(x.id) is not available in C"))
+    end
+    if x isa Core.SlotNumber && haskey(sc.slotkinds, x.id) && isempty(sc.slotkinds[x.id].cname)
+        # A spread tuple parameter used whole: gathered back into the structural struct.
+        T = slottype(sc, x.id)
+        structdef!(sc.prog, T)
+        return "($(ctype(T))){$(join(sc.slotkinds[x.id].fields, ", "))}"
     end
     x isa Core.SlotNumber && return sc.names[x.id]
     x isa Bool            && return x ? "true" : "false"

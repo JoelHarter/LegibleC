@@ -125,6 +125,7 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         for m in sort!(collect(prog.macros)); println(io, "#define LEGIBLEC_", m, " ", Float64(constants[m]), "  // the double nearest ", constants[m]); end
         isempty(prog.macros) || println(io)
         for (_, definition) in prog.structs; print(io, definition); println(io); end
+        for (_, definition) in prog.tupledefs; print(io, definition); println(io); end
         for name in sort!(collect(keys(prog.foreign))); println(io, prog.foreign[name]); end
         isempty(prog.foreign) || println(io)
         for (prototype, _, _) in functions; println(io, prototype); end

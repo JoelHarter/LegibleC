@@ -28,10 +28,28 @@ fields, `sizeof`.
 
 ## Tuples
 
-A `Tuple{Float64, Int64}` — a multiple return value, a tuple stored in a
-variable, an `NTuple` argument — is a struct `Tuple_F64_I64` with fields
-`a`, `b`, `c`, … named like helper inputs (a matrix element is `A`). It's
-returned by value; `x, y = f(v)` reads `x = temp.a; y = temp.b;` (Julia's
-`indexed_iterate` machinery collapses to that); `t[2]` is `t.b`. A tuple that
-only feeds a constructor or block construction — `SVector(a, b, c)`,
-`[A B; C D]` — never exists in C, as before.
+A function that returns a tuple returns **its own struct**, named after the
+function and with fields named after the variables it returns: `return x, ẋ`
+in `step` gives `step_t` with `x` and `xdot`, and the return is the literal
+`return (step_t){x, xdot};`. C returns small structs in registers and larger
+ones through a hidden pointer the caller provides, so this costs what
+output pointers would have cost, and it keeps the Julia's meaning: one value,
+returned. At a call site `x, ẋ = step(…)` reads `step_t temp1_step =
+step(…); x = temp1_step.x; ẋ = temp1_step.xdot;`, a tuple kept whole is
+`step_t t = step(…)` with `t[2]` as `t.xdot`, and a function that returns
+another's tuple straight on returns that function's struct. When what is
+returned isn't plain variables — `(v, 2.0 * v)`, or returns that disagree —
+the fields are positional letters and the struct is the structural
+`Tuple_3_3`.
+
+A **tuple parameter** is spread into one parameter per element:
+`third(t::NTuple{3,Float64})` is `double third(double t1, double t2, double
+t3)`, and `t[1]` inside is `t1`. A tuple built only to be passed to a
+function goes as its elements, `third(a, 2 * a, 3 * a)`, so no struct is
+made for it; a tuple that only feeds a constructor or block construction —
+`SVector(a, b, c)`, `[A B; C D]` — never exists in C either. A tuple held as
+a value elsewhere — a struct field, a tuple of tuples — is the structural
+`Tuple_F64_I64` with fields `a`, `b`, … named like helper inputs.
+
+Not yet: a `NamedTuple`, which would name the fields when what's returned
+isn't variables.

@@ -20,8 +20,9 @@ orbit(x, v, 0.01, out);          /* out[0..2] is the new x, out[3..5] the new v 
 value. A `mutable struct` is handled through a pointer, `Counter *c`, and
 you own the object: create it, pass its address, read it back.
 
-**Tuples** and multiple return values are a generated struct,
-`Tuple_F64_I64`, with fields `a`, `b`, `c`, … returned by value.
+**Tuples.** A function returning `x, ẋ` returns a struct named after it,
+`step_t`, with fields `x` and `xdot`, by value. A function taking a tuple
+takes its elements as separate parameters, `t1`, `t2`, `t3`.
 
 **Strings** are `const char *` and characters are `char`. Printing goes to
 `stdout` through `printf`.

@@ -148,6 +148,10 @@ double temp1_a_b = a + b;
 - A temp passes along its *suffix*, never its base:
   `temp8_a_b = temp7_a + b` and `temp9_a = temp6 + a`
 - A temp with no named inputs is just its base: `temp6 = 58`
+- A call to a function that has a C function of its own in the file
+  contributes that function's name in place of its arguments':
+  `temp1_step = step(x, v, dt)`, `temp2_sq_x = sq(y) + x`. Julia's own
+  operations — `+`, `dot`, `sin`, the helpers — contribute their operands
 - There is one rule for what a name contributes, and it doesn't care whether
   the name is one of our temps or the user's own: chop a leading `temp<N>_`
   if there is one, then split at `_`. So `temp5_joel_was_here_eh =

@@ -1178,3 +1178,34 @@ only the cases where it doesn't, hardcoded so a change in the table can't
 move them. NFKD before the table dissolves nearly every awkward name
 (superscripts, fractions, font variants) into plain letters, which is why
 the override list is four entries and not forty.
+
+---
+
+## 2026-09-06 — A returned tuple is the function's own struct
+
+**Decision.** A function returning a tuple returns a struct named after
+it, `step_t`, with fields named after the variables it returns, and the
+return is the literal `return (step_t){x, xdot};`. The struct is decided
+by the function alone: a caller that passes the value on into another
+function or wraps it in its own return never changes it. Destructuring at
+a call site reads the fields by name; a tuple kept whole keeps the struct;
+a pass-through wrapper returns the callee's struct. A tuple parameter is
+spread into one parameter per element, `t1`, `t2`, and a tuple built to be
+passed goes as its elements, so no struct is ever invented for a call. The
+structural `Tuple_F64_I64` with fields `a`, `b` remains where a tuple is
+genuinely a value on its own — an expression returned, a struct field. A
+temp holding a call's result is named after the function, `temp1_step`,
+and that name composes into later temps like an operand's would.
+
+**Why.** Output pointers are the older C idiom; returning a small struct by
+value is equally C (`div_t`, `struct timeval`) and is what the Julia says:
+one value, returned. The ABI returns it in registers or through a hidden
+pointer, so nothing is copied that pointers wouldn't have written. With
+fields named `a` and `b` the struct route was merely equal to pointers;
+with the author's names it reads as what they wrote. Keeping the decision
+local to the function is what makes it safe: nothing about `step`'s
+signature can move because of code elsewhere. Spreading tuple parameters
+is what a C programmer writes for an unnamed tuple, and it removes the
+need to convert between struct types at call boundaries. The temp name
+follows the reader: the result of `step(x, v, dt)` is "the step", not
+"x v dt", which would blow past the length limit and collapse to nothing.

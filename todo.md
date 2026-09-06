@@ -15,6 +15,7 @@ transpiler does today is in [doc/](doc/), starting with
         ✅ Store straight into a variable instead of through a temp (`d = temp3;`) — falls out of the same rule
         ✅ Wrap a very long expression line at its loosest operators — done 2026-09-05, the `width` option (100)
         ✅ `return sqrt(…);` instead of `double result = sqrt(…); return result;` — done 2026-09-05; `result` remains for a `ccall`'s value and a value returned from several places
+    ⬜ `NamedTuple`: `return (x=x, ẋ=ẋ)` names the fields of a returned struct when what's returned isn't plain variables; a `NamedTuple` parameter names the spread parameters
     ⬜ Rebinding is free: `A, B = B, A` on immutable values should swap which C variable each name refers to and emit nothing, instead of the three-copy swap (correct today, but five `copy_2x2` calls where a person writes none). Same idea as forwarding an SSA copy, applied to a slot whose old value is dead
     ⬜ Rewrite loop variables used only as indices to the C idiom: `for (i = 0; i < n; i++) v[i]` instead of `v[i - 1]`
     ⬜ `return a > b && b > c;` when both branches of a value-`&&`/`||` just return

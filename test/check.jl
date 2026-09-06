@@ -6,7 +6,7 @@
 using Test, StaticArrays, LinearAlgebra
 using LegibleC
 # The internals the harness needs to build a `main` around the generated C.
-using LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames, charliteral
+using LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames, charliteral, returnkind!, Program
 
 const flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 
@@ -83,7 +83,13 @@ function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra
         for (j, x) in enumerate(c.args)
             T = ctypeof(x)
             n = "a$(k)_$j"
-            if isstruct(T) && ismutabletype(T)
+            if x isa Tuple
+                # A tuple parameter is spread: one C variable per element.
+                for (e, y) in enumerate(x)
+                    push!(main, "    $(declare(ctypeof(y), "$(n)_$e")) = $(cliteral(y));")
+                    push!(passes, "$(n)_$e")
+                end
+            elseif isstruct(T) && ismutabletype(T)
                 push!(main, "    $(structname(T)) $n = $(cliteral(x));")
                 push!(passes, "&" * n)
             else
@@ -100,6 +106,13 @@ function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra
         elseif isarray(R)
             push!(main, "    $(declare(R, "r$k"));", "    $(cnames[c.f])($(join([passes; "r$k"], ", ")));")
             append!(main, "    " .* cprint(R, "r$k"))
+        elseif r isa Tuple
+            # The function's own struct, with its field names.
+            kind = returnkind!(Program(), Base.method_instance(c.f, Tuple(typeof.(c.args))), cnames[c.f])
+            push!(main, "    $(kind.cname) r$k = $call;")
+            for (F, f, y) in zip(R.parameters, kind.fields, r)
+                append!(main, "    " .* cprint(ctypeof(y), "r$k.$f"))
+            end
         else
             push!(main, "    $(declare(R, "r$k")) = $call;")
             append!(main, "    " .* cprint(R, "r$k"))
