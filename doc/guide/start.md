@@ -36,7 +36,8 @@ of `out/body.c`. The folder holds:
 - `helper.h` — everything generated that your functions need: small
   helpers as `static inline` functions, each with a two-line comment, and
   prototypes for the larger ones.
-- `helper.c` — the larger helpers: solvers, factorizations, array printing.
+- `helper.c` — the larger helpers: solvers, factorizations, array printing;
+  absent when there are none.
 
 It compiles as a unit:
 

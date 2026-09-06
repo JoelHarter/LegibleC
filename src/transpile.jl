@@ -213,6 +213,8 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
             print(io, rstrip(hbody)); println(io); println(io)
             println(io, "#endif")
         end
+        # The `.c` holds the out-of-line helpers; with none, there is no file.
+        isempty(outline) && continue
         open(joinpath(dir, file * ".c"), "w") do io
             for h in includes(ctext); println(io, "#include <", h, ">"); end
             println(io, "#include \"$file.h\"")
