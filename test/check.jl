@@ -6,7 +6,7 @@
 using Test, StaticArrays, LinearAlgebra
 include(joinpath(@__DIR__, "..", "src", "transpile.jl"))
 # The internals the harness needs to build a `main` around the generated C.
-using .Newt: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames
+using .LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames
 
 const flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 

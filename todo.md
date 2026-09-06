@@ -75,7 +75,7 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ Loop order in `mul` when an operand is transposed: `mul_2x3_T2x3` walks `b[j][k]` with `j` inside, which strides; hand-written C would sum over `k` innermost there
 
 ⬜ Portability
-    ✅ `M_PI` and `M_E` are POSIX, not ISO C — done 2026-09-06: `M_PI` stays the default; the `portable` option defines `NEWT_PI` and `NEWT_E` (as the doubles, `string(Float64(π))`) at the top of the file and uses those
+    ✅ `M_PI` and `M_E` are POSIX, not ISO C — done 2026-09-06: `M_PI` stays the default; the `portable` option defines `LEGIBLEC_PI` and `LEGIBLEC_E` (as the doubles, `string(Float64(π))`) at the top of the file and uses those
 
 ⬜ Correctness
     ⬜ Signed integer overflow: Julia wraps, C says undefined — pick the one fixed compiler flag (`-fwrapv`) or emit unsigned arithmetic
@@ -97,7 +97,7 @@ transpiler does today is in [doc/](doc/), starting with
 
 ⬜ Project
     ✅ Turn the sandbox suites into real tests in `test/` — done 2026-09-04: `test/runtests.jl`, C against Julia for every case
-    ✅ Wrap the transpiler in a module — done 2026-09-06: `module Newt` in `src/transpile.jl`, `transpile` exported, `using .Newt` after the module so `include` works as before; the test harness imports the internals it needs
+    ✅ Wrap the transpiler in a module — done 2026-09-06: `module LegibleC` in `src/transpile.jl`, `transpile` exported, `using .LegibleC` after the module so `include` works as before; the test harness imports the internals it needs
     ⬜ Emit a companion `.h` with the prototypes
     ⬜ Give at least one `rule.jl` function a docstring so the Doxygen path is exercised by the standing suites
     ⬜ Add `complex.h` to `reserved.jl` when it joins the might-include list — note it defines `I`, so a Julia variable `I` would become `I_`

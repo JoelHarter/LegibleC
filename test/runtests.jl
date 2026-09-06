@@ -4,7 +4,7 @@
 using Test
 include("check.jl")
 
-@testset "newt" begin
+@testset "LegibleC" begin
     for file in ("scalar", "flow", "array", "linear", "reduce", "call", "struct", "name", "comment", "print", "inline")
         include("$file.jl")
     end

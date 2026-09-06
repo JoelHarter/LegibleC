@@ -1,8 +1,8 @@
-# Everything lives in the module `Newt`, so that a user's own `shape` or `index` — or
+# Everything lives in the module `LegibleC`, so that a user's own `shape` or `index` — or
 # a function of theirs named like any of the transpiler's internals — is a different
 # name. `include`-ing this file also brings `transpile` into scope, which is the one
 # name a user needs.
-module Newt
+module LegibleC
 
 using StaticArrays
 using LinearAlgebra
@@ -44,7 +44,7 @@ Options:
   regardless; this controls the code. See `doc/comment.md`.
 - `precise`: print every digit of a floating value (`%.17g`, `%.9g` for
   `Float32`) instead of `%g`. See `doc/io.md`.
-- `portable`: define `NEWT_PI` and `NEWT_E` at the top of the file and use those,
+- `portable`: define `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file and use those,
   instead of `M_PI` and `M_E` from `math.h`, which are POSIX rather than ISO C and
   can be missing under a strict `-std=c11`.
 - `width`: the longest line the C may have, in columns. A scalar expression
@@ -120,7 +120,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
             h in prog.headers && println(io, "#include <", h, ">")
         end
         println(io)
-        for m in sort!(collect(prog.macros)); println(io, "#define NEWT_", m, " ", Float64(constants[m]), "  // the double nearest ", constants[m]); end
+        for m in sort!(collect(prog.macros)); println(io, "#define LEGIBLEC_", m, " ", Float64(constants[m]), "  // the double nearest ", constants[m]); end
         isempty(prog.macros) || println(io)
         for (_, definition) in prog.structs; print(io, definition); println(io); end
         for name in sort!(collect(keys(prog.foreign))); println(io, prog.foreign[name]); end
@@ -230,6 +230,6 @@ function concretemethod(f::Function, T::DataType...)
     return mi, T_return
 end
 
-end # module Newt
+end # module LegibleC
 
-using .Newt
+using .LegibleC

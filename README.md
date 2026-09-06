@@ -44,7 +44,7 @@ include("src/transpile.jl")
 transpile(f, g, (h, Float64, 3, Float64, 2, 3); outfile="name", outpath=dir)
 ```
 
-Everything is in the module `Newt`; the `include` also brings `transpile`
+Everything is in the module `LegibleC`; the `include` also brings `transpile`
 into scope, and nothing else, so your own functions can be named anything.
 
 A target is a function with one concrete method, or a tuple of a function
@@ -53,7 +53,7 @@ that element type and size. One `.c` file comes out with prototypes, the
 helpers it needs, and the functions; anything a listed function calls is
 transpiled too. Options: `outfile`, `outpath`, `source` (copy each Julia
 line into the C as a comment, on by default), `precise` (print every digit
-of a floating value), `portable` (own `NEWT_PI` macros instead of `M_PI`),
+of a floating value), `portable` (own `LEGIBLEC_PI` macros instead of `M_PI`),
 `width` (the longest C line, 100), `templimit`, `staticarray`.
 
 Sizes are static: arrays are `StaticArrays` types, or `Array`s given a size

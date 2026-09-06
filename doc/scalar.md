@@ -50,7 +50,7 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `!`, `&`, `\|`, `xor`, `<<`, `>>`, `~` | `!`, `&`, `\|`, `^`, `<<`, `>>`, `~` | |
 | `&&`, `\|\|`, `c ? x : y` | the same, or an `if` — see `flow.md` | |
 | `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc hypot copysign` | the same, from `math.h`; the `f` family on a `Float32` (`sqrtf`, `fabsf`, `powf`) | |
-| `pi`, `ℯ` | `M_PI`, `M_E` | POSIX, not ISO C; the `portable` option defines `NEWT_PI` and `NEWT_E` at the top of the file instead |
+| `pi`, `ℯ` | `M_PI`, `M_E` | POSIX, not ISO C; the `portable` option defines `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file instead |
 | `abs(x)` | `fabs(x)`; `llabs(x)` for `Int64`, `abs(x)` for `Int32` (`stdlib.h`) | |
 | `max`, `min` on floats | `fmax`, `fmin` | |
 | `max`, `min` on integers | `(a > b ? a : b)` | |

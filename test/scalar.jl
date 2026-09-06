@@ -49,7 +49,7 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
     @test occursin("return modulo(a, b);", src) && occursin("static inline double modulo(double x, double y) {\n    double r = fmod(x, y);", src)
     @test occursin("return x * M_PI + M_E;", src) && occursin("#include <math.h>", src)
     portable = csource("portable", pie; portable=true)
-    @test occursin("#define NEWT_E 2.718281828459045  // the double nearest ℯ\n#define NEWT_PI 3.141592653589793  // the double nearest π\n", portable)
-    @test occursin("return x * NEWT_PI + NEWT_E;", portable) && !occursin("M_PI", portable)
+    @test occursin("#define LEGIBLEC_E 2.718281828459045  // the double nearest ℯ\n#define LEGIBLEC_PI 3.141592653589793  // the double nearest π\n", portable)
+    @test occursin("return x * LEGIBLEC_PI + LEGIBLEC_E;", portable) && !occursin("M_PI", portable)
 end
 end

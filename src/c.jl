@@ -24,7 +24,7 @@ mutable struct Program
     structs::Vector{Pair{Type, String}}                            # struct typedefs, dependencies first
     precise::Bool                                                  # print every digit of a floating value, not `%g`
     width::Int                                                     # the longest line; scalar expressions wrap past it
-    portable::Bool                                                 # our own `NEWT_PI` macros instead of POSIX `M_PI`
+    portable::Bool                                                 # our own `LEGIBLEC_PI` macros instead of POSIX `M_PI`
     macros::Set{String}                                            # the constants used: "PI", "E"
     effects::Dict{Core.MethodInstance, Set{Symbol}}                # what a user function does besides compute (see `effects!`)
 end
@@ -1680,8 +1680,8 @@ function value(sc::Scope, x)
 end
 
 # `M_PI` from `math.h`, which is POSIX rather than ISO C; or, with `portable`, our own
-# `NEWT_PI`, defined at the top of the file.
-constant(sc::Scope, name) = sc.prog.portable ? (push!(sc.prog.macros, name); "NEWT_" * name) : (push!(sc.headers, "math.h"); "M_" * name)
+# `LEGIBLEC_PI`, defined at the top of the file.
+constant(sc::Scope, name) = sc.prog.portable ? (push!(sc.prog.macros, name); "LEGIBLEC_" * name) : (push!(sc.headers, "math.h"); "M_" * name)
 
 # The type of a value: what inference says, except that an array whose size the IR
 # doesn't know is given as the shaped stand-in the transpiler tracks for it.
