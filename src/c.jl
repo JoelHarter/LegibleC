@@ -153,8 +153,10 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     for i in 2:ci.nargs
         istuple(slottype(sc, i)) && (sc.slotkinds[i] = Kind("", [sc.names[i] * string(k) for k in 1:length(slottype(sc, i).parameters)]))
     end
+    # The typedefs the signature needs. A tuple is spread (a parameter) or has its own
+    # struct (the return, `returnkind!`), so only its element types need one.
     for T in [sig; sc.rettype]
-        structdef!(prog, T)
+        istuple(T) ? foreach(P -> structdef!(prog, P), T.parameters) : structdef!(prog, T)
     end
     if sc.resultparam
         # An array comes out through a parameter, and an output parameter is `out` —
