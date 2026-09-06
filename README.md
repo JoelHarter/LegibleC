@@ -123,6 +123,12 @@ be read by a person who didn't write it.
 - **From writing the C yourself.** It is the same C, without the weeks and
   the transcription errors, and it stays in step with the Julia for as long
   as the Julia lives.
+- **From handing it to an AI.** A model can translate anything you paste,
+  and what comes back depends on the model, the day, the wording, and
+  whether the bill was paid. This is deterministic: the same input gives the
+  same output, every time, offline, in a CI job, with no model and no
+  network; and where it can't translate something it says so rather than
+  guessing.
 
 ## What it is not
 
