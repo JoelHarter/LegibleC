@@ -43,11 +43,12 @@ form sets `scope` to wherever it is written:
 which is the one to use from inside a module. A variable named like an
 option (`width`, `source`, …) goes as a pair, `:width => width`.
 
-## From files
+## Where definitions come from
 
-Definitions are read from files. A function typed at the REPL, or evaluated
-from a string, is refused with a message saying so; the same goes for
-anything it calls. One call generates everything: the
+Anywhere Julia can see them. A function typed at the REPL transpiles like
+one from a file; what it lacks is source to carry over, so it gets a bare
+Doxygen block and no `// file.jl:12:` lines. Regenerating the C later needs
+the Julia in a file, which is where it belongs anyway. One call generates everything: the
 targets share one set of names, one `helper.h`, one copy of each callee.
 List every function you want in a single call; a later call writes its own
 files into `out/` over the earlier ones.

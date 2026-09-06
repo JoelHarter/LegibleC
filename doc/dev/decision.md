@@ -1262,8 +1262,8 @@ or not anything reads it; its name is looked up in `scope` to decide
 sets `scope` to the module the call is written in. `:name => value` and a
 `GlobalRef` are the escape hatches for a name that is an option's or a
 binding in another module. A struct type is a target on its own, with its
-docstring as a Doxygen block. Definitions are read from files: a method
-whose file is a REPL line or `none` is refused.
+docstring as a Doxygen block. (Refusing REPL-defined functions was tried
+the same day and withdrawn: see below.)
 
 **Why.** "One call generates everything" means a function's globals are
 part of everything, so they come along the way callees do, and a constant
@@ -1272,7 +1272,13 @@ keyword carries it; the keyword form is a plain call, composes with a
 splatted `NamedTuple`, and needs no macro — except that a function cannot
 see its caller's scope, which is the one job a macro exists for, so
 `@transpile` supplies `scope` and nothing else. `Main` is not special: the
-lookup happens wherever the call was written. The file rule makes the
-output regenerable from the files it came from, which is what one source
-of truth means; it cannot apply to globals, since Julia records where a
-method was defined but not where a global was assigned.
+lookup happens wherever the call was written.
+
+**Withdrawn the same day, the file rule.** Refusing a method defined at the
+REPL bought little: Julia records a file for methods only, so globals and
+types slipped through anyway, and a REPL-defined function was already
+handled honestly — a bare Doxygen block, no source lines, because there is
+no source. What it cost was the most Julian workflow there is, defining a
+function at the prompt to see what the transpiler makes of it. The guide
+now says that regenerating the C needs the Julia in a file, and leaves it
+at that.

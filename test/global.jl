@@ -44,9 +44,10 @@ check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(sc
     dir = mktempdir()
     path = @transpile(plain; k, outfile="mac", outpath=dir)
     @test occursin("\ndouble k = 2.0;", read(path, String))
-    # A definition typed at the REPL is refused.
+    # A definition typed at the REPL transpiles; it just has no source to comment from.
     include_string(@__MODULE__, "replfun(x::Float64) = 2x", "REPL[7]")
-    @test_throws ArgumentError csource("repl", replfun)
+    repl = csource("repl", replfun)
+    @test occursin("return 2 * x;", repl) && !occursin("// REPL", repl)
     @test_throws ArgumentError csource("abstract", plain, Vector{Float64})
     @test_throws ArgumentError csource("untyped", unstable)                            # an untyped mutable global
     @test occursin("\ndouble u = 1.0;", csource("untypedlisted", plain; u, scope=@__MODULE__))   # listed, its value has a type, and the binding isn't const

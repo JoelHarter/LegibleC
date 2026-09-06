@@ -92,14 +92,6 @@ macro transpile(args...)
     return Expr(:call, GlobalRef(@__MODULE__, :transpile), Expr(:parameters, kws...), esc.(rest)...)
 end
 
-# Where a method was defined, if that is a file: the transpiler works from files, so a
-# definition typed at the REPL (or evaluated from a string) is refused.
-function fromfile(mi::Core.MethodInstance)
-    file = string(mi.def.file)
-    (startswith(file, "REPL[") || file == "none" || isempty(file)) &&
-        throw(ArgumentError("$(mi.def.name) is defined at the REPL, not in a file; the transpiler reads definitions from files"))
-end
-
 function transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable, suffix, scope, variables)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
     # Each instance is paired with its signature: the instance's own argument types,
@@ -134,7 +126,6 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
                 throw(ArgumentError("$mi is not a concrete specialization"))
             sig = argtypes(mi)
         end
-        fromfile(mi)
         push!(instances, (mi, sig))
     end
     # A variable given by keyword: its binding is looked for in `scope`; a value with no
@@ -165,7 +156,6 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     # A call to a function that wasn't asked for brings it in, and it may call others.
     while !isempty(prog.pending)
         mi, sig, n = popfirst!(prog.pending)
-        fromfile(mi)
         push!(instances, (mi, sig))
         push!(names, n)
         push!(functions, generate(n, mi, sig))

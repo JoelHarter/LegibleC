@@ -94,7 +94,7 @@ transpiler does today is in [doc/](..), starting with
     ⬜ A math operator with types: `(+, SVector{3,Float64}, SVector{3,Float64})` generates the helper instead of transpiling Julia's method; requested helpers become ordinary functions with prototypes, not `static inline`; broadcasts as a symbol `(:.*, T, T)`; along-a-dimension as `(sum, T; dims=1)`
     ✅ A variable: by keyword, `transpile(fall; g)`, `@transpile(…; g)` for the calling scope, `:name => value` and `GlobalRef` as escape hatches — done 2026-09-06; `initializer` moved into `src`
     ✅ Functions read a global by its C name; the global is pulled in like a callee — done 2026-09-06; a mutable global must be typed (`k::Float64 = 2.0`)
-    ✅ Definitions come from files: a REPL-defined function is refused — done 2026-09-06
+    ✅ Definitions come from anywhere Julia sees them; a REPL-defined function just carries no source comments (a refusal was tried 2026-09-06 and withdrawn the same day)
     ⬜ Functions that write globals (`global count += 1`) → assignment to the C variable
     ⬜ A module: `transpile(MyModule)` walks its names — functions, structs, constants
     ⬜ A file: `transpile("physics.jl")` includes it into a fresh module and does the same
