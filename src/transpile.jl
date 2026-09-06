@@ -183,7 +183,10 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     mkpath(dir)
     base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
     order = helperorder(prog.helpers)
-    includes = [h for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "ctype.h", "stdio.h", "float.h", "math.h") if h in prog.headers]
+    # Each file includes the standard headers its own text uses, found by the names
+    # each header provides — `int64_t`, `bool`, `memcpy`, `sqrt`, `printf`, … — not
+    # the union of what the program uses.
+    includes(text) = [h for (h, pattern) in standard if occursin(pattern, text)]
     macros = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the double nearest $(constants[m])" for m in sort!(collect(prog.macros))]
     structs = [(structname(T), def) for (T, def) in prog.structs]
     placed = Set{String}()
@@ -194,19 +197,24 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         inline = [n for n in names if isinline(prog.helpers[n])]
         outline = [n for n in names if !isinline(prog.helpers[n])]
         guard = "LEGIBLEC_" * uppercase(file) * "_H"
+        htext = String[]
+        used = [m for m in macros if occursin(split(m)[2], text)]
+        append!(htext, used); isempty(used) || push!(htext, "")
+        for (name, def) in structs; name in placed || !occursin(name, text) || (push!(htext, def); push!(placed, name)); end
+        for name in outline; push!(htext, prototype(prog.helpers[name])); end
+        isempty(outline) || push!(htext, "")
+        for name in inline; push!(htext, prog.helpers[name]); end
+        hbody = join(htext, "\n")
+        ctext = join((prog.helpers[n] for n in outline), "\n")
         open(joinpath(dir, file * ".h"), "w") do io
             println(io, "#ifndef $guard\n#define $guard\n")
-            for h in includes; println(io, "#include <", h, ">"); end
-            println(io)
-            used = [m for m in macros if occursin(split(m)[2], text)]
-            foreach(m -> println(io, m), used); isempty(used) || println(io)
-            for (name, def) in structs; name in placed || !occursin(name, text) || (print(io, def); println(io); push!(placed, name)); end
-            for name in outline; println(io, prototype(prog.helpers[name])); end
-            isempty(outline) || println(io)
-            for name in inline; print(io, prog.helpers[name]); println(io); end
+            for h in includes(hbody); println(io, "#include <", h, ">"); end
+            isempty(includes(hbody)) || println(io)
+            print(io, rstrip(hbody)); println(io); println(io)
             println(io, "#endif")
         end
         open(joinpath(dir, file * ".c"), "w") do io
+            for h in includes(ctext); println(io, "#include <", h, ">"); end
             println(io, "#include \"$file.h\"")
             for name in outline; println(io); print(io, prog.helpers[name]); end
         end
@@ -215,8 +223,7 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     # typedefs, the globals as `extern`, and each function's documented prototype, with
     # its own return struct right above it. The `.c` includes it, and holds the rest.
     guard = uppercase(identifier(base)) * "_H"
-    header = String[]
-    push!(header, "#ifndef $guard\n#define $guard\n", "#include <stdint.h>\n#include <stdbool.h>")
+    header = ["#ifndef $guard", "#define $guard", ""]
     body = String[]
     for (name, def) in structs; name in placed || push!(body, def); end
     for g in prog.globals; push!(body, "extern " * globaldecl(g; value=false)); end
@@ -230,13 +237,17 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         push!(body, prototype, "")
     end
     text = join(body, "\n")
+    n = length(header)
+    for h in includes(text); push!(header, "#include <$h>"); end
     # A struct the helpers own that a prototype mentions: the header needs theirs.
     any(occursin(name, text) for name in placed if any(occursin(name, prog.helpers[n]) for n in order)) && push!(header, "#include \"helper.h\"")
-    push!(header, "", rstrip(text), "", "#endif")
+    length(header) > n && push!(header, "")
+    push!(header, rstrip(text), "", "#endif")
     write(joinpath(dir, base * ".h"), join(header, "\n") * "\n")
     path = joinpath(dir, base * ".c")
+    cbody = join([macros; [globaldecl(g) for g in prog.globals]; [prog.foreign[n] for n in sort!(collect(keys(prog.foreign)))]; [d for (_, _, d, _) in functions]], "\n")
     open(path, "w") do io
-        for h in includes; println(io, "#include <", h, ">"); end
+        for h in includes(cbody); println(io, "#include <", h, ">"); end
         for (file, names) in groups; isempty(names) || println(io, "#include \"$file.h\""); end
         println(io, "#include \"$base.h\"")
         println(io)
@@ -249,6 +260,18 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     end
     return path
 end
+
+# What each standard header provides, as a pattern over the C text that uses it.
+const standard = (
+    ("stdint.h", r"\b(u?int(8|16|32|64)_t)\b"),
+    ("stdbool.h", r"\b(bool|true|false)\b"),
+    ("stdlib.h", r"\b(llabs|abs|exit|abort|malloc|calloc|free)\("),
+    ("string.h", r"\b(memcpy|memset|strcmp|strlen|strcpy)\("),
+    ("ctype.h", r"\b(isdigit|isalpha|isspace|isupper|islower|ispunct|iscntrl|isprint|isxdigit|toupper|tolower)\("),
+    ("stdio.h", r"\b(printf|fprintf|snprintf|fputs|fputc|putchar|puts|fflush|fopen|fclose|FILE|stdout|stderr)\b"),
+    ("float.h", r"\b(DBL|FLT)_(EPSILON|MAX|MIN)\b"),
+    ("math.h", r"\b(sqrt|cbrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|exp2|expm1|log|log2|log10|log1p|floor|ceil|trunc|rint|round|hypot|copysign|fabs|fmax|fmin|fmod|pow|isnan|isinf|isfinite|signbit)f?\(|\b(M_PI|M_E|INFINITY|NAN)\b"),
+)
 
 # The helpers in the order they can be defined: alphabetical, except that one that calls
 # another comes after it (`det_4x4` after `det_3x3`, `solve_4x4_4` after `lu_4x4` after

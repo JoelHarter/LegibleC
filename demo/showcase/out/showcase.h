@@ -1,9 +1,6 @@
 #ifndef SHOWCASE_H
 #define SHOWCASE_H
 
-#include <stdint.h>
-#include <stdbool.h>
-
 /// the return value of step: x and xdot, as one struct since C returns one value
 typedef struct {
     double x;

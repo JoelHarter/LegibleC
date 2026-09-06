@@ -1,8 +1,6 @@
 #ifndef LEGIBLEC_HELPER_H
 #define LEGIBLEC_HELPER_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include <math.h>
 
 /// 3-vector dot product

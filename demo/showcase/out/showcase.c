@@ -1,5 +1,3 @@
-#include <stdint.h>
-#include <stdbool.h>
 #include <math.h>
 #include "helper.h"
 #include "showcase.h"

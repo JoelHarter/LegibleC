@@ -1,9 +1,6 @@
 #ifndef ORBIT_H
 #define ORBIT_H
 
-#include <stdint.h>
-#include <stdbool.h>
-
 /**
  * Position and velocity after one step of gravity toward the origin.
  *

@@ -1,9 +1,6 @@
 #ifndef SINCOS_H
 #define SINCOS_H
 
-#include <stdint.h>
-#include <stdbool.h>
-
 /**
  * Rotate the 2-vector `v` by the angle `θ`.
  *
