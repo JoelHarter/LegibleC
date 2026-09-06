@@ -126,7 +126,9 @@ be read by a person who didn't write it.
   compiler, so what they produce is the program exactly, and they take far
   more of the language than this does. But what they produce is machine
   code: nothing to read, nothing to review, nothing to keep when the
-  toolchain moves on. This produces source, and source is the artifact
+  toolchain moves on. And it comes with the language's runtime on board —
+  trimming it down is possible and hard — where this needs nothing but the
+  C standard library. This produces source, and source is the artifact
   every other tool in an engineering process knows what to do with.
 - **From generic C generators** — MATLAB Coder, Cython, f2c. Their C is
   correct and complete, and it will compile years from now. It also reads
