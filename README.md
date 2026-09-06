@@ -92,17 +92,23 @@ the whole output: an `out/` folder, C11, clean under `-Wall -Wextra
 ## What you get
 
 - **C you can read, review and sign off.** Every helper says what it
-  computes. Every function carries its docstring as a Doxygen block. The
-  Julia line each statement came from sits above it. Nothing betrays a
-  machine's bookkeeping.
+  computes. Every function carries its docstring as a Doxygen block, in a
+  header a caller can include. The Julia line each statement came from sits
+  above it. Nothing betrays a machine's bookkeeping.
+- **Your names, your structure.** `ω₀` is `omega0`, `ẋ` is `xdot`, `ħ` is
+  `hbar` — the name you typed to get the character, from Julia's own table,
+  or your own spelling if you prefer. A function returning `x, ẋ` returns a
+  `step_t` with fields `x` and `xdot`. A constant a function reads becomes a
+  named C constant; a name from another module keeps the module in front.
 - **Speed a C programmer would accept.** Static sizes, stack arrays,
-  `static inline` helpers, `restrict` where it is safe. The compiler is given
-  what it would have been given by hand.
-- **No runtime.** Nothing to allocate, initialize or link. The file compiles
-  on its own, on anything with a C compiler.
+  `static inline` helpers, `restrict` where it is safe, `sincos` as the two
+  calls the compiler fuses. The compiler is given what it would have been
+  given by hand.
+- **No runtime.** Nothing to allocate, initialize or link. The folder
+  compiles on its own, on anything with a C compiler.
 - **Errors at transpile time, never wrong C.** Julia the transpiler doesn't
   understand is refused with a message. What comes out computes what the
-  Julia computes.
+  Julia computes, in the same order, to rounding.
 - **One source of truth.** The Julia is the program; the C is a view of it.
   Change the Julia, regenerate, and the two never drift.
 
@@ -115,26 +121,37 @@ be read by a person who didn't write it.
 
 ## How it differs
 
-- **From compiling Julia to a binary.** That gives you an executable or an
-  object file. This gives you source: something to read, audit, edit, and
-  keep when the toolchain changes.
-- **From generic C backends.** Their output is correct and unreadable. Here
-  legibility is a design tenet, behind only correctness and speed.
-- **From writing the C yourself.** It is the same C, without the weeks and
-  the transcription errors, and it stays in step with the Julia for as long
-  as the Julia lives.
-- **From handing it to an AI.** A model can translate anything you paste,
-  and what comes back depends on the model, the day, the wording, and
-  whether the bill was paid. This is deterministic: the same input gives the
-  same output, every time, offline, in a CI job, with no model and no
-  network; and where it can't translate something it says so rather than
-  guessing.
+- **From compiling to a binary** — `juliac`, PackageCompiler, StaticCompiler,
+  and their counterparts for other languages. They run the language's own
+  compiler, so what they produce is the program exactly, and they take far
+  more of the language than this does. But what they produce is machine
+  code: nothing to read, nothing to review, nothing to keep when the
+  toolchain moves on. This produces source, and source is the artifact
+  every other tool in an engineering process knows what to do with.
+- **From generic C generators** — MATLAB Coder, Cython, f2c. Their C is
+  correct and complete, and it will compile years from now. It also reads
+  like it was generated: names nobody chose, arrays behind a runtime of
+  their own, control flow no person would write. Here legibility is a
+  design tenet, behind only correctness and speed: the output is held to
+  the standard of hand-written C, and it shows.
+- **From writing the C yourself.** Nothing beats it, which is why the goal
+  here is to be indistinguishable from it: this is what a competent C
+  programmer would have written, generated for you, and generated again
+  every time the Julia changes, so keeping the two in sync costs nothing.
+  The one thing you give up is editing the C by hand, since the next run
+  writes over it — the Julia is where changes go.
+- **From asking an AI.** Models are astonishing at code, and any of them
+  will turn what you paste into C on request. What comes back depends on
+  the model, the day, the wording, and whether the bill was paid. This is
+  deterministic: the same input gives the same output, every time, offline,
+  in a CI job, with no model and no network — and where it can't translate
+  something, it says so instead of guessing.
 
 ## What it is not
 
-- **Not a Julia compiler.** No garbage collector, dynamic dispatch, strings,
-  growing arrays, closures or exceptions. Every size is known at transpile
-  time. Code that needs Julia's runtime needs Julia.
+- **Not a Julia compiler.** No garbage collector, dynamic dispatch, strings
+  built at run time, growing arrays, closures or exceptions. Every size is
+  known at transpile time. Code that needs Julia's runtime needs Julia.
 - **Not bit-exact.** The C computes the same thing by the same steps; the
   last bit of a rounded result may differ.
 - **Not a way to make Julia faster.** Julia is already fast. This is for
@@ -154,8 +171,10 @@ that element type and size. Arrays are `StaticArrays` types, or `Array`s
 given a size in the call. An `out/` folder comes out: `<outfile>.h` for
 callers, `<outfile>.c` with the functions, `helper.h` and `helper.c` with
 the generated helpers they need — and anything a listed function calls
-comes with it. `transpile` is the package's one exported name, so your own functions
-can be named anything.
+comes with it. Constants a function reads come along too, and any you list
+by keyword, `transpile(f; g, μ)`; `@transpile` does the same from inside a
+module. `transpile` and `@transpile` are the package's only exported names,
+so your own functions can be named anything.
 
 [doc/guide/](doc/guide/README.md) is the user guide: what's accepted,
 targets, every option, calling the C, how names come out and how to
