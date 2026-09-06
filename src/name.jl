@@ -1,14 +1,24 @@
 # Julia identifiers -> valid C identifiers.
 #
 # Julia lets a name be nearly any Unicode; C allows only [A-Za-z0-9_] with no leading
-# digit. Names are first put through compatibility decomposition (NFKD), which turns
-# subscripts and superscripts into plain characters and splits accents off the letters
-# they sit on. Then, character by character:
+# digit. A name is converted character by character:
 #
-#   ASCII letters, digits, `_`    kept
-#   Greek letters                  spelled out: ω -> omega, Ω -> Omega
-#   combining marks and primes     named and appended to what they sit on: ẋ -> xdot, x̂ -> xhat
-#   anything else                  U + its code point in hex: 🤠 -> U1F920
+#   a character in the user's `spelling`   its entry (`transpile(…; spelling=Dict('ħ' => "hred"))`)
+#   otherwise, after compatibility decomposition (NFKD), which turns subscripts,
+#   superscripts, fractions and font variants into plain characters and splits an
+#   accent off the letter it sits on, each resulting character is:
+#     an ASCII letter, digit or `_`        kept
+#     in `overrides`                        that spelling: ε -> epsilon, ∇ -> nabla
+#     in Julia's own table                  what one types after `\` to get it: ω -> omega,
+#                                           ħ -> hbar, ∂ -> partial, ̇ -> dot, 🤠 -> facewithcowboyhat
+#     anything else                         U + its code point in hex
+#
+# The table is the REPL's `\name<tab>` completion list, LaTeX and emoji — the names the
+# author typed to get the characters, so the C says what the Julia said. A character with
+# several names takes the shortest; `overrides` holds the few where that
+# isn't the spelling a reader wants. A name is stripped to its letters and digits —
+# underscores too, since the name stands for one indivisible character — and if what's
+# left doesn't start with a letter, the hex fallback applies.
 #
 # A name that collides with a C keyword, or with another name in the same scope, gets
 # `_` appended until it doesn't. The reserved words live in `reserved.jl`. A name that
@@ -20,8 +30,34 @@
 # anything that has to be spelled in the output.
 
 using Unicode
+using REPL: REPLCompletions
 
 include("reserved.jl")
+
+# Julia's table, inverted: each identifier character to the shortest name that reaches
+# it (alphabetically first among equals), made C-safe. Built once, when the package loads.
+const spelled = let table = Dict{Char, String}()
+    names = Dict{Char, Vector{String}}()
+    for (k, v) in REPLCompletions.latex_symbols
+        length(v) == 1 && Base.is_id_char(only(v)) && push!(get!(names, only(v), String[]), k[2:end])
+    end
+    for (k, v) in REPLCompletions.emoji_symbols
+        length(v) == 1 && Base.is_id_char(only(v)) && push!(get!(names, only(v), String[]), strip(k[2:end], ':'))
+    end
+    for (c, ns) in names
+        clean = replace(sort(ns; by=n -> (length(n), n))[1], r"[^A-Za-z0-9]" => "")
+        occursin(r"^[A-Za-z]", clean) && (table[c] = clean)
+    end
+    table
+end
+
+# Where the table's first name isn't the spelling a reader wants. (After NFKD, ϵ is ε
+# and ϕ is φ, so these cover both forms.)
+const overrides = Dict('ε' => "epsilon", 'φ' => "phi", '∇' => "nabla", 'ð' => "eth",
+                       '👍' => "thumbsup", '👎' => "thumbsdown", '🔢' => "box1234", '💯' => "hundred", '♂' => "mars", '̶' => "strike")
+
+# The user's own spellings for the current `transpile` call, checked by `checkspelling`.
+const spelling = Ref(Dict{Char, String}())
 
 """
     identifier(name) -> String
@@ -34,7 +70,10 @@ function identifier(name::AbstractString)
     # mark, so it's dropped: `bump!` -> `bump`.
     name = String(name)
     endswith(name, "!") && (name = name[1:end-1])
-    s = join(piece(c) for c in Unicode.normalize(name, :NFKD))
+    # The user's spelling is consulted for the character as written and again for what
+    # it decomposes into, so `'²' => "sq"` and `'ε' => "eps"` (which then covers ϵ) both work.
+    user = spelling[]
+    s = join(haskey(user, c) ? user[c] : join(get(user, d, piece(d)) for d in Unicode.normalize(string(c), :NFKD)) for c in name)
     # C keeps every file-scope name that starts with `_` (and `_X…`, `__…` anywhere) for
     # itself, so leading underscores move to the end: `_x` -> `x_`, `__Foo` -> `Foo__`.
     m = match(r"^_+", s)
@@ -67,33 +106,21 @@ end
 # The C spelling of one (decomposed) character.
 function piece(c::Char)
     isascii(c) && (isletter(c) || isdigit(c) || c == '_') && return string(c)
-    g = greek(c)
-    g === nothing || return g
-    c == '̀' && return "grave"
-    c == '́' && return "acute"
-    c == '̂' && return "hat"
-    c == '̃' && return "tilde"
-    c == '̄' && return "bar"
-    c == '̆' && return "breve"
-    c == '̇' && return "dot"
-    c == '̈' && return "ddot"
-    c == '̊' && return "ring"
-    c == '̌' && return "check"
-    c == '⃗' && return "vec"
-    c == '⃛' && return "dddot"
-    c == '′' && return "prime"
-    c == '″' && return "dprime"
-    c == '‴' && return "tprime"
+    haskey(overrides, c) && return overrides[c]
+    haskey(spelled, c) && return spelled[c]
     return "U" * uppercase(string(UInt32(c), base=16))
 end
 
-function greek(c::Char)
-    names = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota",
-             "kappa", "lambda", "mu", "nu", "xi", "omicron", "pi", "rho", "varsigma", "sigma",
-             "tau", "upsilon", "phi", "chi", "psi", "omega")
-    'α' <= c <= 'ω' && return names[c - 'α' + 1]
-    'Α' <= c <= 'Ω' && c != '΢' && return uppercasefirst(names[c - 'Α' + 1])
-    return nothing
+# The user's `spelling`: single characters Julia allows in a name, none of them an
+# ASCII letter, digit or `_` (those are themselves), each spelled as a C identifier piece.
+function checkspelling(d::AbstractDict)
+    for (c, name) in d
+        c isa Char || throw(ArgumentError("spelling: keys are single characters, got $(repr(c))"))
+        Base.is_id_char(c) || throw(ArgumentError("spelling: $(repr(c)) can't appear in a Julia name"))
+        isascii(c) && (isletter(c) || isdigit(c) || c == '_') && throw(ArgumentError("spelling: $(repr(c)) is already itself in C"))
+        name isa AbstractString && occursin(r"^[A-Za-z0-9_]+$", name) || throw(ArgumentError("spelling: $(repr(c)) => $(repr(name)) isn't C identifier text"))
+    end
+    return Dict{Char, String}(d)
 end
 
 """

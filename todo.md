@@ -23,7 +23,7 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ `return c ? x : y;` for a ternary whose branches both return
     ⬜ Continuation lines of a multi-line expression land after its C; put them before it (`comment.md`)
     ✅ One-line `///` Doxygen comment on each generated helper — done 2026-09-03, `src/prose.jl`
-    ⬜ `Δt` → `Deltat`: decide whether Greek-then-letter gets a separator
+    ⬜ `Δt` → `Deltat`: decide whether a spelled-out character followed by a letter gets a separator
     ⬜ From the magnifying glass on `sandbox/demo.c` (2026-09-05), each with its reasoning in the conversation that raised it:
         ✅ Declare a named local at its first assignment — done 2026-09-05, `doc/math/array.md` *Declarations*: at the assignment at the top level of the body; a variable first assigned inside an `if` or a loop is declared just ahead of that construct
         ✅ A reassigned parameter — done 2026-09-05, after a round trip: a scalar is reassigned in place; an array is copied at the top of the function, in a block under a comment giving the reason, as `x_`. The no-copy `x_new` scheme was built and then set aside the same day (decision entry)

@@ -13,23 +13,39 @@ anything — is converted before anything else happens, so the temp rules below
 only ever see C-valid names.
 
 The name is first put through Unicode compatibility decomposition (NFKD). That
-turns subscripts and superscripts into plain characters (`₁` → `1`, `¹` → `1`,
-`ᵃ` → `a`), maps lookalikes to their base letter (`µ` → `μ`), and splits an
-accent off the letter it sits on. Then, character by character:
+turns subscripts, superscripts and fractions into plain characters (`₁` → `1`,
+`¹` → `1`, `ᵃ` → `a`), font variants into their base letter (`ℝ` → `R`,
+`ℓ` → `l`, `µ` → `μ`, `ϵ` → `ε`), and splits an accent off the letter it sits
+on. Then, character by character:
 
 | Julia | C | Rule |
 |---|---|---|
 | `finename` | `finename` | ASCII letters, digits, `_` are kept |
-| `ω`, `Ω` | `omega`, `Omega` | Greek letters are spelled out, case preserved |
+| `ω`, `Ω`, `ħ`, `∂`, `∞` | `omega`, `Omega`, `hbar`, `partial`, `infty` | **Julia's own table**: the name one types after `\` to get the character |
 | `x₁`, `x¹` | `x1` | subscripts and superscripts become plain |
-| `ẋ`, `x̂`, `x̄`, `ẍ`, `x⃗` | `xdot`, `xhat`, `xbar`, `xddot`, `xvec` | combining marks are named and appended, no `_` |
-| `x′` | `xprime` | primes likewise (`dprime`, `tprime`) |
-| `🤠` | `U1F920` | anything else: `U` + code point in hex |
+| `ẋ`, `x̂`, `x̄`, `ẍ`, `x⃗`, `x′` | `xdot`, `xhat`, `xbar`, `xddot`, `xvec`, `xprime` | combining marks are in the table too, appended with no `_` |
+| `🤠` | `facewithcowboyhat` | emoji are in the table, as one word |
+| `ε`, `φ`, `∇`, `ð` | `epsilon`, `phi`, `nabla`, `eth` | the handful of overrides, where the table's name isn't the reader's word |
+| anything else | `U1F920` | `U` + code point in hex |
 
-The full set of mark names: `grave acute hat tilde bar breve dot ddot ring
-check vec dddot prime dprime tprime` — repeated marks follow LaTeX (`ddot`,
-`dddot`). Nothing is needed for names that would start with a digit: Julia
-already forbids a leading digit, subscript, or superscript.
+The table is the REPL's `\name<tab>` completion list, LaTeX names and emoji
+names, read from Julia itself — so the C says what the author typed, and
+nothing is spelled in two places. A character with several names takes the
+shortest (`del` for `∇`, hence the override to `nabla`). A name is stripped to its letters and digits — `star-struck`
+is `starstruck`, `e-mail` is `email`, and `face_with_cowboy_hat` loses its
+underscores too, since the name stands for one indivisible character and
+`_` is for separating words in a name — and if what's left doesn't start
+with a letter (`100`), the hex form applies; `👍` is `thumbsup` by
+override. Nothing is needed for names
+that would start with a digit: Julia already forbids a leading digit,
+subscript, or superscript.
+
+**Your own spellings** sit on top of all of that: `transpile(…;
+spelling=Dict('ħ' => "hred", '∂' => "d"))`. Keys are single characters that
+Julia allows in a name, other than ASCII letters, digits and `_`, which are
+themselves; values are C identifier text. A character in the dictionary is
+spelled as given before any decomposition, so `'ε' => "eps"` names both
+`ε` and `ϵ`, and the collision rule tells the two apart.
 
 A trailing `!` — Julia's mark for a function that mutates its argument — is
 dropped: `bump!` becomes `bump`. C has no such mark, and `bumpU21` would be

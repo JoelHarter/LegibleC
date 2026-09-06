@@ -17,6 +17,7 @@ letter(ω::Float64, Ω::Float64, Δt::Float64) = ω * Ω + Δt
 marks(x̂::Float64, ẍ::Float64, x⃗::Float64, x′::Float64) = x̂ + ẍ + x⃗ + x′
 scripts(x₁::Float64, x²::Float64) = x₁ * x²
 fallback(🤠::Float64, µ::Float64) = 🤠 * µ
+physics(ħ::Float64, ∂::Float64, ∇::Float64, ε::Float64, ϵ::Float64, φ::Float64, ℓ::Float64, ∞::Float64, ð::Float64) = ħ + ∂ + ∇ + ε + ϵ + φ + ℓ + ∞ + ð
 function keyword(exp::Float64, long::Float64)
     omega = exp + long
     ω = omega * 2.0
@@ -53,7 +54,7 @@ branched(a::Float64, b::Float64) = (if a > b; c = a - b; a = c * 2.0; else; c = 
 
 src = csource("name", looped, rebound, squared, branched, square, bare, chain, blocked, letter, marks, scripts, fallback, keyword, long, named, fun45,
               resulttaken, outtaken, helpertaken, underscored, borrowed, short, bump!, (poly, Float64, Float64), (poly, Int64, Int64),
-              mixedarray, outer, nine, scaled32, crossed, crossed32, crossmixed, dotted)
+              mixedarray, outer, nine, scaled32, crossed, crossed32, crossmixed, dotted, physics)
 @testset "name" begin
     # A reassigned array parameter is worked on as a copy `x_` made at the top under a
     # comment; elementwise helpers then write it in place. A reassigned scalar is the parameter.
@@ -73,7 +74,16 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test occursin("return omega * Omega + Deltat;", src)
     @test occursin("xhat + xddot + xvec + xprime", src)
     @test occursin("x1 * x2", src)
-    @test occursin("U1F920 * mu", src)
+    @test occursin("facewithcowboyhat * mu", src)   # Julia's own emoji name, one word; µ (micro) decomposes to μ
+    # Julia's `\name` table spells the rest: what the author typed to get the character.
+    @test occursin("double physics(double hbar, double partial, double nabla, double epsilon, double epsilon_, double phi, double l, double infty, double eth)", src)
+    # The user's own spellings sit on top.
+    spelt = csource("spelt", physics; spelling=Dict('ħ' => "hred", '∂' => "d", 'ε' => "eps"))
+    @test occursin("double physics(double hred, double d, double nabla, double eps, double eps_, double phi, double l, double infty, double eth)", spelt)
+    @test_throws ArgumentError csource("bad", physics; spelling=Dict('a' => "x"))          # ASCII is itself
+    @test_throws ArgumentError csource("bad", physics; spelling=Dict('×' => "times"))      # not a Julia name character
+    @test_throws ArgumentError csource("bad", physics; spelling=Dict('ħ' => "h bar"))      # not C text
+    @test_throws ArgumentError csource("bad", physics; spelling=Dict("ħ" => "hbar"))       # not a character
     @test occursin("double keyword(double exp_, double long_)", src) && occursin("omega_", src)
     @test occursin("double long_(double a)", src)
     @test occursin("return x;", src)

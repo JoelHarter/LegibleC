@@ -1148,3 +1148,33 @@ every session — and explicit, bounded dependencies, so the transpiler no
 longer relies on the caller having loaded StaticArrays first. A version to
 pin, `] test`, and a `using` line that doesn't break when a folder moves.
 Registration is a one-time step later; nothing here depends on it.
+
+---
+
+## 2026-09-06 — Names of characters come from Julia's own table
+
+**Decision.** A non-ASCII character in a name is spelled by the REPL's
+`\name<tab>` completion table (`REPL.REPLCompletions.latex_symbols` and
+`emoji_symbols`), after NFKD decomposition: `ħ` is `hbar`, `∂` is
+`partial`, `̇` is `dot`, `🤠` is `facewithcowboyhat`. The hand-written
+lists of Greek letters and combining marks are gone; the table has them. A
+character with several names takes the shortest, and a short
+`overrides` dictionary holds the four where that isn't the reader's word:
+`ε` → `epsilon` (the table says `varepsilon`), `φ` → `phi`, `∇` → `nabla`
+over `del`, `ð` → `eth` over `dh`, `👍` → `thumbsup` (the table says `+1`).
+A table name is stripped to its letters and digits, underscores included,
+since it stands for one indivisible character; if what's left doesn't
+start with a letter, the `U` + hex fallback stays. On top of everything, the user's own
+`spelling=Dict('ħ' => "hred")`, validated: single characters Julia allows
+in a name, not ASCII letters, digits or `_`, spelled as C identifier text.
+REPL becomes a dependency.
+
+**Why.** The Generality tenet, in the form clarified today: where Julia
+already holds the general thing, ask Julia rather than keep a copy. The
+table is what the author typed to get the character, so the C says what
+the Julia said, and it grows when Julia's does. "The shortest name" is a
+rule that stays sensible if the table changes; the overrides are
+only the cases where it doesn't, hardcoded so a change in the table can't
+move them. NFKD before the table dissolves nearly every awkward name
+(superscripts, fractions, font variants) into plain letters, which is why
+the override list is four entries and not forty.

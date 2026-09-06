@@ -49,6 +49,9 @@ can be as specific as it likes — `add_2x2`, `mul_2x2_2x3`, `cross_F32` and a
 hundred more — so long as one rule produces them all.
 
 The Julia a rule was written against is a sample, not the boundary: a case
-nobody had in mind should already work, and usually does. Every decision is
-then made in one place — one rule to get right, one to read, one to trust —
-and the Julia we accept grows by the rule, not by the case.
+nobody had in mind should already work, and usually does. And where Julia
+already holds the general thing — the digits of π, the name of every
+character, what a type's fields are — the transpiler asks Julia rather than
+keeping a copy. Every decision is then made in one place — one rule to get
+right, one to read, one to trust — and the Julia we accept grows by the
+rule, not by the case.

@@ -35,6 +35,10 @@ Options:
 - `portable`: define `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file and use those,
   instead of `M_PI` and `M_E` from `math.h`, which are POSIX rather than ISO C and
   can be missing under a strict `-std=c11`.
+- `spelling`: your own C spellings for characters in names, `Dict('ħ' => "hred",
+  '∂' => "d")`, on top of the built-in ones (Julia's `\\name` completion table).
+  Keys are single characters Julia allows in a name, other than ASCII letters,
+  digits and `_`; values are C identifier text. See `doc/naming.md`.
 - `width`: the longest line the C may have, in columns. A scalar expression
   that would run past it is wrapped at its loosest operators, each
   continuation line starting with the operator. See `doc/copy.md`.
@@ -52,7 +56,17 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    source::Bool=true,
                    precise::Bool=false,
                    width::Integer=100,
-                   portable::Bool=false)
+                   portable::Bool=false,
+                   spelling::AbstractDict=Dict{Char, String}())
+    LegibleC.spelling[] = checkspelling(spelling)
+    try
+        return transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable)
+    finally
+        LegibleC.spelling[] = Dict{Char, String}()
+    end
+end
+
+function transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
