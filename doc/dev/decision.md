@@ -1452,7 +1452,7 @@ in a C header would be a duplicate symbol at link time, which is what the
 
 ## 2026-09-07 — C23 float types, and an integer as `bool`
 
-**Decision.** `c23float=true` spells `Float64` and `Float32` as `_Float64`
+**Decision.** `c23floattypes=true` spells `Float64` and `Float32` as `_Float64`
 and `_Float32` wherever `double` and `float` would have been; a printed
 one is cast to `double` for `printf`, since a `_FloatN` isn't promoted
 through `...`. `bool=Int32` (any of Julia's integer types) spells `Bool`

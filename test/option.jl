@@ -19,7 +19,7 @@ check("boolint", [Case(flag, 2.0), Case(flag, -1.0), Case(pick, true, 3.0), Case
     # C23 float types, wherever a double or float was: text only, since the compiler
     # here doesn't know them.
     dir = mktempdir()
-    path = transpile(mix; outfile="c23", outpath=dir, c23float=true, scope=@__MODULE__)
+    path = transpile(mix; outfile="c23", outpath=dir, c23floattypes=true, scope=@__MODULE__)
     src = read(path, String) * read(joinpath(dirname(path), "c23.h"), String)
     @test occursin("_Float64 mix(_Float64 x, _Float32 y)", src) && occursin("return x * 2 + (_Float64)sqrtf(y);", src)
     @test !occursin("double", src) && !occursin(r"\bfloat\b", src)

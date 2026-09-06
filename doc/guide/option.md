@@ -10,7 +10,7 @@ Every keyword option of `transpile`.
 | `source` | `true` | copy each Julia line above its C as `// @file.jl:12: …`; comments are always carried, this controls the code lines |
 | `precise` | `false` | print floats with every digit (`%.17g`) instead of `%g` |
 | `portable` | `false` | define `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file instead of using `M_PI` and `M_E`, which are POSIX rather than ISO C |
-| `c23float` | `false` | write `Float64` and `Float32` as C23's `_Float64` and `_Float32` instead of `double` and `float` |
+| `c23floattypes` | `false` | write `Float64` and `Float32` as C23's `_Float64` and `_Float32` instead of `double` and `float` |
 | `bool` | `Bool` | the C type for a `Bool`: `Bool` for C's `bool`, or one of Julia's integer types for that integer wherever a `Bool` appears, names included; the C then writes `0` and `1` and reads any nonzero value as true |
 | `width` | `100` | the longest line; a long scalar expression wraps at its loosest operators |
 | `templimit` | `40` | the longest name a temporary may be given before its descriptive suffix is dropped |

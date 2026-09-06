@@ -4,7 +4,7 @@
 
 # Two options change the spelling of scalars: C23's `_Float64` and `_Float32` in place
 # of `double` and `float`, and an integer type in place of `bool` (see `transpile`).
-const c23float = Ref(false)
+const c23floattypes = Ref(false)
 const booltype = Ref{Type}(Bool)
 
 # (Julia, C, abbreviation)
@@ -26,8 +26,8 @@ const scalars = (
 # The C spelling of a Julia type.
 function ctype(T::Type)
     T === Bool && booltype[] !== Bool && return ctype(booltype[])
-    T === Float64 && c23float[] && return "_Float64"
-    T === Float32 && c23float[] && return "_Float32"
+    T === Float64 && c23floattypes[] && return "_Float64"
+    T === Float32 && c23floattypes[] && return "_Float32"
     for (julia, c, _) in scalars
         T === julia && return c
     end

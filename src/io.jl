@@ -30,7 +30,7 @@ end
 # The `printf` argument for a scalar value: integers cast to the width the conversion
 # names, since `int64_t`'s own format needs a macro.
 argument(T::Type, x) = T === Bool ? (booltype[] === Bool ? x : "$x != 0") : T <: Unsigned ? "(unsigned long long)$x" : T <: Integer ? "(long long)$x" :
-                       c23float[] ? "(double)$x" : x       # a `_FloatN` isn't promoted for `...`
+                       c23floattypes[] ? "(double)$x" : x       # a `_FloatN` isn't promoted for `...`
 
 # `"stdout"` or `"stderr"` if the IR value is that global (by name, since a test may have
 # redirected the streams), else nothing. A file handle will join these later.

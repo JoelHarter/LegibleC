@@ -54,7 +54,7 @@ Options:
 - `width`: the longest line the C may have, in columns. A scalar expression
   that would run past it is wrapped at its loosest operators, each
   continuation line starting with the operator. See `doc/copy.md`.
-- `c23float`: write `Float64` and `Float32` as C23's `_Float64` and `_Float32`
+- `c23floattypes`: write `Float64` and `Float32` as C23's `_Float64` and `_Float32`
   instead of `double` and `float`, wherever they appear.
 - `bool`: the C type for Julia's `Bool` — `Bool` itself, for C's `bool`, or one of
   Julia's integer types, `Int32` say, for that integer wherever a `Bool` appears:
@@ -77,7 +77,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    portable::Bool=false,
                    tempsuffix::Bool=true,
                    spelling::AbstractDict=Dict{Char, String}(),
-                   c23float::Bool=false,
+                   c23floattypes::Bool=false,
                    bool::Type=Bool,
                    scope::Module=Main,
                    variables...)
@@ -85,14 +85,14 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
         throw(ArgumentError("bool must be Bool or one of Julia's integer types, not $bool"))
     LegibleC.spelling[] = checkspelling(spelling)
     LegibleC.scope[] = scope
-    LegibleC.c23float[] = c23float
+    LegibleC.c23floattypes[] = c23floattypes
     LegibleC.booltype[] = bool
     try
         return transpiled(target...; outfile, outpath, separate=split, templimit, staticarray, source, precise, width, portable, suffix=tempsuffix, scope, variables)
     finally
         LegibleC.spelling[] = Dict{Char, String}()
         LegibleC.scope[] = Main
-        LegibleC.c23float[] = false
+        LegibleC.c23floattypes[] = false
         LegibleC.booltype[] = Bool
     end
 end
