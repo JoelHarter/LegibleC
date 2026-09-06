@@ -21,13 +21,19 @@ it, because that is the standard it is held to.
 
 ## A taste
 
-Three lines of Julia, and the C each becomes.
+Three lines of Julia, and the C each becomes. In each pair, the first box is
+the Julia as its author wrote it, and the second is what LegibleC wrote from
+nothing but that.
 
-**A physicist's line, names and all:**
+**A physicist's line, names and all.** The Julia:
 
 ```julia
 ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
 ```
+
+<h1 align="center">⬇</h1>
+
+The C:
 
 ```c
 // @showcase.jl:7: ẍ = -2ζ * ω₀ * ẋ - ω₀^2 * x
@@ -35,11 +41,15 @@ double xddot = -2 * zeta * omega0 * xdot - omega0 * omega0 * x;
 ```
 
 **Linear algebra, solve included** — the normal equations of a least-squares
-fit:
+fit. The Julia:
 
 ```julia
 β = (X' * X) \ (X' * y)
 ```
+
+<h1 align="center">⬇</h1>
+
+The C:
 
 ```c
 // @orbit.jl:18: β = (X' * X) \ (X' * y)
