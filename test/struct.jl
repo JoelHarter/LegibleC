@@ -60,9 +60,9 @@ Base.:*(a::Quaternion, b::Quaternion) = Quaternion(
     a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
     a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
     a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w)
-conjugate(q::Quaternion) = Quaternion(q.w, -q.x, -q.y, -q.z)
+Base.adjoint(q::Quaternion) = Quaternion(q.w, -q.x, -q.y, -q.z)
 function rotated(q::Quaternion, v::SVector{3,Float64})
-    p = q * Quaternion(0.0, v[1], v[2], v[3]) * conjugate(q)
+    p = q * Quaternion(0.0, v[1], v[2], v[3]) * q'
     return SVector(p.x, p.y, p.z)
 end
 third(t::NTuple{3,Float64}) = t[1] + t[3]
@@ -90,7 +90,8 @@ check("struct", [Case(norm2, p), Case(make, 5.0, 6.0), Case(midpoint, Segment(p,
     # the operator's word; `a * b * c` is the two binary calls.
     src = csource("quaternion", rotated)
     @test occursin("Quaternion mul_Quaternion_Quaternion(Quaternion a, Quaternion b)", src) && occursin(" * The Hamilton product.", src)
-    @test occursin("mul_Quaternion_Quaternion(mul_Quaternion_Quaternion(q, ", src) && occursin(r"\),\n\s+conjugate\(q\)\);", src)   # wrapped at the argument
+    @test occursin("mul_Quaternion_Quaternion(mul_Quaternion_Quaternion(q, ", src) && occursin(r"\),\n\s+adjoint_Quaternion\(q\)\);", src)   # wrapped at the argument
+    @test occursin("Quaternion adjoint_Quaternion(Quaternion q)", src)
 end
 @testset "tuple text" begin
     src = csource("tupletext", step, twice, kept, third, viathird, unarrays, tswap)

@@ -33,7 +33,7 @@ noun(T::Type; plural::Bool=false) = ndims(T) == 1 ? (plural ? "vectors" : "vecto
                                     ndims(T) == 2 ? (plural ? "matrices" : "matrix") : (plural ? "arrays" : "array")
 function describe(T::Type; typed::Bool=false, plural::Bool=false)
     T <: AbstractArray || return (typed ? "$T " : "") * (plural ? "scalars" : "scalar")
-    return (istransposed(T) ? "transposed " : "") * (typed ? "$(eltype(T)) " : "") * sizeword(T) * "-" * noun(T; plural)
+    return (istransposed(T) ? (eltype(T) <: Real ? "transposed " : "adjoint ") : "") * (typed ? "$(eltype(T)) " : "") * sizeword(T) * "-" * noun(T; plural)
 end
 
 # The comment for the helper for `op` on `types`, producing `R`.

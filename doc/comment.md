@@ -198,7 +198,7 @@ add_3(temp2_c, D, out);  // out = temp2_c + D
 ```
 
 The text is the step as a textbook would write it, in the spelling the
-helper comments use — `A * Bᵀ`, `a ⋅ b`, `a × b`, `A \ b`, `A⁻¹`, `det(A)`,
+helper comments use — `A * Bᵀ` (`B†` when the elements aren't real, since `'` is then the adjoint; the helper's *name* keeps `T` either way, `mul_2x3_T2x3`), `a ⋅ b`, `a × b`, `A \ b`, `A⁻¹`, `det(A)`,
 `norm(a)`, `.+` and friends for a broadcast, `[C A; B C]` for a block
 construction, `A[2, :]` for a slice, `.= 0` for zeroing — with the C names
 of the operands, temps included. That's what lets the comments chain: the

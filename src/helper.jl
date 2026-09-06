@@ -94,7 +94,7 @@ function helpercode(name::AbstractString, op::Symbol, types, R::Type)
     else
         throw(ArgumentError("unsupported array operation: $op"))
     end
-    spelled = [istransposed(T) ? n * "ᵀ" : n for (T, n) in zip(types, names)]
+    spelled = [istransposed(T) ? n * tmark(T) : n for (T, n) in zip(types, names)]
     formula = op in (:add, :sub) ? "out = $(spelled[1]) $(op == :add ? "+" : "-") $(spelled[2])" :
               op == :neg ? "out = -$(spelled[1])" :
               op == :div ? "out = $(spelled[1]) / $(spelled[2])" :
@@ -260,7 +260,7 @@ function scalarhelper!(helpers::Dict{String, String}, op::Symbol, types, E::Type
         row = isrow(a) ? a : Transposed{eltype(a), shape(a), 1}
         body = contraction(row, b, an, bn, nothing, E)
         helpers[name] = definition(ctype(E), name, [declare(a, an; constant=true), declare(b, bn; constant=true)], body;
-                                   doc=[prose(op, types), op == :dot ? "returns $an ⋅ $bn" : "returns $(an)ᵀ * $bn"])
+                                   doc=[prose(op, types), op == :dot ? "returns $an ⋅ $bn" : "returns $(an)$(tmark(a)) * $bn"])
     end
     return name
 end
@@ -624,7 +624,7 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
         vcat(["$(ctype(E)) LU[$n][$n];", "int p[$n];", "$(luhelper!(helpers, T))($A, LU, p);"], lusolve(n, "out", access(B, b, ["p[i]", "0"])))
     end
     doc = [n <= 3 ? "$(describe(T)) \\ $(describe(B)) solve by Cramer's rule" : "$(describe(T)) \\ $(describe(B)) solve by LU with partial pivoting",
-           "out = $(istransposed(T) ? A * "ᵀ" : A) \\ $b"]
+           "out = $(istransposed(T) ? A * tmark(T) : A) \\ $b"]
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=n <= 3)
     return name
 end
@@ -864,7 +864,7 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
         body = nest(pairs, ["$(access(R, "out", idx)) = $expr;"])
         params = [declare(T, n; constant=true) for (T, n) in zip(types, argnames)]
         push!(params, declare(R, "out"; restrict=!any(T -> alike(T, R), types)))
-        spelled = [istransposed(T) ? n * "ᵀ" : n for (T, n) in zip(types, argnames)]
+        spelled = [istransposed(T) ? n * tmark(T) : n for (T, n) in zip(types, argnames)]
         formula = cfn isa Integer ? "out = $(spelled[1]) .^ $cfn" :
                   length(types) == 1 ? (cfn == :neg ? "out = .-$(spelled[1])" : cfn == :not ? "out = .!$(spelled[1])" : "out = $op.($(spelled[1]))") :
                   length(types) == 2 && haskey(dotspelling, op) ? "out = $(spelled[1]) $(dotspelling[op]) $(spelled[2])" : "out = $op.($(join(spelled, ", ")))"

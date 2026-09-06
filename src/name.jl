@@ -66,7 +66,8 @@ const scope = Ref{Module}(Main)
 # The C base name of a method: an operator's word — `*` is `mul`, `+` is `add` — since C
 # has no operator overloading; anything else its own name.
 const operators = Dict(:* => "mul", :+ => "add", :- => "sub", :/ => "div", :\ => "ldiv", :^ => "pow", :(==) => "eq",
-                       :!= => "ne", :< => "lt", :<= => "le", :> => "gt", :>= => "ge", :! => "not")
+                       :!= => "ne", :< => "lt", :<= => "le", :> => "gt", :>= => "ge", :! => "not",
+                       :adjoint => "adjoint", :transpose => "transpose", :conj => "conj")
 fname(name::Symbol) = get(operators, name, string(name))
 
 # The C name of a user's method of a Julia operator, by the helper scheme: the

@@ -15,7 +15,7 @@ top of each file says what to look at.
   function's own struct, `&& return` as an `if`.
 - [vecrot/](vecrot/vecrot.jl) — a quaternion struct with only `*` defined,
   and a vector rotated by one: a struct by value, `Base.:*` on it coming out
-  as `mul_Quaternion_Quaternion`, `q * p * conjugate(q)` as two calls,
+  as `mul_Quaternion_Quaternion`, `q'` as `adjoint_Quaternion`, `q * p * q'` as two calls,
   `sincos` as its two lines,
   a four-field initializer broken per line.
 

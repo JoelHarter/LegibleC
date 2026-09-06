@@ -780,7 +780,7 @@ function store!(lines, sc::Scope, i, x, rhs; declaration::Bool=false)
             declaration && emit!(lines, sc, declare(R, x) * ";")
             start = length(lines) + 1
             copy!(lines, sc, value(sc, rhs.args[2]), A, x, R)
-            step!(lines, sc, "$x = $(value(sc, rhs.args[2]))ᵀ"; from=start)
+            step!(lines, sc, "$x = $(value(sc, rhs.args[2]))$(tmark(A))"; from=start)
             sc.shapes[i] = R
         elseif any(a -> mentions(sc, x, a), rhs.args[2:end]) && !inplace(sc, rhs, slottype(sc, slot))
             # `x` is also an operand of something that reads elements it has already
@@ -1883,8 +1883,10 @@ function step!(lines, sc::Scope, text; from::Int=length(lines))
     push!(sc.steps, (from, length(lines), text, sc.stmtline[sc.current]))
 end
 
-# A value's name in a step comment: `Aᵀ` when it's transposed.
-spell(T::Type, name::AbstractString) = istransposed(T) ? name * "ᵀ" : name
+# A value's name in a step comment: `Aᵀ` when it's transposed — `A†` when the elements
+# aren't real, since `'` is then the adjoint. (Names keep `T` either way: `mul_T3_3`.)
+spell(T::Type, name::AbstractString) = istransposed(T) ? name * tmark(T) : name
+tmark(T::Type) = eltype(T) <: Real ? "ᵀ" : "†"
 
 # Write the step comments in. On a Julia line that became more than one step, each
 # step gets its text — at the end of the line when the step is one statement, on the
