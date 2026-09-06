@@ -96,9 +96,9 @@ stays on the stack at its static size; this is for the small dense systems
 of control and simulation, not for the BLAS-sized ones.
 
 **The whole thing** is in [demo/](demo/README.md): each folder is a Julia
-file and the `out/` it produces — a header a caller includes, the
-functions, the helpers. Run `julia showcase.jl` in one to regenerate it, or
-do the same for your own code:
+file and an empty `out/`. Run `julia showcase.jl` there and `out/` fills
+with the C — a header a caller includes, the functions, the helpers. Do the
+same for your own code:
 
 ```julia
 using LegibleC
