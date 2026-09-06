@@ -11,7 +11,8 @@ file. Each
 
 - a `Function` — must have exactly one method with all-concrete argument types
 - a `Core.MethodInstance` — must be a concrete specialization
-- a tuple `(f, T...)` — the arguments to [`concretemethod`](@ref), which resolves it
+- a tuple `(f, T...)` — the arguments to [`concretemethod`](@ref), which resolves it;
+  for a single function the tuple can be dropped, `transpile(f, T...)`
 
 In the tuple form a type followed by integers is an array of that element type and
 those dimensions: `(f, Float64, 3, Float64, 2, 3)` is a 3-vector and a 2×3 matrix.
