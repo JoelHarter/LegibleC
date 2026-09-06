@@ -34,6 +34,15 @@ end
 transpile(orbit; outfile="body")
 ```
 
+```
+                                       ║
+                                       ║
+                                       ║
+                                   ╲   ║   ╱
+                                     ╲ ║ ╱
+                                       ▼
+```
+
 ```c
 /// 3-vector norm
 /// returns norm(a)
