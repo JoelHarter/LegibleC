@@ -15,7 +15,7 @@ const matrices = [(F, m, n) for m in N for n in N]
 const squares = [(F, n, n) for n in N]
 const shapes = [vectors; matrices]
 
-lib(name, targets) = (print(rpad(name, 12)); t = @elapsed transpile(targets...; outfile=name, helper=name * "helper", outpath=@__DIR__); println(lpad(length(targets), 5), " functions, ", round(t; digits=1), " s"))
+lib(name, targets; kw...) = (print(rpad(name, 12)); t = @elapsed transpile(targets...; outfile=name, helper=name * "helper", outpath=@__DIR__, kw...); println(lpad(length(targets), 5), " functions, ", round(t; digits=1), " s"))
 
 unary(op, list=shapes) = [(op, s...) for s in list]
 binary(op, list=shapes) = [(op, s..., s...) for s in list]
@@ -64,9 +64,9 @@ lib("cumprod", [unary(cumprod, vectors); along(cumprod)])
 lib("diff", [unary(diff, vectors); along(diff)])
 
 # Constants: a zero of every shape, an identity of every square size — plain functions,
-# since neither is an operator.
+# since neither is an operator, made here in a loop, so without the source line quoted.
 for (F, n) in vectors; @eval $(Symbol("zero_", n))() = zeros(SVector{$n, Float64}); end
 for (F, m, n) in matrices; @eval $(Symbol("zero_", m, "x", n))() = zeros(SMatrix{$m, $n, Float64}); end
 for (F, n, _) in squares; @eval $(Symbol("identity_", n, "x", n))() = SMatrix{$n, $n, Float64}(I); end
-lib("zero", [[getfield(@__MODULE__, Symbol("zero_", n)) for n in N]; [getfield(@__MODULE__, Symbol("zero_", m, "x", n)) for m in N for n in N]])
-lib("identity", [getfield(@__MODULE__, Symbol("identity_", n, "x", n)) for n in N])
+lib("zero", [[getfield(@__MODULE__, Symbol("zero_", n)) for n in N]; [getfield(@__MODULE__, Symbol("zero_", m, "x", n)) for m in N for n in N]]; source=false)
+lib("identity", [getfield(@__MODULE__, Symbol("identity_", n, "x", n)) for n in N]; source=false)
