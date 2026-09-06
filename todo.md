@@ -117,6 +117,6 @@ transpiler does today is in [doc/](doc/), starting with
     ✅ Wrap the transpiler in a module — done 2026-09-06; a package since the same day: `Project.toml`, `src/LegibleC.jl`, `] dev` it and `using LegibleC`
     ⬜ Register the package in General when it's ready for strangers; until then `] add` by URL
     ⬜ Emit a companion `.h` for the user's functions: their prototypes and return structs (the helper headers exist since 2026-09-06)
-    ⬜ Output files, follow-ups: each file includes only the standard headers it uses; two `transpile` calls into one `out/` overwrite each other's helper files (merge, or refuse); user structs into the companion header
+    ⬜ Output files, follow-ups: each file includes only the standard headers it uses; user structs into the companion header. (One call generates everything: list every function in one `transpile`; a later call into the same `out/` simply writes its own files over the old ones)
     ⬜ Give at least one `rule.jl` function a docstring so the Doxygen path is exercised by the standing suites
     ⬜ Add `complex.h` to `reserved.jl` when it joins the might-include list — note it defines `I`, so a Julia variable `I` would become `I_`

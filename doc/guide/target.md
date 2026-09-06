@@ -13,4 +13,7 @@ What `transpile` accepts as a target.
 | a `Core.MethodInstance` | a specialization you already have |
 
 Anything a target calls is transpiled too, and anything *that* calls, so
-listing the entry points is enough.
+listing the entry points is enough. One call generates everything: the
+targets share one set of names, one `helper.h`, one copy of each callee.
+List every function you want in a single call; a later call writes its own
+files into `out/` over the earlier ones.
