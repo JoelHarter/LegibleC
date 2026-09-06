@@ -149,8 +149,10 @@ it needs, the functions — and anything a listed function calls comes with
 it. `transpile` is the package's one exported name, so your own functions
 can be named anything.
 
+[doc/guide.md](doc/guide.md) is the user guide: targets, every option,
+calling the C, how names come out and how to override them.
 [doc/syntax.md](doc/syntax.md) is the one-page list of every piece of Julia
-accepted, and of every option.
+accepted.
 
 ## Documentation
 
