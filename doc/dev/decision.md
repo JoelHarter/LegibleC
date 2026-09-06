@@ -1225,24 +1225,24 @@ break anything.
 ## 2026-09-06 — The output is a folder
 
 **Decision.** `transpile` writes an `out/` folder under `outpath`:
-`<outfile>.c` with the user's functions, `mathhelper.h` and `mathhelper.c`
-with the mathematical helpers, `helper.h` and `helper.c` with printing and
-text helpers, the last pair only when used. A header holds what its
+`<outfile>.c` with the user's functions, `helper.h` and `helper.c` with
+everything generated that they need (a split into `mathhelper` and
+`helper` was tried the same day and merged back: nearly every helper is
+mathematics, and one pair of files is one thing to include). The header holds what its
 helpers need — the standard includes, the constants, the typedefs — plus
 prototypes of the out-of-line helpers and the `static inline` ones
 themselves; the `.c` holds the out-of-line helpers, which lose `static`
 so the functions file can call them. A function's own return struct sits
 right above its prototype in the functions file. The helper files are
-`mathhelper`, not `math`, because `math.h` would shadow the standard
-header under `-I out`.
+`helper`, not `math`, because `math.h` would shadow the standard header
+under `-I out`.
 
 **Why.** One file was right while the helpers were a few lines; with
 solvers, factorizations and printing in it, the user's functions were the
 last fifth of a long file. Small `static inline` helpers belong in a
 header, where every translation unit gets the body, which is how a C
 programmer ships them; the large ones belong in a `.c` compiled once.
-Splitting mathematics from printing keeps the mathematical header pure,
-and it is usually the only helper file present. The typedef sits with the
+The typedef sits with the
 prototype because C needs the type before its first use and the prototype
 is that use; together they are the function's interface, which is what a
 later companion header will lift out.

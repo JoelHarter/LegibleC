@@ -31,12 +31,10 @@ of `out/body.c`. The folder holds:
   struct`s for the structs used, each function's prototype (with its own
   return struct right above it, when it returns a tuple), and the functions
   themselves, each under a Doxygen block made from its docstring.
-- `mathhelper.h` — the generated mathematical helpers: small ones as
-  `static inline` functions, each with a two-line comment, and prototypes
-  for the larger ones.
-- `mathhelper.c` — the larger helpers: solvers, factorizations.
-- `helper.h`, `helper.c` — the same for printing and text helpers, written
-  only when something uses them.
+- `helper.h` — everything generated that your functions need: small
+  helpers as `static inline` functions, each with a two-line comment, and
+  prototypes for the larger ones.
+- `helper.c` — the larger helpers: solvers, factorizations, array printing.
 
 It compiles as a unit:
 

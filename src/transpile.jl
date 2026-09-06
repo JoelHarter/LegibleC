@@ -4,9 +4,8 @@
     transpile(target...; outfile="juliatranspiled", outpath=pwd()) -> path
 
 Transpile one or more targets into `outpath/out/`: `<outfile>.c` with the functions,
-`mathhelper.h` and `mathhelper.c` with the generated mathematical helpers, `helper.h`
-and `helper.c` with any others (printing, text). Returns the path of the functions
-file. Each
+`helper.h` and `helper.c` with the generated helpers they need. Returns the path of
+the functions file. Each
 `target` is one of:
 
 - a `Function` — must have exactly one method with all-concrete argument types
@@ -124,12 +123,12 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         any(v -> haskey(prog.helpers, v), functions[k][3]) || continue
         functions[k] = generate(n, mi, sig; blocked=keys(prog.helpers))
     end
-    # The files in `out/`: `mathhelper.h`/`.c` for the mathematical helpers (`add_3`,
-    # `solve_4x4_4`, `powi`), `helper.h`/`.c` for the rest (printing, text), and
-    # `<outfile>.c` for the user's functions. A header holds what its helpers need —
+    # The files in `out/`: `helper.h`/`.c` for everything generated that the user's
+    # functions need — `add_3`, `solve_4x4_4`, `powi`, `printarray_F64` — and
+    # `<outfile>.c` for the user's functions. The header holds what the helpers need —
     # standard includes, constants, typedefs — plus prototypes of the out-of-line
-    # helpers and the inline ones themselves; the `.c` holds the out-of-line ones. A
-    # helper file is written only when it has something in it. A function's own return
+    # helpers and the inline ones themselves; the `.c` holds the out-of-line ones. The
+    # helper files are written only when there is a helper. A function's own return
     # struct sits right above its prototype.
     dir = joinpath(outpath, "out")
     mkpath(dir)
@@ -139,7 +138,7 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     macros = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the double nearest $(constants[m])" for m in sort!(collect(prog.macros))]
     structs = [(structname(T), def) for (T, def) in prog.structs]
     placed = Set{String}()
-    groups = [("mathhelper", [n for n in order if mathematical(n)]), ("helper", [n for n in order if !mathematical(n)])]
+    groups = [("helper", order)]
     for (file, names) in groups
         isempty(names) && continue
         text = join((prog.helpers[n] for n in names), "\n")

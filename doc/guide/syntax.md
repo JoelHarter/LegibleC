@@ -18,7 +18,7 @@ an array of that element type and size. Options: `outfile`, `outpath`,
 `templimit`, `staticarray` (on), `source` (on), `precise`, `portable`, `width`
 (100), `spelling` (your own C names for characters, `../naming.md`). An
 `out/` folder comes out: the functions in `<outfile>.c`, the helpers in
-`mathhelper.h`/`.c` and `helper.h`/`.c` — see `start.md`.
+`helper.h`/`.c` — see `start.md`.
 
 ## Functions
 

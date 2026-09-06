@@ -118,9 +118,6 @@ definition(ret, name, params, body; doc::Union{AbstractString, Vector{String}}="
     join("/// " .* (doc isa AbstractString ? (isempty(doc) ? String[] : [doc]) : doc), "\n") * (isempty(doc) ? "" : "\n") *
     "$(inline ? "static inline " : "")$ret $name($(join(params, ", "))) {\n" * join("    " .* body, "\n") * "\n}\n"
 
-# Is this helper mathematics (`mathhelper.h`) rather than printing or text (`helper.h`)?
-mathematical(name) = !(startswith(name, "printarray") || name == "utf8len")
-
 # Is this helper's text a `static inline` one (for the header) or an ordinary function?
 isinline(text) = occursin(r"^static inline ", text) || occursin("\nstatic inline ", text)
 

@@ -1,5 +1,5 @@
-#ifndef LEGIBLEC_MATHHELPER_H
-#define LEGIBLEC_MATHHELPER_H
+#ifndef LEGIBLEC_HELPER_H
+#define LEGIBLEC_HELPER_H
 
 #include <stdint.h>
 #include <stdbool.h>

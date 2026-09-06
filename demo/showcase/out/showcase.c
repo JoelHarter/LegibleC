@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <math.h>
-#include "mathhelper.h"
+#include "helper.h"
 
 typedef struct {
     double x;
