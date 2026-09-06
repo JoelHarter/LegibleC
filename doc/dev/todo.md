@@ -92,7 +92,8 @@ transpiler does today is in [doc/](..), starting with
     ✅ A struct definition: `transpile(Point)` — done 2026-09-06, with the docstring as a Doxygen block
     ⬜ An `@enum` type → a C `enum`
     ✅ A math operator with types, `(+, Float64, 3, Float64, 3)`: the helper as an ordinary function of the user's, prototype and Doxygen block, out of `helper.h` — done 2026-09-07
-    ⬜ Broadcasts as a symbol `(:.*, T, T)`; along-a-dimension as `(sum, T; dims=1)`
+    ✅ Broadcasts as targets, `(:.*, T, T)` and `(broadcast, f, T)` — done 2026-09-07
+    ⬜ Along-a-dimension as a target, `(sum, T; dims=1)`; `tr(A)`; transposed operands as targets, `A' * B`, and outer products `a * b'`
     ✅ A variable: by keyword, `transpile(fall; g)`, `@transpile(…; g)` for the calling scope, `:name => value` and `GlobalRef` as escape hatches — done 2026-09-06; `initializer` moved into `src`
     ✅ Functions read a global by its C name; the global is pulled in like a callee — done 2026-09-06; a mutable global must be typed (`k::Float64 = 2.0`)
     ✅ Definitions come from anywhere Julia sees them; a REPL-defined function just carries no source comments (a refusal was tried 2026-09-06 and withdrawn the same day)

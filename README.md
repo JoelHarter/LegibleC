@@ -209,6 +209,9 @@ override them.
 - [doc/dev/](doc/dev/) — the decision log, and the survey of what could
   still map between Julia and C.
 - [doc/dev/todo.md](doc/dev/todo.md) — what's open.
+- [aux/stackmath/](aux/stackmath/stackmath.jl) — a script that generates a
+  library of static linear algebra in C, every operation at every size from
+  2 to 10, one file per operation: what the operator targets are for.
 
 ## Tests
 

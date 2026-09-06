@@ -249,7 +249,8 @@ end
 # the helper scheme, `add_3`, `addP_3_s`, `sqrtP_3`, whose body is the call. The C it
 # makes is what the operator becomes anywhere, and now under a name of its own.
 function synthetic(f, types, sig)
-    args = [Symbol('a' + k - 1) for k in 1:length(types)]   # `a`, `b`, `c`, as a helper names them
+    # `a`, `b`, `c`, as a helper names them, and `A` for a matrix.
+    args = [Symbol(T <: AbstractArray && ndims(T) >= 2 ? uppercase('a' + k - 1) : 'a' + k - 1) for (k, T) in enumerate(types)]
     params = [Expr(:(::), a, T) for (a, T) in zip(args, types)]
     if f isa Symbol
         s = string(f)
