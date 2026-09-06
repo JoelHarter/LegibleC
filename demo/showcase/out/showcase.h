@@ -47,4 +47,4 @@ double rms(const double y[4], const double yhat[4]);
  */
 double wrap(double theta);
 
-#endif
+#endif  // SHOWCASE_H

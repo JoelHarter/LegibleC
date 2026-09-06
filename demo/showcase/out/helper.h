@@ -49,4 +49,4 @@ static inline double sum_4(const double a[4]) {
     return sum;
 }
 
-#endif
+#endif  // LEGIBLEC_HELPER_H

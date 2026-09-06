@@ -31,4 +31,4 @@ void heading(float theta, float out[restrict 2]);
  */
 void orbit(double r, double omega, double t, double out[restrict 2]);
 
-#endif
+#endif  // SINCOS_H

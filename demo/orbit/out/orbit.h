@@ -21,4 +21,4 @@ void orbit(const double x[3], const double v[3], double dt, double out[restrict 
  */
 double fit(const double X[4][2], const double y[4]);
 
-#endif
+#endif  // ORBIT_H

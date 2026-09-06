@@ -106,4 +106,4 @@ static inline void solve_2x2_2(const double A[2][2], const double b[2], double o
     out[1] = (A[0][0] * b[1] - A[1][0] * b[0]) / d;
 }
 
-#endif
+#endif  // LEGIBLEC_HELPER_H

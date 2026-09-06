@@ -76,7 +76,7 @@ step_t step(double x, double xdot, double omega0, double zeta, double Deltat);
  */
 double energy(double m, const double r[3], const double v[3], double mu);
 
-#endif
+#endif  // BODY_H
 ```
 
 Then the functions, `body.c`:

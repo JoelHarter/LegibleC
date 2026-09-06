@@ -211,7 +211,7 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
             for h in includes(hbody); println(io, "#include <", h, ">"); end
             isempty(includes(hbody)) || println(io)
             print(io, rstrip(hbody)); println(io); println(io)
-            println(io, "#endif")
+            println(io, "#endif  // $guard")
         end
         # The `.c` holds the out-of-line helpers; with none, there is no file.
         isempty(outline) && continue
@@ -244,7 +244,7 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     # A struct the helpers own that a prototype mentions: the header needs theirs.
     any(occursin(name, text) for name in placed if any(occursin(name, prog.helpers[n]) for n in order)) && push!(header, "#include \"helper.h\"")
     length(header) > n && push!(header, "")
-    push!(header, rstrip(text), "", "#endif")
+    push!(header, rstrip(text), "", "#endif  // $guard")
     write(joinpath(dir, base * ".h"), join(header, "\n") * "\n")
     path = joinpath(dir, base * ".c")
     cbody = join([macros; [globaldecl(g) for g in prog.globals]; [prog.foreign[n] for n in sort!(collect(keys(prog.foreign)))]; [d for (_, _, d, _) in functions]], "\n")
