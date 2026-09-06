@@ -1373,3 +1373,12 @@ is legal C11 that no one writes and some compilers warn about, so a field
 read still gets a variable. The in-place accumulation is how a person
 writes a three-term sum with such helpers; it also keeps the temps numbered
 in the order they appear, which the temp-per-step form did not.
+
+**Step comments** (same day, on request). An accumulating step reads
+`temp4 += temp3`, the form every C reader knows, and never
+`temp4 = temp4 + temp3`. An operator on structs gets a step comment spelled
+in Julia — `temp2_q_v = q * temp1_v * q'`, `conj(q)` — the way a matrix
+step reads `A \ b`, since `mul_Quat_Quat(adjoint_Quat(q))` is a helper's
+name, not the mathematics. A struct built over several lines is a step of
+its line too, `temp1_v = Quat(0.0, v)`, so the line's other steps get their
+comments rather than counting as its only one.

@@ -102,9 +102,11 @@ check("struct", [Case(norm2, p), Case(make, 5.0, 6.0), Case(midpoint, Segment(p,
     # is read; and `a + b + c` on arrays accumulates in its destination.
     src = csource("quat", turned)
     @test occursin("return conj_Quat(q);", src)
-    @test occursin("Quat temp2_q_v = mul_Quat_Quat(mul_Quat_Quat(q, temp1_v), adjoint_Quat(q));", src)
+    @test occursin("Quat temp2_q_v = mul_Quat_Quat(mul_Quat_Quat(q, temp1_v), adjoint_Quat(q));  // temp2_q_v = q * temp1_v * q'", src)
+    @test occursin("    // temp1_v = Quat(0.0, v)\n    Quat temp1_v;\n", src)
     @test occursin("memcpy(out, temp2_q_v.v, sizeof(double[3]));", src)
-    @test occursin("add_3(temp1_a_b_v, temp2_b_a_v, temp4_a_b_v);", src) && occursin("add_3(temp4_a_b_v, temp3_a_v_b, temp4_a_b_v);", src)
+    @test occursin("add_3(temp1_a_b_v, temp2_b_a_v, temp4_a_b_v);  // temp4_a_b_v = temp1_a_b_v + temp2_b_a_v", src)
+    @test occursin("add_3(temp4_a_b_v, temp3_a_v_b, temp4_a_b_v);  // temp4_a_b_v += temp3_a_v_b", src)
     @test !occursin("temp5", src)
 end
 @testset "operator methods" begin

@@ -202,7 +202,12 @@ helper comments use — `A * Bᵀ` (`Bᴴ` when the elements aren't real, since 
 `norm(a)`, `.+` and friends for a broadcast, `[C A; B C]` for a block
 construction, `A[2, :]` for a slice, `.= 0` for zeroing — with the C names
 of the operands, temps included. That's what lets the comments chain: the
-name a step produces is the name the next step consumes.
+name a step produces is the name the next step consumes. A step that
+accumulates into its own destination — the later terms of `A + B + C` —
+reads `out += C`. An operator on structs is spelled as the Julia would be,
+`temp2 = q * temp1 * q'`, `conj(q)`, since the C call's name is the
+helper's, not the mathematics; and a struct built over several lines,
+`temp1 = Quat(0.0, v)`, is a step of its line like the copies are.
 
 A Julia line that became a single operation gets no step comment: its
 source line is right above it and says the same thing. A step is an

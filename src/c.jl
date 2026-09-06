@@ -1090,7 +1090,10 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         isnegated(sc, acc) && (aname = negate(aname))
         isnegated(sc, a) && (accname = negate(accname))
         emit!(lines, sc, "$(helper!(sc.helpers, op, types, R))($accname, $aname, $out);")
-        step!(lines, sc, "$out = $(spell(acctype, accname)) $(Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[op]) $(spell(atype, aname))")
+        sign = Dict(:add => "+", :sub => "-", :mul => "*", :div => "/")[op]
+        accname == out && !isnegated(sc, acc) && !isnegated(sc, a) ?
+            step!(lines, sc, "$out $sign= $(spell(atype, aname))") :
+            step!(lines, sc, "$out = $(spell(acctype, accname)) $sign $(spell(atype, aname))")
         accname, acctype = out, R
     end
     if length(args) == 1
@@ -1551,8 +1554,9 @@ function render(sc::Scope, i, ex::Expr)
     # one call in Julia through Julia's fold, is the two binary calls.
     if any(a -> isstruct(valuetype(sc, a)), args)
         name = usercall!(sc, f, args)
-        name === nothing || return "$name($(callargs(sc, args)))", PRIMARY
+        name === nothing || (sc.math[i] = julian(sc, f, args); return "$name($(callargs(sc, args)))", PRIMARY)
         if n > 2 && (name = usercall!(sc, f, args[1:2])) !== nothing
+            sc.math[i] = julian(sc, f, args)
             acc = "$name($(callargs(sc, args[1:2])))"
             for a in args[3:end]
                 acc = "$name($acc, $(callargs(sc, [a])))"
@@ -1866,12 +1870,15 @@ function compound!(lines, sc::Scope, i, T::Type, args, dest; declared::Bool)
         emit!(lines, sc, (declared ? "" : "$(ctype(T)) ") * "$dest = $(compound(sc, T, args));")
         return
     end
+    start = length(lines) + 1
     declared || emit!(lines, sc, "$(ctype(T)) $dest;")
     fields = istuple(T) ? collect(T.parameters) : [fieldtype(T, k) for k in 1:fieldcount(T)]
     for (F, c, a) in zip(fields, fieldcnames(T), args)
         isarray(F) ? copy!(lines, sc, value(sc, a), valuetype(sc, a), "$dest.$c", F) :
                      emit!(lines, sc, "$dest.$c = $(value(sc, a));")
     end
+    # Built over several lines, the construction is a step of its line like any other.
+    istuple(T) || step!(lines, sc, "$dest = $(ctype(T))($(join([value(sc, a) for a in args], ", ")))"; from=start)
 end
 
 # Is the tuple made at statement `i` used only by constructors and block
@@ -1895,6 +1902,26 @@ end
 # these into comments once the function is built.
 function step!(lines, sc::Scope, text; from::Int=length(lines))
     push!(sc.steps, (from, length(lines), text, sc.stmtline[sc.current]))
+end
+
+# The Julia spelling of an operator on structs, for the step comment: `q * p * q'`,
+# `conj(q)`. An operand that is itself an operator call written in place is spelled the
+# same way, in parentheses when its operator is another.
+function julian(sc::Scope, f, args)
+    sym = nameof(f)
+    function part(a)
+        a isa Core.SSAValue && a.id in sc.inlined || return value(sc, a)
+        st = sc.ci.code[a.id]
+        g = st isa Expr && st.head === :call ? callee_or_nothing(sc.ci, st.args[1]) : nothing
+        g isa Function && any(x -> isstruct(valuetype(sc, x)), st.args[2:end]) || return value(sc, a)
+        inner = julian(sc, g, st.args[2:end])
+        length(st.args) > 2 && nameof(g) !== sym ? "($inner)" : inner
+    end
+    parts = map(part, args)
+    sym === :adjoint && return parts[1] * "'"
+    length(parts) >= 2 && haskey(operators, sym) && sym !== :! && return join(parts, " $sym ")
+    length(parts) == 1 && sym in (:-, :!) && return "$sym$(parts[1])"
+    return "$sym($(join(parts, ", ")))"
 end
 
 # A value's name in a step comment: `Aᵀ` when it's transposed — `Aᴴ` when the elements
