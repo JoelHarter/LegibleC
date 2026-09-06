@@ -98,6 +98,19 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ A file: `transpile("physics.jl")` includes it into a fresh module and does the same
     ⬜ The companion `.h` (also under Project) — constants, typedefs, and public helpers are what a C caller needs to see
 
+⬜ Demos (`demo/`, created 2026-09-06, empty; each is a Julia file, its checked-in C, and a few lines on what to look at)
+    ⬜ Orbit: the README's `orbit` plus a few steps of integration in a loop — arrays, a reduction, reassignment, the copy comment, a loop
+    ⬜ Kalman filter, one predict/update step: small matrices, `*`, `'`, `\`, `inv`, `I` — the linear-algebra helpers side by side, and `A + Q` reading as the textbook equation
+    ⬜ Quaternion rotation and a rigid body: a `struct` with array fields, `cross`, `norm`, a normalize step — structs by value and Doxygen from docstrings
+    ⬜ PID controller: a `mutable struct` holding state, `clamp`, a `while` loop stepping a plant — the mutable-through-a-pointer interface, `x += e`, `min`/`max`
+    ⬜ Kinematics of a two-link arm: `sin`/`cos`, `atan(y, x)`, a `Tuple` return of angles — scalars, `math.h`, multiple return values as a struct
+    ⬜ Runge–Kutta 4 on a vector field: a function passed as a user call, four `k` stages, `x + h/2 * k1` — inlined scalar expressions and the step comments on each array line
+    ⬜ Statistics of a sample: `sum`, `extrema`, `argmax`, `sum(A; dims=1)`, `diff` on an `SVector` — the reductions and along-a-dimension helpers
+    ⬜ Names: a function written in a Julian way, with `ω`, `θ̇`, `x₁`, `Δt`, `ħ`, `∇`, and the same run with `spelling=` — the naming rules and the override in one place
+    ⬜ Text: a character classifier and a tiny tokenizer over a `String` — `char`, `strcmp`, `utf8len`
+    ⬜ Portable: the same function with `portable=true` and `precise=true`, the two outputs diffed
+    ⬜ A C `main` for one of the above that compiles and prints, so the folder also shows what calling the C looks like
+
 ⬜ Project
     ✅ Turn the sandbox suites into real tests in `test/` — done 2026-09-04: `test/runtests.jl`, C against Julia for every case
     ✅ Wrap the transpiler in a module — done 2026-09-06; a package since the same day: `Project.toml`, `src/LegibleC.jl`, `] dev` it and `using LegibleC`
