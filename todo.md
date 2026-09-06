@@ -100,7 +100,8 @@ transpiler does today is in [doc/](doc/), starting with
 
 ⬜ Project
     ✅ Turn the sandbox suites into real tests in `test/` — done 2026-09-04: `test/runtests.jl`, C against Julia for every case
-    ✅ Wrap the transpiler in a module — done 2026-09-06: `module LegibleC` in `src/transpile.jl`, `transpile` exported, `using .LegibleC` after the module so `include` works as before; the test harness imports the internals it needs
+    ✅ Wrap the transpiler in a module — done 2026-09-06; a package since the same day: `Project.toml`, `src/LegibleC.jl`, `] dev` it and `using LegibleC`
+    ⬜ Register the package in General when it's ready for strangers; until then `] add` by URL
     ⬜ Emit a companion `.h` with the prototypes
     ⬜ Give at least one `rule.jl` function a docstring so the Doxygen path is exercised by the standing suites
     ⬜ Add `complex.h` to `reserved.jl` when it joins the might-include list — note it defines `I`, so a Julia variable `I` would become `I_`
