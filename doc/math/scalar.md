@@ -17,6 +17,8 @@ scalar arithmetic and the math library come out.
 | `Int64`   | `int64_t`  | `I64`   |
 | `UInt64`  | `uint64_t` | `U64`   |
 | `Float32` | `float`    | `F32`   |
+| `Char`    | `char`     | `C`     |
+| `String`  | `const char *` | `S` |
 | `Float64` | `double`   | `F64`   |
 
 `Float64` is the default: a function or helper whose inputs are all
@@ -50,6 +52,8 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `!`, `&`, `\|`, `xor`, `<<`, `>>`, `~` | `!`, `&`, `\|`, `^`, `<<`, `>>`, `~` | |
 | `&&`, `\|\|`, `c ? x : y` | the same, or an `if` — see `flow.md` | |
 | `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc hypot copysign` | the same, from `math.h`; the `f` family on a `Float32` (`sqrtf`, `fabsf`, `powf`) | |
+| `'a'`, `c + 1`, `c - 'a'`, `Int(c)`, `Char(n)`, `isdigit(c)`, `uppercase(c)` | `'a'`, `c + 1`, `c - 'a'`, `(int64_t)c`, `(char)n`, `isdigit(c)`, `(char)toupper(c)` | a `Char` is an ASCII `char`; the `ctype.h` classes agree with Julia's there |
+| `s == "abc"`, `length(s)`, `ncodeunits(s)`, `isempty(s)`, `s[i]` | `strcmp(s, "abc") == 0`, `utf8len(s)`, `(int64_t)strlen(s)`, `s[0] == '\0'`, `s[i - 1]` | a `String` is `const char *`, UTF-8 in both languages |
 | `pi`, `ℯ` | `M_PI`, `M_E` | POSIX, not ISO C; the `portable` option defines `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file instead |
 | `abs(x)` | `fabs(x)`; `llabs(x)` for `Int64`, `abs(x)` for `Int32` (`stdlib.h`) | |
 | `max`, `min` on floats | `fmax`, `fmin` | |

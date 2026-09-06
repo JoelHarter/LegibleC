@@ -6,7 +6,7 @@
 using Test, StaticArrays, LinearAlgebra
 include(joinpath(@__DIR__, "..", "src", "transpile.jl"))
 # The internals the harness needs to build a `main` around the generated C.
-using .LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames
+using .LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames, charliteral
 
 const flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 
@@ -20,6 +20,8 @@ end
 # ---- Julia values as C initializers ----------------------------------------------------
 
 cliteral(x::Bool) = x ? "true" : "false"
+cliteral(x::Char) = charliteral(x)
+cliteral(x::AbstractString) = "\"" * replace(x, "\\" => "\\\\", "\"" => "\\\"") * "\""
 cliteral(x::Integer) = string(x)
 cliteral(x::AbstractFloat) = isinf(x) ? (x > 0 ? "INFINITY" : "-INFINITY") : isnan(x) ? "NAN" : repr(Float64(x))
 cliteral(x::Union{Adjoint{<:Any, <:AbstractVector}, Transpose{<:Any, <:AbstractVector}}) = cliteral(parent(x))
@@ -32,6 +34,7 @@ cliteral(x) = "{" * join((cliteral(getfield(x, k)) for k in 1:fieldcount(typeof(
 
 flat(::Nothing) = Float64[]
 flat(x::Number) = [Float64(x)]
+flat(x::Char) = [Float64(codepoint(x))]
 flat(x::Union{Adjoint{<:Any, <:AbstractVector}, Transpose{<:Any, <:AbstractVector}}) = flat(parent(x))
 flat(x::AbstractArray) = Float64.(vec(permutedims(collect(x), ndims(x):-1:1)))                          # row-major
 flat(x::Tuple) = reduce(vcat, flat.(x); init=Float64[])
@@ -46,7 +49,7 @@ end
 
 # C lines printing the value `x` of type `T`, every number as `%.17g` and a space.
 function cprint(T::Type, x)
-    T <: Number && return ["printf(\"%.17g \", (double)$x);"]
+    (T <: Number || T === Char) && return ["printf(\"%.17g \", (double)$x);"]
     if T <: AbstractArray
         return ["for (int k = 0; k < $(prod(shape(T))); k++) {",
                 "    printf(\"%.17g \", (double)((const $(ctype(eltype(T))) *)$x)[k]);",

@@ -290,6 +290,16 @@ function modhelper!(helpers::Dict{String, String}, E::Type)
     return name
 end
 
+# `length(s)` of a UTF-8 string: the characters, not the bytes — every byte that isn't a
+# continuation byte starts one. `ncodeunits` is `strlen`; this is the other count.
+function lengthhelper!(helpers::Dict{String, String})
+    name = "utf8len"
+    haskey(helpers, name) && return name
+    body = ["int64_t n = 0;", "for (; *s; s++) {", "    if ((*s & 0xC0) != 0x80) {", "        n++;", "    }", "}", "return n;"]
+    helpers[name] = definition("int64_t", name, ["const char *s"], body; doc=["number of characters in a UTF-8 string", "returns length(s)"])
+    return name
+end
+
 # ---- the rest ----------------------------------------------------------------------
 
 # The determinant of a square matrix of type `T`, returned as `E`: `det_3x3`. Sizes 1–3

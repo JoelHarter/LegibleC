@@ -116,7 +116,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
     end
     path = joinpath(outpath, endswith(outfile, ".c") ? outfile : outfile * ".c")
     open(path, "w") do io
-        for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "stdio.h", "float.h", "math.h")
+        for h in ("stdint.h", "stdbool.h", "stdlib.h", "string.h", "ctype.h", "stdio.h", "float.h", "math.h")
             h in prog.headers && println(io, "#include <", h, ">")
         end
         println(io)

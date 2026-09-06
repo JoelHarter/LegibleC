@@ -190,7 +190,7 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     comments, doc = sc.src === nothing ? (String[], String[]) : leading(sc.src)
     origin = "$(mi.def.name)($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
              (sc.src === nothing ? "" : ", $(sc.src.name):$(sc.src.first)")
-    what(T) = isarray(T) ? describe(T) : T <: Number ? "scalar" : ""
+    what(T) = isarray(T) ? describe(T) : T === Char ? "character" : T <: AbstractString ? "string" : T <: Number ? "scalar" : ""
     params = [(i in sc.mutated ? "in,out" : "in", sc.names[i], what(slottype(sc, i))) for i in 2:ci.nargs]
     sc.resultparam && push!(params, ("out", sc.resultname, describe(sc.rettype) * ", the return value"))
     block = doxygen(doc, origin, params)
@@ -400,6 +400,10 @@ function statement!(lines, sc::Scope, i, st)
     i in sc.inlined && return                     # rendered inside the expression that consumes it
     T = widen(ci.ssavaluetypes[i])
     T === Union{} && return                       # unreachable
+    if ci.ssavaluetypes[i] isa Core.Const && (ci.ssavaluetypes[i].val isa Char || ci.ssavaluetypes[i].val isa AbstractString)
+        sc.expr[i] = value(sc, ci.ssavaluetypes[i].val)   # `Char(97)` is `'a'`; a string literal is itself
+        return
+    end
     if st isa Core.ReturnNode
         if valuetype(sc, st.val) === Nothing
             i == length(ci.code) || emit!(lines, sc, "return;")
@@ -566,7 +570,7 @@ function statement!(lines, sc::Scope, i, st)
 end
 
 # A statement whose value is a type, a `Val`, or a tuple: compile-time only.
-compiletime(t) = t isa Core.Const && !(t.val isa Number) && !(t.val isa AbstractArray)
+compiletime(t) = t isa Core.Const && !(t.val isa Number) && !(t.val isa AbstractArray) && !(t.val isa Char) && !(t.val isa AbstractString)
 
 # Emit `x = rhs` for an array `x`: a helper writing straight into `x` when `x` isn't
 # also an operand, otherwise through a temp so the operation can't read what it's
@@ -1176,6 +1180,37 @@ function render(sc::Scope, i, ex::Expr)
         return "$name($(value(sc, args[1])), $(value(sc, args[2])))", PRIMARY
     end
 
+    # Characters: the `ctype.h` classes and cases. Julia's classes are Unicode-aware and
+    # C's are ASCII; for the ASCII characters `char` can hold, they agree.
+    if n == 1 && valuetype(sc, args[1]) === Char
+        for (g, name) in ((Base.isdigit, "isdigit"), (Base.isletter, "isalpha"), (Base.isspace, "isspace"), (Base.isuppercase, "isupper"),
+                          (Base.islowercase, "islower"), (Base.isnumeric, "isdigit"), (Base.ispunct, "ispunct"), (Base.iscntrl, "iscntrl"),
+                          (Base.isprint, "isprint"), (Base.isxdigit, "isxdigit"))
+            f === g && return fn(name, "ctype.h")
+        end
+        f === Base.isascii && return "(unsigned char)$(operand(sc, args[1], UNARY)) < 128", REL
+        if f === Base.uppercase || f === Base.lowercase
+            push!(sc.headers, "ctype.h")
+            return "(char)$(f === Base.uppercase ? "toupper" : "tolower")($(expression(sc, args[1])[1]))", UNARY
+        end
+    end
+    # Strings: UTF-8 bytes in both languages. Compared with `strcmp`, measured with
+    # `strlen` (code units) or a character count (`length`), indexed by byte.
+    if any(a -> valuetype(sc, a) <: AbstractString, args)
+        s = expression(sc, args[1])[1]
+        if (f === Base.:(==) || f === Base.:!=) && n == 2
+            push!(sc.headers, "string.h")
+            return "strcmp($s, $(expression(sc, args[2])[1])) $(f === Base.:(==) ? "==" : "!=") 0", EQ
+        end
+        f === Base.length && n == 1 && return "$(lengthhelper!(sc.helpers))($s)", PRIMARY
+        f in (Base.ncodeunits, Base.sizeof, Base.lastindex) && n == 1 && (push!(sc.headers, "string.h"); return "(int64_t)strlen($s)", UNARY)
+        f === Base.firstindex && n == 1 && return "1", PRIMARY
+        f === Base.isempty && n == 1 && return "$(operand(sc, args[1], PRIMARY))[0] == '\\0'", EQ
+        f === Base.getindex && n == 2 && return "$(operand(sc, args[1], PRIMARY))[$(subscript(sc, args[2]))]", PRIMARY
+        f === Base.codeunit && n == 2 && return "(uint8_t)$(operand(sc, args[1], PRIMARY))[$(subscript(sc, args[2]))]", UNARY
+        throw(ArgumentError("unsupported operation on a string: $f (statement $i)"))
+    end
+
     # Arithmetic.
     f === Base.:+ && return n == 1 ? expression(sc, args[1]) : op("+", ADD)
     f === Base.:- && return n == 1 ? unary("-") : op("-", ADD)
@@ -1646,18 +1681,19 @@ function index(sc::Scope, A, idx)
     T = valuetype(sc, A)
     isarray(T) || throw(ArgumentError("indexing into a $T"))
     length(idx) == ndims(T) || throw(ArgumentError("$(length(idx)) indices into a $(ndims(T))-dimensional array"))
-    subs = map(idx) do k
-        k isa Integer && return string(k - 1)
-        text, p = expression(sc, k)
-        # The shift to 0-based folds into a literal offset the index already has:
-        # `v[i + 1]` is `v[i]`, `v[i - 1]` is `v[i - 2]`.
-        if p == ADD && (m = match(r"^(.*) ([+-]) (\d+)$", text)) !== nothing
-            off = (m[2] == "+" ? 1 : -1) * parse(Int, m[3]) - 1
-            return off == 0 ? m[1] : m[1] * (off > 0 ? " + $off" : " - $(-off)")
-        end
-        return (p < ADD ? "($text)" : text) * " - 1"
+    return value(sc, A) * join("[$(subscript(sc, k))]" for k in idx)
+end
+
+# A 1-based Julia index as a 0-based C subscript. The shift folds into a literal offset
+# the index already has: `v[i + 1]` is `v[i]`, `v[i - 1]` is `v[i - 2]`.
+function subscript(sc::Scope, k)
+    k isa Integer && return string(k - 1)
+    text, p = expression(sc, k)
+    if p == ADD && (m = match(r"^(.*) ([+-]) (\d+)$", text)) !== nothing
+        off = (m[2] == "+" ? 1 : -1) * parse(Int, m[3]) - 1
+        return off == 0 ? m[1] : m[1] * (off > 0 ? " + $off" : " - $(-off)")
     end
-    return value(sc, A) * join("[$s]" for s in subs)
+    return (p < ADD ? "($text)" : text) * " - 1"
 end
 
 # C code for an IR value (a name or literal; use `expression` for inlined calls).
@@ -1671,12 +1707,22 @@ function value(sc::Scope, x)
     end
     x isa Core.SlotNumber && return sc.names[x.id]
     x isa Bool            && return x ? "true" : "false"
+    x isa Char            && return charliteral(x)
+    x isa AbstractString  && return "\"" * cstring(x) * "\""
     x isa Integer         && return string(x)
     x isa AbstractFloat   && return isinf(x) ? (push!(sc.headers, "math.h"); x > 0 ? "INFINITY" : "-INFINITY") :
                                     isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(x)
     x isa Irrational      && return x === pi ? constant(sc, "PI") : x === ℯ ? constant(sc, "E") : repr(Float64(x))
     x isa GlobalRef       && return value(sc, getfield(x.mod, x.name))
     throw(ArgumentError("unsupported value: $(repr(x))"))
+end
+
+# A character literal. Only ASCII fits C's `char`; anything else is refused rather than
+# truncated. The escapes C needs are written; other non-printing characters in hex.
+function charliteral(c::Char)
+    isascii(c) || throw(ArgumentError("the character $(repr(c)) is not ASCII; C's char holds one byte"))
+    escapes = Dict('\\' => "\\\\", '\'' => "\\'", '\n' => "\\n", '\t' => "\\t", '\r' => "\\r", '\0' => "\\0")
+    return "'" * get(escapes, c, isprint(c) ? string(c) : "\\x" * string(UInt8(c), base=16, pad=2)) * "'"
 end
 
 # `M_PI` from `math.h`, which is POSIX rather than ISO C; or, with `portable`, our own

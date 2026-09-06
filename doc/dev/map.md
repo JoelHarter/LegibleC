@@ -32,7 +32,7 @@ marked as such rather than forced.
 | `Union{T, Nothing}`, `missing` | `struct { bool present; T value; }`, or `NaN` for floats, or a null pointer for structs — §3.3 | ⬜ |
 | `Nothing` as a return | `void` | ✅ |
 | `Complex{Float64}` | `double _Complex` from `complex.h`; `+ - * /` and `creal`, `cimag`, `cabs`, `conj` map one to one | ⬜ |
-| `Char` | `char32_t` (`uchar.h`); C's `char` is a byte and not equivalent | ⬜ |
+| `Char` | `char`, ASCII only: a non-ASCII literal is refused. `char32_t` would be exact but no C library function takes it | ✅ |
 | `String` | `const char *` UTF-8 for literals and read-only arguments; a built string is a `char[]` buffer — §3.6 | ⬜ |
 | `Symbol` | an `enum` or a string constant, decided per use | ⬜ |
 | `Ptr{T}`, `Ref{T}` | `T *` | ⬜ |

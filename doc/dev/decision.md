@@ -1108,3 +1108,26 @@ principle" mean Speed, Craft and Generality, as they did when written.
 the deciding one — evaluation order, effects, repeated operands — and each
 time it had to be dug out of the middle of a paragraph about speed. A rule
 that decides that often should be the first thing on the page.
+
+---
+
+## 2026-09-06 — Characters and strings where the languages agree
+
+**Decision.** `Char` is C's `char`, and only ASCII: a non-ASCII character
+literal is a transpile-time error. Comparisons, `c + 1`, `c - 'a'`, `Int(c)`,
+`Char(n)`, the `ctype.h` classes (`isdigit`, `isalpha` for `isletter`,
+`isupper`, …) and `toupper`/`tolower` come through as themselves. `String`
+is `const char *`, read-only: literals, `strcmp` for `==`, `strlen` for
+`ncodeunits`, a `utf8len` helper for `length`, `s[i - 1]` for `s[i]`, `%s`
+in prints, and a string parameter may be returned. Nothing that builds a
+string is accepted.
+
+**Why.** Julia's `Char` is a code point and C's `char` a byte; `char32_t`
+would represent it exactly, but no C library function takes one and no C
+programmer writes it, so for the ASCII range where the two agree we use
+`char`, and refuse what wouldn't fit rather than truncate it. Strings are
+the opposite case: both languages hold UTF-8 bytes, so a literal, a
+comparison, a byte count and a print carry any Unicode through unchanged,
+and `length` counts characters with the one loop a C programmer writes for
+it. What's left out — concatenation, `string(…)`, `@sprintf` — needs a
+buffer and an owner, which is a design question on its own.

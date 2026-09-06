@@ -17,6 +17,8 @@
 # boolean. `width` right-aligns it in a field wide enough for the longest value.
 function conversion(T::Type; precise::Bool=false, width::Bool=false)
     T === Bool && return width ? "%12d" : "%d"
+    T === Char && return "%c"
+    T <: AbstractString && return "%s"
     T <: Unsigned && return width ? "%12llu" : "%llu"
     T <: Integer && return width ? "%12lld" : "%lld"
     T <: AbstractFloat || throw(ArgumentError("printing a $T is not supported"))

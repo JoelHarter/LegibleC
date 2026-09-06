@@ -381,7 +381,7 @@ function markinlined!(sc::Scope)
     effectful = Set{Int}()
     for (i, st) in enumerate(code)
         st isa Expr && st.head === :call && get(count, i, 0) == 1 || continue
-        widen(ci.ssavaluetypes[i]) <: Number && !compiletime(ci.ssavaluetypes[i]) || continue
+        widen(ci.ssavaluetypes[i]) <: Union{Number, Char} && !compiletime(ci.ssavaluetypes[i]) || continue
         u = findfirst(s -> uses(s, i), code)
         use = code[u]
         use isa Expr && use.head === :(=) && (use = use.args[2])

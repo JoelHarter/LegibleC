@@ -15,6 +15,7 @@ const scalars = (
     (UInt64,  "uint64_t", "U64"),
     (Float32, "float",    "F32"),
     (Float64, "double",   "F64"),
+    (Char,    "char",     "C"),      # ASCII: Julia's Char is a code point, C's char a byte
 )
 
 # The C spelling of a Julia type.
@@ -23,6 +24,7 @@ function ctype(T::Type)
         T === julia && return c
     end
     T === Nothing && return "void"
+    T <: AbstractString && return "const char *"   # UTF-8 bytes, as Julia's, read-only
     isstruct(T) && return structname(T) * (ismutabletype(T) ? " *" : "")
     istuple(T) && return structname(T)
     T <: Complex && throw(ArgumentError("complex numbers are not yet supported (got $T)"))
@@ -35,6 +37,7 @@ function abbrev(T::Type)
     for (julia, _, a) in scalars
         T === julia && return a
     end
+    T <: AbstractString && return "S"
     throw(ArgumentError("no abbreviation for $T"))
 end
 

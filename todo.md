@@ -18,6 +18,8 @@ transpiler does today is in [doc/](doc/), starting with
     ⬜ Rebinding is free: `A, B = B, A` on immutable values should swap which C variable each name refers to and emit nothing, instead of the three-copy swap (correct today, but five `copy_2x2` calls where a person writes none). Same idea as forwarding an SSA copy, applied to a slot whose old value is dead
     ⬜ Rewrite loop variables used only as indices to the C idiom: `for (i = 0; i < n; i++) v[i]` instead of `v[i - 1]`
     ⬜ `return a > b && b > c;` when both branches of a value-`&&`/`||` just return
+    ⬜ A statement-form `x > 0 && (n += 1)` becomes `if (…) { n = n + 1; continue; }`; a person writes `if (…) n++;` — and `n = n + 1` itself should be `n++` / `n += 1`
+    ⬜ Hoist a loop bound that is a call: `for (…; i <= (int64_t)strlen(s); …)` recomputes it every iteration; Julia's `1:ncodeunits(s)` evaluates once, and a person writes `int64_t n = strlen(s);` first
     ⬜ `return c ? x : y;` for a ternary whose branches both return
     ⬜ Continuation lines of a multi-line expression land after its C; put them before it (`comment.md`)
     ✅ One-line `///` Doxygen comment on each generated helper — done 2026-09-03, `src/prose.jl`
@@ -45,7 +47,8 @@ transpiler does today is in [doc/](doc/), starting with
     ✅ Tuples as values, multiple return values — done 2026-09-04, `struct.md`
     ✅ Structs → C structs — done 2026-09-04, `struct.md`: by value, mutable through a pointer, parametric, nested
     ✅ Printing (`print`, `println`, `@printf`, `@show`) — done 2026-09-05, `doc/io.md`
-    ⬜ Strings as values: `@sprintf`, `string(…)` stored or returned, `length`, concatenation — needs buffers and an owner
+    ✅ `Char` (ASCII `char`) and `String` (`const char *`): literals, comparison, `ctype.h` classes, `length`/`ncodeunits`/`s[i]`, printing — done 2026-09-06, `doc/syntax.md`
+    ⬜ Strings built at run time: `@sprintf`, `string(…)`, concatenation, `split`, `for c in s` — needs buffers and an owner
     ⬜ Files: `open`, `close`, `print(io, …)`, `read`, `readline`, `eachline` — into `src/io.jl`, the stream-first helpers already take a `FILE *`
     ⬜ `try`/`catch`, comprehensions, closures — decide which of these have any C meaning at all
     ⬜ Anonymous functions bound to a name: `f = x -> …` currently emits `U2329`; use the binding name

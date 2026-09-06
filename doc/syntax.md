@@ -40,11 +40,26 @@ prototypes, the helpers it needs, and the functions.
 
 ## Scalar types
 
-`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`. See `math/scalar.md`
-for the C spelling of each. `struct` (immutable by value, mutable through a
-pointer, parametric at concrete types) and `Tuple` — see `struct.md`. Not
-yet: complex, `Char`, strings, `Int128`, `Float16`, `Rational`, `BigInt`,
-`@enum`, `Union{T, Nothing}`.
+`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `Char`,
+`String`. See `math/scalar.md` for the C spelling of each. `struct` (immutable
+by value, mutable through a pointer, parametric at concrete types) and `Tuple`
+— see `struct.md`. Not yet: complex, `Int128`, `Float16`, `Rational`,
+`BigInt`, `@enum`, `Union{T, Nothing}`.
+
+## Characters and strings
+
+Where the two languages agree. A `Char` is C's `char`, so ASCII: a non-ASCII
+character literal is an error. A `String` is `const char *`, UTF-8 bytes in
+both languages, read-only.
+
+| Julia | works |
+|---|---|
+| `'a'`, `'\n'`; `c == 'a'`, `c < 'z'`; `c + 1`, `c - 'a'`; `Int(c)`, `Char(n)` | yes |
+| `isdigit isletter isspace isuppercase islowercase isnumeric ispunct iscntrl isprint isxdigit isascii`, `uppercase`, `lowercase` | yes, from `ctype.h` |
+| `"abc"` as an argument or return value; `s == t`, `s != t` | yes: a literal, `strcmp` |
+| `length(s)` (characters), `ncodeunits(s)`, `sizeof(s)` (bytes), `isempty(s)`, `s[i]`, `codeunit(s, i)` | yes; `s[i]` is the byte |
+| `print(s)`, `print(c)`, `"$s"` | yes, `%s` and `%c` |
+| concatenation, `string(…)`, `@sprintf`, `split`, `for c in s`, a built or returned new string | not yet — needs buffers and an owner |
 
 ## Scalar expressions
 
