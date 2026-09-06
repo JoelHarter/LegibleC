@@ -197,20 +197,26 @@ solve_3x3_3(temp1, c, temp2_c);  // temp2_c = temp1 \ c
 add_3(temp2_c, D, out);  // out = temp2_c + D
 ```
 
-The text is the step as a textbook would write it, in the spelling the
-helper comments use — `A * Bᵀ` (`Bᴴ` when the elements aren't real, since `'` is then the adjoint; the helper's *name* keeps `T` either way, `mul_2x3_T2x3`), `a ⋅ b`, `a × b`, `A \ b`, `A⁻¹`, `det(A)`,
-`norm(a)`, `.+` and friends for a broadcast, `[C A; B C]` for a block
-construction, `A[2, :]` for a slice, `.= 0` for zeroing — with the C names
-of the operands, temps included. That's what lets the comments chain: the
-name a step produces is the name the next step consumes. A step that
-accumulates into its own destination — the later terms of `A + B + C` —
-reads `out += C`. An operator on structs is spelled as the Julia would be,
-`temp2 = q * temp1 * q'`, `conj(q)`, since the C call's name is the
-helper's, not the mathematics. The `'` stays a prime there: ᵀ and ᴴ mark
-arrays, whose transpose the transpiler itself performs, while on a struct
-`'` is the author's own method, spelled as they wrote it. And a struct
-built over several lines,
-`temp1 = Quat(0.0, v)`, is a step of its line like the copies are.
+The text is a blend of three things — the notation of a textbook, Julia's
+spelling, and the C names — mixed by one measure only: whatever a person
+follows most easily. It is for reading, never for parsing, so nothing
+holds it to any one language. The textbook wins for the mathematics:
+`A * Bᵀ` (`Bᴴ` when the elements aren't real, since `'` is then the
+adjoint; the helper's *name* keeps `T` either way, `mul_2x3_T2x3`),
+`a ⋅ b`, `a × b`, `A \ b`, `A⁻¹`, `det(A)`, `norm(a)`. Julia wins where its
+spelling is the clearer one: `.+` and friends for a broadcast, `[C A; B C]`
+for a block construction, `A[2, :]` for a slice, `.= 0` for zeroing. C
+wins for the names: the operands, temps included, are called what the C
+calls them, which is what lets the comments chain — the name a step
+produces is the name the next step consumes — and `out += C` for a step
+that accumulates into its own destination, since every C reader knows it.
+An operator on structs is written with its symbol, `temp2 = q * temp1 * q'`,
+`conj(q)`, since `mul_Quat_Quat` is the helper's name, not the operation.
+The `'` stays a prime on a struct: ᵀ and ᴴ mark arrays, whose transpose
+the transpiler itself performs, while on a struct `'` is whatever the
+author's method does, and a superscript would claim a meaning nobody
+checked. A struct built over several lines, `temp1 = Quat(0.0, v)`, is a
+step of its line like the copies are.
 
 A Julia line that became a single operation gets no step comment: its
 source line is right above it and says the same thing. A step is an

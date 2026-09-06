@@ -1382,8 +1382,10 @@ step reads `A \ b`, since `mul_Quat_Quat(adjoint_Quat(q))` is a helper's
 name, not the mathematics. A struct built over several lines is a step of
 its line too, `temp1_v = Quat(0.0, v)`, so the line's other steps get their
 comments rather than counting as its only one.
-On a struct, `q'` keeps its prime in the comment rather than becoming
-`qᴴ`: the superscripts mark arrays, whose transpose or adjoint the
+The step text is a blend of textbook notation, Julia spelling and C names,
+mixed by readability alone (`doc/comment.md`, *Steps*); it is never held
+to one language. On a struct, `q'` keeps its prime in the comment rather
+than becoming `qᴴ`: the superscripts mark arrays, whose transpose or adjoint the
 transpiler performs and knows the meaning of, while on a struct `'` is
 whatever the author's `adjoint` method does — for a quaternion the
 conjugate, which a mathematician would write q̄ or q*, not qᴴ — so it is
