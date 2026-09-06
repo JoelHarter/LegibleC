@@ -90,7 +90,7 @@ check("struct", [Case(norm2, p), Case(make, 5.0, 6.0), Case(midpoint, Segment(p,
     # the operator's word; `a * b * c` is the two binary calls.
     src = csource("quaternion", rotated)
     @test occursin("Quaternion mul_Quaternion_Quaternion(Quaternion a, Quaternion b)", src) && occursin(" * The Hamilton product.", src)
-    @test occursin("mul_Quaternion_Quaternion(mul_Quaternion_Quaternion(q, ", src) && occursin("), conjugate(q))", src)
+    @test occursin("mul_Quaternion_Quaternion(mul_Quaternion_Quaternion(q, ", src) && occursin(r"\),\n\s+conjugate\(q\)\);", src)   # wrapped at the argument
 end
 @testset "tuple text" begin
     src = csource("tupletext", step, twice, kept, third, viathird, unarrays, tswap)
