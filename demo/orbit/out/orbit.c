@@ -3,19 +3,8 @@
 #include <string.h>
 #include <math.h>
 #include "helper.h"
+#include "orbit.h"
 
-void orbit(const double x[3], const double v[3], double dt, double out[restrict 6]);
-double fit(const double X[4][2], const double y[4]);
-
-/**
- * Position and velocity after one step of gravity toward the origin.
- *
- * Julia signature: orbit(x::SVector{3, Float64}, v::SVector{3, Float64}, dt::Float64) @orbit.jl:8
- * @param[in]  x    3-vector
- * @param[in]  v    3-vector
- * @param[in]  dt   scalar
- * @param[out] out  6-vector, the return value
- */
 void orbit(const double x[3], const double v[3], double dt, double out[restrict 6]) {
     // copy x and v to prevent modification within this function
     double x_[3];
@@ -45,13 +34,6 @@ void orbit(const double x[3], const double v[3], double dt, double out[restrict 
     memcpy(&out[3], v_, sizeof(double[3]));
 }
 
-/**
- * Least-squares fit of y ≈ X β, and the squared residual.
- *
- * Julia signature: fit(X::SMatrix{4, 2, Float64, 8}, y::SVector{4, Float64}) @orbit.jl:17
- * @param[in] X  4×2-matrix
- * @param[in] y  4-vector
- */
 double fit(const double X[4][2], const double y[4]) {
     // @orbit.jl:18: β = (X' * X) \ (X' * y)
     double temp1_X[2][2];

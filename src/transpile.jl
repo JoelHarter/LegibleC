@@ -169,7 +169,7 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
         haskey(prog.helpers, n) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
     end
     for (k, (n, (mi, sig))) in enumerate(zip(names, instances))
-        any(v -> haskey(prog.helpers, v), functions[k][3]) || continue
+        any(v -> haskey(prog.helpers, v), functions[k][4]) || continue
         functions[k] = generate(n, mi, sig; blocked=keys(prog.helpers))
     end
     # The files in `out/`: `helper.h`/`.c` for everything generated that the user's
@@ -211,26 +211,41 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
             for name in outline; println(io); print(io, prog.helpers[name]); end
         end
     end
+    # The companion header, `<outfile>.h`: what a caller needs and nothing else — the
+    # typedefs, the globals as `extern`, and each function's documented prototype, with
+    # its own return struct right above it. The `.c` includes it, and holds the rest.
+    guard = uppercase(identifier(base)) * "_H"
+    header = String[]
+    push!(header, "#ifndef $guard\n#define $guard\n", "#include <stdint.h>\n#include <stdbool.h>")
+    body = String[]
+    for (name, def) in structs; name in placed || push!(body, def); end
+    for g in prog.globals; push!(body, "extern " * globaldecl(g; value=false)); end
+    isempty(prog.globals) || push!(body, "")
+    for (prototype, above, _, _) in functions
+        for (name, def) in prog.tupledefs
+            startswith(prototype, name * " ") && !(name in placed) || continue
+            push!(body, def); push!(placed, name)
+        end
+        isempty(above) || push!(body, above)
+        push!(body, prototype, "")
+    end
+    text = join(body, "\n")
+    # A struct the helpers own that a prototype mentions: the header needs theirs.
+    any(occursin(name, text) for name in placed if any(occursin(name, prog.helpers[n]) for n in order)) && push!(header, "#include \"helper.h\"")
+    push!(header, "", rstrip(text), "", "#endif")
+    write(joinpath(dir, base * ".h"), join(header, "\n") * "\n")
     path = joinpath(dir, base * ".c")
     open(path, "w") do io
         for h in includes; println(io, "#include <", h, ">"); end
         for (file, names) in groups; isempty(names) || println(io, "#include \"$file.h\""); end
+        println(io, "#include \"$base.h\"")
         println(io)
         foreach(m -> println(io, m), macros); isempty(macros) || println(io)
-        for (name, def) in structs; name in placed || (print(io, def); println(io)); end
         for g in prog.globals; println(io, globaldecl(g)); end
         isempty(prog.globals) || println(io)
         for name in sort!(collect(keys(prog.foreign))); println(io, prog.foreign[name]); end
         isempty(prog.foreign) || println(io)
-        # Each function's own return struct, right above its prototype, once.
-        for (prototype, _, _) in functions
-            for (name, def) in prog.tupledefs
-                startswith(prototype, name * " ") && !(name in placed) || continue
-                print(io, def); push!(placed, name)
-            end
-            println(io, prototype)
-        end
-        for (_, definition, _) in functions; println(io); print(io, definition); end
+        for (k, (_, _, definition, _)) in enumerate(functions); k == 1 || println(io); print(io, definition); end
     end
     return path
 end

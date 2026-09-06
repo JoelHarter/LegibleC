@@ -78,7 +78,7 @@ function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra
     path = transpile((targets === nothing ? fs : targets)...; outpath=dir, outfile=name, scope)
     LegibleC.scope[] = scope               # so the names spelled below match the file's
     cnames = Dict(zip(fs, identifiers([identifier(string(nameof(f))) for f in fs])))
-    main = ["#include <stdio.h>", "#include \"$name.c\"", extra, "int main(void) {"]
+    main = ["#include <stdio.h>", "#include <math.h>", "#include \"$name.h\"", extra, "int main(void) {"]
     references = Any[]
     for (k, c) in enumerate(cases)
         passes = String[]
@@ -126,8 +126,8 @@ function check(name::AbstractString, cases::Vector{Case}; targets=nothing, extra
     write(joinpath(dir, "main.c"), join(main, "\n") * "\n")
     exe = joinpath(dir, "main")
     out = dirname(path)
-    others = [joinpath(out, f) for f in readdir(out) if endswith(f, ".c") && f != name * ".c"]
-    run(`cc $flags -I$out $(joinpath(dir, "main.c")) $others -o $exe`)
+    sources = [joinpath(out, f) for f in readdir(out) if endswith(f, ".c")]
+    run(`cc $flags -I$out $(joinpath(dir, "main.c")) $sources -o $exe`)
     lines = split(read(`$exe`, String), "\n")
     @testset "$name" begin
         @test length(lines) == length(cases) + 1
@@ -152,6 +152,6 @@ function csource(name::AbstractString, targets...; kw...)
     for f in files
         endswith(f, ".c") && run(`cc $flags -c $(joinpath(out, f)) -o $(joinpath(dir, f * ".o"))`)
     end
-    ordered = [filter(endswith(".h"), files); filter(f -> endswith(f, ".c") && f != name * ".c", files); [name * ".c"]]
+    ordered = [filter(==("helper.h"), files); filter(f -> endswith(f, ".h") && f != "helper.h", files); filter(f -> endswith(f, ".c") && f != name * ".c", files); [name * ".c"]]
     return join((read(joinpath(out, f), String) for f in ordered), "\n")
 end

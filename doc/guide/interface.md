@@ -2,6 +2,8 @@
 
 How to call the generated C: what each Julia type becomes on the C side.
 
+Include `<outfile>.h`, compile `out/*.c` with your own files, and call.
+
 **Scalars** are what they look like: `double`, `int64_t`, `bool`, `char`.
 A scalar result is the return value.
 

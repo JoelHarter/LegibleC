@@ -117,7 +117,7 @@ transpiler does today is in [doc/](..), starting with
     ✅ Turn the sandbox suites into real tests in `test/` — done 2026-09-04: `test/runtests.jl`, C against Julia for every case
     ✅ Wrap the transpiler in a module — done 2026-09-06; a package since the same day: `Project.toml`, `src/LegibleC.jl`, `] dev` it and `using LegibleC`
     ⬜ Register the package in General when it's ready for strangers; until then `] add` by URL
-    ⬜ Emit a companion `.h` for the user's functions: their prototypes and return structs (the helper headers exist since 2026-09-06)
-    ⬜ Output files, follow-ups: each file includes only the standard headers it uses; user structs into the companion header. (One call generates everything: list every function in one `transpile`; a later call into the same `out/` simply writes its own files over the old ones)
+    ✅ The companion `<outfile>.h`: typedefs, `extern` globals, documented prototypes with their return structs — done 2026-09-06
+    ⬜ Output files, follow-ups: each file includes only the standard headers it uses. (One call generates everything: list every function in one `transpile`; a later call into the same `out/` simply writes its own files over the old ones)
     ⬜ Give at least one `rule.jl` function a docstring so the Doxygen path is exercised by the standing suites
     ⬜ Add `complex.h` to `reserved.jl` when it joins the might-include list — note it defines `I`, so a Julia variable `I` would become `I_`

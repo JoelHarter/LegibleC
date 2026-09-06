@@ -250,7 +250,9 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     end
     sc.resultparam && push!(params, ("out", sc.resultname, describe(sc.rettype) * ", the return value"))
     block = doxygen(doc, origin, params)
-    return signature * ";", join([comments; block; signature * " {"; [isempty(l) ? l : "    " * l for l in lines]; "}"], "\n") * "\n", sc.names
+    # Four pieces: the prototype; what goes above it in the header (the leading comments
+    # and the Doxygen block); the definition, for the `.c`; and the C names used.
+    return signature * ";", join([comments; block], "\n"), join([signature * " {"; [isempty(l) ? l : "    " * l for l in lines]; "}"], "\n") * "\n", sc.names
 end
 
 # Everything that has to be known before emission starts: the loops, the statements
@@ -1711,10 +1713,11 @@ function global!(prog::Program, mod::Union{Module, Nothing}, name::Symbol, value
     return g
 end
 
-# A global's declaration with its value: `const double v[3] = {1.0, 2.0, 3.0};`.
-function globaldecl(g::Global)
+# A global's declaration: with its value, `const double v[3] = {1.0, 2.0, 3.0};`, or
+# without, for the header's `extern`.
+function globaldecl(g::Global; value::Bool=true)
     T = globaltype(g.value)
-    return (g.constant && !(T <: AbstractString) ? "const " : "") * declare(T, g.cname) * " = " * initializer(g.value) * ";"
+    return (g.constant && !(T <: AbstractString) ? "const " : "") * declare(T, g.cname) * (value ? " = " * initializer(g.value) : "") * ";"
 end
 
 # A Julia value as a C initializer: numbers, characters, strings, arrays in row-major

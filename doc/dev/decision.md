@@ -1302,3 +1302,25 @@ the scope, because that is how Julia itself resolves names where the call
 is written, so `@transpile` from inside a module reads like the Julia
 there. Obscure collisions can still occur; rather than refusing, the
 existing `_` rule takes them, since the C stays correct either way.
+
+---
+
+## 2026-09-06 — The companion header
+
+**Decision.** `out/<outfile>.h` holds what a caller needs and nothing else:
+the standard type headers, the typedefs of the structs the functions use,
+the program's globals as `extern` declarations, and each function's
+prototype under its Doxygen block, with its own return struct right above
+it. `<outfile>.c` includes that header and holds the definitions, the
+globals with their values, and the includes its bodies need; it has no
+prototypes of its own. The helper headers are not included by the user's
+header unless a prototype mentions a struct the helpers own.
+
+**Why.** A header is how C states an interface, and the Doxygen block is
+documentation of the interface, so it moves there; a hand-written library
+puts it in the header too, and Doxygen reads it from either. The `.c`
+including its own header lets the compiler check every definition against
+its declaration, which is the reason the idiom exists. Helpers are
+implementation, so a caller never sees `helper.h` — the one exception is a
+struct type the helpers defined that shows up in a prototype, where the
+header must reach it.
