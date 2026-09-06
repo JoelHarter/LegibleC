@@ -148,10 +148,15 @@ double temp1_a_b = a + b;
 - A temp passes along its *suffix*, never its base:
   `temp8_a_b = temp7_a + b` and `temp9_a = temp6 + a`
 - A temp with no named inputs is just its base: `temp6 = 58`
-- A call to a function that has a C function of its own in the file
-  contributes that function's name in place of its arguments':
-  `temp1_step = step(x, v, dt)`, `temp2_sq_x = sq(y) + x`. Julia's own
-  operations — `+`, `dot`, `sin`, the helpers — contribute their operands
+- The temp holding the result of a call to one of the author's functions is
+  named after what that function returns, when it returns a variable of
+  the author's: `omega(x, y) = (ω = x + y; ω)` gives `temp1_omega = omega(x, y)`.
+  For an unnamed tuple being unpacked, `return x, ẋ`, it is the function
+  itself: `temp1_step`. Otherwise — the callee returns an expression — the
+  call's operands, like any operation
+- The suffixes are the `tempsuffix` option of `transpile`, on by default;
+  off, every temp is its bare `temp<N>`. Numbering never depends on the
+  suffix, so a name can only ever look odd, not be wrong
 - There is one rule for what a name contributes, and it doesn't care whether
   the name is one of our temps or the user's own: chop a leading `temp<N>_`
   if there is one, then split at `_`. So `temp5_joel_was_here_eh =

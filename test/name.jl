@@ -17,6 +17,14 @@ letter(ω::Float64, Ω::Float64, Δt::Float64) = ω * Ω + Δt
 marks(x̂::Float64, ẍ::Float64, x⃗::Float64, x′::Float64) = x̂ + ẍ + x⃗ + x′
 scripts(x₁::Float64, x²::Float64) = x₁ * x²
 fallback(🤠::Float64, µ::Float64) = 🤠 * µ
+omega(x::Float64, y::Float64) = (ω = x + y; ω)
+sqomega(x::Float64, y::Float64) = omega(x, y)^2
+twiced(v::SVector{3,Float64}) = (w = 2.0 * v; w)
+quad(v::SVector{3,Float64}) = twiced(twiced(v))
+pairnamed(y::Float64, z::Float64) = (x = (y, z); return x)
+unpairnamed(y::Float64, z::Float64) = ((p, q) = pairnamed(y, z); p * q)
+pairbare(y::Float64, z::Float64) = (y, z)
+unpairbare(y::Float64, z::Float64) = ((p, q) = pairbare(y, z); p * q)
 physics(ħ::Float64, ∂::Float64, ∇::Float64, ε::Float64, ϵ::Float64, φ::Float64, ℓ::Float64, ∞::Float64, ð::Float64) = ħ + ∂ + ∇ + ε + ϵ + φ + ℓ + ∞ + ð
 function keyword(exp::Float64, long::Float64)
     omega = exp + long
@@ -70,7 +78,16 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test occursin("return 2 * 3 + a;", src)
     @test occursin("return a * a + b;", src)
     @test occursin("double temp1_a_b = a + b;", src) && occursin("double temp5_a = a + 1.0;", src) && !occursin(r"temp[34]_[ab]\b", src)   # user's temp3/temp4 block those numbers; a literal contributes nothing
-    @test occursin("double temp3 = a - b;", src) && occursin("temp1_a_b * temp1_a_b * (temp2_b_a * temp2_b_a) * (temp5_a * temp5_a) + temp3", src)   # Julia's grouping, exactly
+    @test occursin("double temp3 = a - b;", src) && occursin("temp1_a_b * temp1_a_b * (temp2_b_a * temp2_b_a) * (temp5_a * temp5_a) + temp3", src)
+    # A call's temp: the callee's returned variable when it has one; the callee's name for
+    # an unnamed tuple being unpacked; otherwise the operands.
+    calls = csource("calls", sqomega, quad, unpairnamed, unpairbare)
+    @test occursin("double temp1_omega = omega(x, y);", calls) && occursin("return temp1_omega * temp1_omega;", calls)
+    @test occursin("double temp1_w[3];\n    twiced(v, temp1_w);", calls) && occursin("twiced(temp1_w, out);", calls)
+    @test occursin("pairnamed_t temp1_x = pairnamed(y, z);", calls) && occursin("pairbare_t temp1_pairbare = pairbare(y, z);", calls)
+    @test occursin("pairnamed_t x = (pairnamed_t){y, z};\n    return x;", calls)
+    plain = csource("plain", sqomega, quad, physics; tempsuffix=false)
+    @test occursin("double temp1 = omega(x, y);", plain) && occursin("twiced(v, temp1);", plain) && !occursin("temp1_", plain)   # Julia's grouping, exactly
     @test occursin("return omega * Omega + Deltat;", src)
     @test occursin("xhat + xddot + xvec + xprime", src)
     @test occursin("x1 * x2", src)

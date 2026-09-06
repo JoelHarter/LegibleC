@@ -11,5 +11,6 @@ Every keyword option of `transpile`.
 | `portable` | `false` | define `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file instead of using `M_PI` and `M_E`, which are POSIX rather than ISO C |
 | `width` | `100` | the longest line; a long scalar expression wraps at its loosest operators |
 | `templimit` | `40` | the longest name a temporary may be given before its descriptive suffix is dropped |
+| `tempsuffix` | `true` | temporaries carry what they were computed from, `temp1_a_b = a + b`; off, they are `temp1`, `temp2`, … |
 | `staticarray` | `true` | every array is fixed-size; `false` is refused until dynamic arrays exist |
 | `spelling` | `Dict()` | your own C spellings for characters in names — see [name.md](name.md) |

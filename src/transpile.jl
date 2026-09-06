@@ -35,6 +35,8 @@ Options:
 - `portable`: define `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file and use those,
   instead of `M_PI` and `M_E` from `math.h`, which are POSIX rather than ISO C and
   can be missing under a strict `-std=c11`.
+- `tempsuffix`: temps carry what they were computed from, `temp1_a_b = a + b`
+  (`doc/naming.md`); off, they are `temp1`, `temp2`, …
 - `spelling`: your own C spellings for characters in names, `Dict('ħ' => "hred",
   '∂' => "d")`, on top of the built-in ones (Julia's `\\name` completion table).
   Keys are single characters Julia allows in a name, other than ASCII letters,
@@ -57,16 +59,17 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Function, 
                    precise::Bool=false,
                    width::Integer=100,
                    portable::Bool=false,
+                   tempsuffix::Bool=true,
                    spelling::AbstractDict=Dict{Char, String}())
     LegibleC.spelling[] = checkspelling(spelling)
     try
-        return transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable)
+        return transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable, suffix=tempsuffix)
     finally
         LegibleC.spelling[] = Dict{Char, String}()
     end
 end
 
-function transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable)
+function transpiled(target...; outfile, outpath, templimit, staticarray, source, precise, width, portable, suffix)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
@@ -94,7 +97,7 @@ function transpiled(target...; outfile, outpath, templimit, staticarray, source,
     unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
     names = cnames(instances)
-    prog = Program(; precise, width, portable)
+    prog = Program(; precise, width, portable, suffix)
     union!(prog.names, names)
     for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
     generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source, blocked)

@@ -39,9 +39,9 @@ src = csource("inline", hyp, poly, cubed, modded, signs, inloop, folded, cancell
     @test occursin("(double)(a + b) / 2.0", src)                                      # the cast binds tighter than `+`
     # Effects stay in Julia's order: the first of two writing calls is pinned, the second
     # is written where it is used; a read of what a call writes never moves past it.
-    @test occursin("double temp1_mutate = mutate(v, 1.0);", src) && occursin("double temp2_mutate = mutate(v, 2.0);", src) && occursin("return temp1_mutate + temp2_mutate + v[0];", src)
+    @test occursin("double temp1_v = mutate(v, 1.0);", src) && occursin("double temp2_v = mutate(v, 2.0);", src) && occursin("return temp1_v + temp2_v + v[0];", src)
     @test occursin("double reads(double v[3])", src) && occursin("@param[in,out] v  3-vector", src)     # the callee writes v, so it isn't const here
-    @test occursin("double temp1_shout = shout(a);", src) && occursin("return temp1_shout + shout(b);", src)     # prints stay in order; a call's temp is named after the function
+    @test occursin("double temp1_a = shout(a);", src) && occursin("return temp1_a + shout(b);", src)     # prints stay in order
     @test occursin("double temp1_v = v[0];", src) && occursin("return temp1_v + mutate(v, 2.0);", src)   # the read comes first in Julia
     @test occursin("(long long)(a + b)", src)
     @test occursin("return norm_3(temp1_x_v);", src)                                   # a reduction over an unnamed array

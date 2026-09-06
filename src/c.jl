@@ -24,6 +24,8 @@ mutable struct Program
     structs::Vector{Pair{Type, String}}                            # struct typedefs, dependencies first
     precise::Bool                                                  # print every digit of a floating value, not `%g`
     width::Int                                                     # the longest line; scalar expressions wrap past it
+    suffix::Bool                                                   # temps carry what they were computed from: `temp1_a_b`
+    returned::Dict{Core.MethodInstance, Union{String, Nothing}}    # the variable a user function returns, if it returns one (`returnname!`)
     portable::Bool                                                 # our own `LEGIBLEC_PI` macros instead of POSIX `M_PI`
     macros::Set{String}                                            # the constants used: "PI", "E"
     effects::Dict{Core.MethodInstance, Set{Symbol}}                # what a user function does besides compute (see `effects!`)
@@ -38,10 +40,10 @@ struct Kind
     cname::String
     fields::Vector{String}
 end
-Program(; precise::Bool=false, width::Integer=100, portable::Bool=false) =
+Program(; precise::Bool=false, width::Integer=100, portable::Bool=false, suffix::Bool=true) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
-            portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[])
+            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[])
 
 # The mathematical constants, for when the output defines its own macros (`portable`):
 # each is emitted as the double it rounds to, in the shortest form that reads back to
@@ -507,15 +509,15 @@ function statement!(lines, sc::Scope, i, st)
         mi, _, name = userinstance!(sc, callee(ci, st.args[1]), st.args[2:end])
         R = returntype(mi)
         if isarray(R)
-            t = temp!(sc, i, [name])
+            t = temp!(sc, i, callparts(sc, st))
             emit!(lines, sc, declare(R, t) * ";")
             emit!(lines, sc, "$name($(callargs(sc, st.args[2:end])), $t);")
         else
             emit!(lines, sc, "$name($(callargs(sc, st.args[2:end])));")
         end
-    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.tuple && sc.kind !== nothing && onlyreturned(ci, i) &&
-           !any(a -> isarray(valuetype(sc, a)), st.args[2:end])
-        # `return x, ẋ`: the function's own struct, as a literal in the `return`.
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.tuple && sc.kind !== nothing &&
+           (onlyreturned(ci, i) || storedforreturn(sc, i)) && !any(a -> isarray(valuetype(sc, a)), st.args[2:end])
+        # `return x, ẋ` — or `t = (x, ẋ); return t` — : the function's own struct, as a literal.
         sc.expr[i] = "($(sc.kind.cname)){$(join((value(sc, a) for a in st.args[2:end]), ", "))}"
         sc.kinds[i] = sc.kind
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.tuple && consumedbycalls(sc, i)
@@ -598,7 +600,7 @@ function statement!(lines, sc::Scope, i, st)
             if onlyreturned(ci, i)
                 sc.expr[i] = code
             else
-                name = temp!(sc, i, [cname])
+                name = temp!(sc, i, callparts(sc, st))
                 emit!(lines, sc, "$(k.cname) $name = $code;")
             end
         else
@@ -625,6 +627,11 @@ function statement!(lines, sc::Scope, i, st)
         here = fresh && sc.depth == 0
         if isarray(T)
             store!(lines, sc, i, x, rhs; declaration=here)
+        elseif rhs isa Expr && rhs.head === :call && callee_or_nothing(ci, rhs.args[1]) === Core.tuple && sc.kind !== nothing &&
+               returnedslot(ci) == slot.id && !any(a -> isarray(valuetype(sc, a)), rhs.args[2:end])
+            # `t = (x, ẋ)` in the variable the function returns: the function's own struct.
+            emit!(lines, sc, "$(here ? sc.kind.cname * " " : "")$x = ($(sc.kind.cname)){$(join((value(sc, a) for a in rhs.args[2:end]), ", "))};")
+            sc.slotkinds[slot.id] = sc.kind
         elseif rhs isa Expr && rhs.head === :call && (callee_or_nothing(ci, rhs.args[1]) === Core.tuple || (callee_or_nothing(ci, rhs.args[1]) isa Type && isstruct(T)))
             compound!(lines, sc, i, T, rhs.args[2:end], x; declared=!here)
         else
@@ -1135,11 +1142,38 @@ isarray(T) = T <: AbstractArray
 # The named variables behind a call's arguments, for temp naming.
 parts(sc::Scope, ex::Expr) = unique(reduce(vcat, (contribution(sc, a) for a in ex.args[2:end]); init=String[]))
 
-# What a call's temp is named after: the user's function, when it is one (`temp1_step`);
-# otherwise the operands, like any operation.
+# What the temp holding a call's result is named after. For a call to a function that
+# has a C function of its own: the variable that function returns, when it returns one
+# (`return ω` gives `temp1_omega`); failing that, for a tuple being unpacked, the
+# function itself (`return x, ẋ` in `step` gives `temp1_step`). Otherwise — any other
+# call, or a function returning an expression — the operands, like any operation.
 function callparts(sc::Scope, ex::Expr)
     r = userinstance!(sc, callee_or_nothing(sc.ci, ex.args[1]), ex.args[2:end])
-    return r === nothing ? parts(sc, ex) : [r[3]]
+    r === nothing && return parts(sc, ex)
+    mi, _, cname = r
+    n = returnname!(sc.prog, mi)
+    n !== nothing && return [n]
+    istuple(returntype(mi)) && return [cname]
+    return parts(sc, ex)
+end
+
+# The variable a user function returns, as its C name, when every return is a plain
+# variable of the author's — `return ω`, or `ω = …` as the last line. Nothing for a
+# returned expression, a tuple literal, another call, or returns that disagree.
+function returnname!(prog::Program, mi::Core.MethodInstance)
+    haskey(prog.returned, mi) && return prog.returned[mi]
+    ci, _ = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
+    name = nothing
+    for st in ci.code
+        st isa Core.ReturnNode && isdefined(st, :val) || continue
+        v = st.val
+        v isa Core.SSAValue && ci.code[v.id] isa Core.SlotNumber && (v = ci.code[v.id])
+        v isa Core.SlotNumber && v.id > ci.nargs && !startswith(string(ci.slotnames[v.id]), "#") || (name = nothing; break)
+        s = identifier(string(ci.slotnames[v.id]))
+        name === nothing ? (name = s) : name == s || (name = nothing; break)
+    end
+    prog.returned[mi] = name
+    return name
 end
 
 # Is the tuple made at statement `i` used only as an argument to the user's functions?
@@ -1168,6 +1202,14 @@ function returnkind!(prog::Program, mi::Core.MethodInstance, cname::AbstractStri
     for st in ci.code
         st isa Core.ReturnNode && isdefined(st, :val) && st.val isa Core.SSAValue || continue
         def = ci.code[st.val.id]
+        # `x = (y, z); return x`: through the variable to what it was assigned, when
+        # that happened once.
+        if def isa Core.SlotNumber
+            stores = [s for s in ci.code if s isa Expr && s.head === :(=) && s.args[1].id == def.id]
+            length(stores) == 1 || (names = nothing; break)
+            def = stores[1].args[2]
+            def isa Core.SSAValue && (def = ci.code[def.id])
+        end
         def isa Expr && def.head === :call || (names = nothing; break)
         f = callee_or_nothing(ci, def.args[1])
         if f === Core.tuple
@@ -1227,7 +1269,7 @@ function temp!(sc::Scope, i, parts)
         sc.counter += 1
     end
     base = "temp$(sc.counter)"
-    name = isempty(parts) ? base : base * "_" * join(parts, "_")
+    name = isempty(parts) || !sc.prog.suffix ? base : base * "_" * join(parts, "_")
     length(name) > sc.limit && (name = base)
     i === nothing || (sc.expr[i] = name)
     return name
@@ -1242,6 +1284,29 @@ function result!(sc::Scope, i)
     return name
 end
 
+# The one variable every `return` of the function returns, or nothing.
+function returnedslot(ci)
+    slot = nothing
+    for st in ci.code
+        st isa Core.ReturnNode && isdefined(st, :val) || continue
+        v = st.val
+        v isa Core.SSAValue && ci.code[v.id] isa Core.SlotNumber && (v = ci.code[v.id])
+        v isa Core.SlotNumber || return nothing
+        slot === nothing ? (slot = v.id) : slot == v.id || return nothing
+    end
+    return slot
+end
+
+# Is SSA value `i` used only to be stored in a variable that is then only returned?
+function storedforreturn(sc::Scope, i)
+    ci = sc.ci
+    users = [(u, st) for (u, st) in enumerate(ci.code) if uses(st, i)]
+    length(users) == 1 && users[1][2] isa Expr && users[1][2].head === :(=) || return false
+    slot = users[1][2].args[1].id
+    reads = [u for (u, st) in enumerate(ci.code) if st isa Core.SlotNumber && st.id == slot]
+    return !isempty(reads) && all(r -> onlyreturned(ci, r), reads)
+end
+
 # Is SSA value `i` used by nothing but return statements?
 function onlyreturned(ci, i)
     users = [st for st in ci.code if uses(st, i)]
@@ -1254,14 +1319,7 @@ end
 function contribution(sc::Scope, x)
     x isa Core.SSAValue || x isa Core.SlotNumber || return String[]
     x isa Core.SSAValue && !(x.id in sc.inlined) && !haskey(sc.expr, x.id) && return String[]   # a constant load
-    if x isa Core.SSAValue && x.id in sc.inlined
-        # A call to the user's function contributes the function's name in place of
-        # its arguments' — `temp1_sq_x = sq(y) + x` — like the temp for its result would.
-        st = sc.ci.code[x.id]
-        r = userinstance!(sc, callee_or_nothing(sc.ci, st.args[1]), st.args[2:end])
-        r === nothing || return [r[3]]
-        return unique(reduce(vcat, (contribution(sc, a) for a in st.args[2:end]); init=String[]))
-    end
+    x isa Core.SSAValue && x.id in sc.inlined && return unique(reduce(vcat, (contribution(sc, a) for a in sc.ci.code[x.id].args[2:end]); init=String[]))
     name = replace(value(sc, x), r"^temp\d+_?" => "", "->" => "_", "." => "_")   # a field read contributes its path: p.x -> p_x
     return filter(!isempty, split(name, "_"))
 end

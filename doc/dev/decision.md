@@ -1206,6 +1206,16 @@ with the author's names it reads as what they wrote. Keeping the decision
 local to the function is what makes it safe: nothing about `step`'s
 signature can move because of code elsewhere. Spreading tuple parameters
 is what a C programmer writes for an unnamed tuple, and it removes the
-need to convert between struct types at call boundaries. The temp name
-follows the reader: the result of `step(x, v, dt)` is "the step", not
-"x v dt", which would blow past the length limit and collapse to nothing.
+need to convert between struct types at call boundaries.
+
+**Amended the same day, temp names.** Naming a call's temp after the
+function was withdrawn within the hour: whether a call becomes "a function
+in the file" is a fact about the transpiler, not the author's code, and it
+made the reader guess. The rule is now: a temp is named after the
+variables that went into it, as before; except that the temp holding a
+call's result is named after the variable the callee returns, when it
+returns one of the author's (`temp1_omega`), and, for an unnamed tuple
+being unpacked, after the callee (`temp1_step`). A `tempsuffix` option
+turns every suffix off. The numbering is what keeps the code correct; the
+suffix is only ever for the reader, so a rule here can look odd but never
+break anything.
