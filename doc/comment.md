@@ -219,9 +219,8 @@ records its step.
   A line that produces no C (a pure comment, or code that folded away) is
   emitted when the next line that does produce C is reached, so relative order
   is preserved.
-- A Julia expression spanning several lines produces its C at its first line;
-  the continuation lines are emitted after that C, when the next statement
-  arrives. Acceptable, and noted as a known imprecision.
+- A Julia statement spanning several lines — brackets still open at the end
+  of a line — is carried whole, every line of it, above its C.
 - Leading whitespace is dropped; the C's own indentation applies.
 - Generated helpers have no Julia source; they get the `///` line above and nothing else.
 - A function whose source can't be found (defined at the REPL, or via `-e`)

@@ -369,6 +369,17 @@ emit!(lines, sc::Scope, s::AbstractString) = push!(lines, "    "^sc.depth * s)
 function emitexpr!(lines, sc::Scope, prefix::AbstractString, expr::AbstractString)
     room = sc.prog.width - 4 * (sc.depth + 1)
     length(prefix) + length(expr) + 1 <= room && return emit!(lines, sc, prefix * expr * ";")
+    # A long compound literal, `(Point){a, b}`: one field per line, as an initializer is
+    # written by hand.
+    m = match(r"^(\(\w+\)\{)(.*)\}$", expr)
+    if m !== nothing
+        fields = splitfields(m[2])
+        emit!(lines, sc, prefix * m[1])
+        for (k, f) in enumerate(fields)
+            emit!(lines, sc, "    " * f * (k < length(fields) ? "," : ""))
+        end
+        return emit!(lines, sc, "};")
+    end
     pieces = splitexpr(expr)
     length(pieces) == 1 && return emit!(lines, sc, prefix * expr * ";")
     pad = " " ^ length(prefix)
@@ -393,6 +404,22 @@ function compound(x::AbstractString, T::Type, text::AbstractString)
     length(pieces) == 3 && pieces[1] == x && pieces[2] in ("+", "-", "*", "/") || return nothing
     pieces[3] == "1" && pieces[2] in ("+", "-") && T <: Integer && return x * pieces[2]^2
     return "$x $(pieces[2])= $(pieces[3])"
+end
+
+# The fields of an initializer's text, split at the commas outside any brackets.
+function splitfields(text::AbstractString)
+    out = String[]
+    depth, start = 0, 1
+    for (i, c) in enumerate(text)
+        c in "([{" && (depth += 1)
+        c in ")]}" && (depth -= 1)
+        if c == ',' && depth == 0
+            push!(out, strip(text[start:i-1]))
+            start = i + 1
+        end
+    end
+    push!(out, strip(text[start:end]))
+    return out
 end
 
 # The top-level operands of `expr` interleaved with the operators between them, for
@@ -441,12 +468,29 @@ end
 # they sit just ahead of the C for the statement on that line.
 function annotate!(lines, sc::Scope, line)
     line > sc.cursor || return
+    # A statement that runs on past `line` — brackets still open — is carried whole,
+    # so its continuation lines come before its C, not after.
+    sc.src !== nothing && (line = statementend(sc.src, line))
     if sc.src !== nothing
         for l in body(sc.src, sc.cursor + 1, line; code=sc.copycode)
             emit!(lines, sc, l)
         end
     end
     sc.cursor = line
+end
+
+# The last line of the Julia statement that starts at `line`: where its brackets close.
+function statementend(src, line)
+    depth = 0
+    for k in line:length(src.lines)
+        code, _ = split_comment(strip(src.lines[k]))
+        for c in code
+            c in "([{" && (depth += 1)
+            c in ")]}" && (depth -= 1)
+        end
+        depth <= 0 && return k
+    end
+    return line
 end
 
 # A blank line between the C of one Julia statement and the next, so that each
@@ -548,6 +592,12 @@ function statement!(lines, sc::Scope, i, st)
             end
             sc.expr[i] = "result"
             sc.kinds[i] = sc.kind
+            return
+        end
+        if isstruct(T) && onlyreturned(ci, i) && !any(a -> isarray(valuetype(sc, a)), st.args[2:end])
+            # `return Point(x, y)`: the literal in the `return`.
+            structdef!(sc.prog, T)
+            sc.expr[i] = compound(sc, T, st.args[2:end])
             return
         end
         dest = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
@@ -1479,6 +1529,20 @@ function render(sc::Scope, i, ex::Expr)
         throw(ArgumentError("unsupported operation on a string: $f (statement $i)"))
     end
 
+    # An operator on the user's structs is the user's method: `mul(a, b)`; `a * b * c`,
+    # one call in Julia through Julia's fold, is the two binary calls.
+    if any(a -> isstruct(valuetype(sc, a)), args)
+        name = usercall!(sc, f, args)
+        name === nothing || return "$name($(callargs(sc, args)))", PRIMARY
+        if n > 2 && (name = usercall!(sc, f, args[1:2])) !== nothing
+            acc = "$name($(callargs(sc, args[1:2])))"
+            for a in args[3:end]
+                acc = "$name($acc, $(callargs(sc, [a])))"
+            end
+            return acc, PRIMARY
+        end
+    end
+
     # Arithmetic.
     f === Base.:+ && return n == 1 ? expression(sc, args[1]) : op("+", ADD)
     f === Base.:- && return n == 1 ? unary("-") : op("-", ADD)
@@ -1616,6 +1680,7 @@ function render(sc::Scope, i, ex::Expr)
     # One of the user's own functions.
     name = usercall!(sc, f, args)
     name === nothing || return "$name($(callargs(sc, args)))", PRIMARY
+
 
     throw(ArgumentError("unsupported call: $f (statement $i)"))
 end
@@ -1886,7 +1951,10 @@ end
 # with a regular array as element type and sizes), registering it to be transpiled if
 # it isn't already. Nothing if it isn't the user's or can't be resolved.
 function register!(prog::Program, f, spec)
-    nameof(Base.moduleroot(parentmodule(f))) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
+    # Julia's own function on Julia's own types is Julia's; on a struct of the user's it
+    # may be the user's method (`Base.:*(a::Quaternion, b::Quaternion)`), so look.
+    nameof(Base.moduleroot(parentmodule(f))) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) &&
+        !any(T -> T isa Type && isstruct(T), spec) && return nothing
     mi, sig = try
         any(x -> x isa Integer, spec) ? resolve(f, spec) : (m = Base.method_instance(f, Tuple(spec)); m === nothing ? (nothing, nothing) : (m, argtypes(m)))
     catch e
@@ -1895,7 +1963,7 @@ function register!(prog::Program, f, spec)
     mi === nothing && return nothing
     nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
     haskey(prog.calls, mi) && return (mi, sig, prog.calls[mi])
-    base = qualified(string(mi.def.name), mi.def.module)
+    base = qualified(fname(mi.def.name), mi.def.module)
     taken = union(prog.names, keys(prog.helpers), reserved)
     name = base in taken ? free(join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_"), taken) : free(base, reserved)
     push!(prog.names, name)

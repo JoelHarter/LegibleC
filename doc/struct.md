@@ -18,6 +18,15 @@ one — so in C it is always handled **through a pointer**: `Counter *c`,
 pointer. Creating a mutable struct inside transpiled code would need an
 allocation and an ownership rule, so it's refused; the C caller owns those.
 
+A method of a Julia operator on the struct — `Base.:*(a::Quaternion,
+b::Quaternion)` — is the user's function, named by the operator's word since
+C has no operator overloading: `mul(a, b)`, likewise `add`, `sub`, `div`,
+`eq`, `lt`. `a * b * c`, one call in Julia through its fold, is the two
+binary calls. A struct built to be returned is the literal in the `return`,
+`return (Point){x, y};`, broken one field per line when long; a small struct
+value used once — a constructor, a call returning one — is written where it
+is used, like a scalar.
+
 A parametric struct at a concrete instantiation is one C struct per
 instantiation, named like a function at several signatures: `Pair2_F64`,
 `Body_3`. Field and type names go through the usual conversion

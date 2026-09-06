@@ -393,7 +393,10 @@ function markinlined!(sc::Scope)
     effectful = Set{Int}()
     for (i, st) in enumerate(code)
         st isa Expr && st.head === :call && get(count, i, 0) == 1 || continue
-        widen(ci.ssavaluetypes[i]) <: Union{Number, Char} && !compiletime(ci.ssavaluetypes[i]) || continue
+        T = widen(ci.ssavaluetypes[i])
+        # Scalars, and small structs held by value (no array fields): a struct result is
+        # `conjugate(q)` where the author wrote it, and `(Point){x, y}` likewise.
+        (T <: Union{Number, Char} || isstruct(T) && !ismutabletype(T) && !any(isarray, fieldtypes(T))) && !compiletime(ci.ssavaluetypes[i]) || continue
         u = findfirst(s -> uses(s, i), code)
         use = code[u]
         use isa Expr && use.head === :(=) && (use = use.args[2])
@@ -445,9 +448,9 @@ function pure(sc::Scope, st::Expr)
     f === nothing && return false
     (f in writing || f in printing) && return false
     f isa Type && return true
-    nameof(Base.moduleroot(parentmodule(f))) in known && return true
-    r = userinstance!(sc, f, st.args[2:end])
-    return r === nothing || isempty(effects!(sc.prog, r[1]))
+    r = userinstance!(sc, f, st.args[2:end])   # the user's method, even of a Julia operator
+    r === nothing || return isempty(effects!(sc.prog, r[1]))
+    return nameof(Base.moduleroot(parentmodule(f))) in known
 end
 
 # What a user function does besides compute: `:write` (a store into an array or

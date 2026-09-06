@@ -22,7 +22,7 @@ transpiler does today is in [doc/](..), starting with
     ✅ `x = x + e` is `x += e`, an integer's `n + 1` is `n++`; the redundant `continue` a trailing `x && (n += 1)` produced is gone — done 2026-09-06
     ✅ A loop bound that is a call is computed once before the loop — done 2026-09-06
     ⬜ `return c ? x : y;` for a ternary whose branches both return
-    ⬜ Continuation lines of a multi-line expression land after its C; put them before it (`comment.md`)
+    ✅ Continuation lines of a multi-line statement come before its C — done 2026-09-06
     ✅ One-line `///` Doxygen comment on each generated helper — done 2026-09-03, `src/prose.jl`
     ⬜ `Δt` → `Deltat`: decide whether a spelled-out character followed by a letter gets a separator
     ⬜ From the magnifying glass on `sandbox/demo.c` (2026-09-05), each with its reasoning in the conversation that raised it:

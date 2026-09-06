@@ -47,6 +47,24 @@ function unarrays(v::SVector{3,Float64})
     p, q = arrays(v)
     return p + q
 end
+"A quaternion `w + xi + yj + zk`."
+struct Quaternion
+    w::Float64
+    x::Float64
+    y::Float64
+    z::Float64
+end
+"The Hamilton product."
+Base.:*(a::Quaternion, b::Quaternion) = Quaternion(
+    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w)
+conjugate(q::Quaternion) = Quaternion(q.w, -q.x, -q.y, -q.z)
+function rotated(q::Quaternion, v::SVector{3,Float64})
+    p = q * Quaternion(0.0, v[1], v[2], v[3]) * conjugate(q)
+    return SVector(p.x, p.y, p.z)
+end
 third(t::NTuple{3,Float64}) = t[1] + t[3]
 viathird(a::Float64) = third((a, 2a, 3a))
 function step(x::Float64, ẋ::Float64, dt::Float64)
@@ -65,7 +83,15 @@ check("struct", [Case(norm2, p), Case(make, 5.0, 6.0), Case(midpoint, Segment(p,
                  Case(same, p, Point(3.0, 4.0)), Case(same, p, q), Case(swap, Pair2(1.0, 2.0)), Case(bump!, Counter(41)),
                  Case(peek, Counter(21)), Case(both, 1.5, 2), Case(untup, SVector(1.5, 2.0)), Case(held, 1.5, 3),
                  Case(tswap, 1.0, 2.0), Case(arrays, SVector(1.0, 2.0, 3.0)), Case(unarrays, SVector(1.0, 2.0, 3.0)),
-                 Case(third, (1.0, 2.0, 3.0)), Case(viathird, 1.5), Case(step, 1.0, 0.0, 0.1), Case(twice, 1.0, 0.0, 0.1), Case(kept, 1.0, 0.1)])
+                 Case(third, (1.0, 2.0, 3.0)), Case(viathird, 1.5), Case(step, 1.0, 0.0, 0.1), Case(twice, 1.0, 0.0, 0.1), Case(kept, 1.0, 0.1),
+                 Case(rotated, Quaternion(cos(0.3), 0.0, 0.0, sin(0.3)), SVector(1.0, 0.0, 0.0))])
+@testset "operator methods" begin
+    # A method of a Julia operator on the user's struct is the user's function, named by
+    # the operator's word; `a * b * c` is the two binary calls.
+    src = csource("quaternion", rotated)
+    @test occursin("Quaternion mul(Quaternion a, Quaternion b)", src) && occursin("/// The Hamilton product.", src) || occursin(" * The Hamilton product.", src)
+    @test occursin("mul(mul(q, ", src) && occursin("), conjugate(q))", src)
+end
 @testset "tuple text" begin
     src = csource("tupletext", step, twice, kept, third, viathird, unarrays, tswap)
     # A returned tuple is the function's own struct, fields named after the variables returned.

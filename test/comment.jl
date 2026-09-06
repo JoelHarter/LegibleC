@@ -22,7 +22,7 @@ built(A::SMatrix{3,3,Float64,9}, B::SMatrix{3,3,Float64,9}) = (C = A * B'; [C A;
 single(A::SMatrix{3,3,Float64,9}, B::SMatrix{3,3,Float64,9}) = A * B
 function longexpr(a::Float64, b::Float64)
     t = (a + b) *
-        (a - b)          # continuation line lands after the C for the expression
+        (a - b)          # continuation line comes before the C, with the first
     t
 end
 function brackets(u::SVector{3,Float64}, v::SVector{3,Float64})
@@ -63,7 +63,7 @@ src = csource("comment", scaled, project, nodoc, steps, built, single, longexpr,
     @test !occursin("\n\n\n", src) && !occursin("\n\n}", src)
     # A multi-line expression: its C at the first line, the continuation lines after it
     # (the known imprecision); a line that is only a bracket contributes its comment only.
-    @test occursin("    double t = (a + b) * (a - b);\n\n    // @comment.jl:", src) && occursin("# continuation line lands after the C for the expression", src)
+    @test occursin("    double t = (a + b) * (a - b);\n\n    // @comment.jl:", src) && occursin("# continuation line comes before the C, with the first", src)
     @test occursin("// a line that is only a closing bracket keeps this comment, not the bracket", src) && !occursin(r"// @comment\.jl:\d+: \)", src)
 end
 end

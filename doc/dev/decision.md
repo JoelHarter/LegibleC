@@ -1324,3 +1324,28 @@ its declaration, which is the reason the idiom exists. Helpers are
 implementation, so a caller never sees `helper.h` — the one exception is a
 struct type the helpers defined that shows up in a prototype, where the
 header must reach it.
+
+---
+
+## 2026-09-06 — Operator methods on the user's structs
+
+**Decision.** A method of a Julia operator on a user struct,
+`Base.:*(a::Quaternion, b::Quaternion)`, is transpiled like any user
+function and named by the operator's word, `mul`, `add`, `sub`, `div`,
+`eq`, …, mangled by types if two such methods collide. `a * b * c`, which
+Julia parses as one call resolved to its own fold, is the two binary calls.
+A small struct value used once — a constructor, a call returning one — is
+written where it is used; a struct built to be returned is the literal in
+the `return`, one field per line when long. A multi-line Julia statement is
+carried whole above its C.
+
+**Why.** The function is Julia's but the method is the author's, and a
+quaternion product is the ordinary way a Julian writes it; refusing it
+would refuse the most natural struct code there is. C has no operator
+overloading, so the method needs a name, and the operator's word is the
+one a C programmer picks by hand. The rest follows the rules already in
+place for scalars and tuples — inline what the author wrote inline, return
+what is returned — extended to by-value structs, where they cost nothing.
+The continuation-line placement was the last "known imprecision" in the
+comment rules; a four-line initializer with its source underneath was too
+strange to leave.

@@ -63,6 +63,12 @@ const spelling = Ref(Dict{Char, String}())
 # bare; names elsewhere carry their module path, relative to it.
 const scope = Ref{Module}(Main)
 
+# The C base name of a method: an operator's word — `*` is `mul`, `+` is `add` — since C
+# has no operator overloading; anything else its own name.
+const operators = Dict(:* => "mul", :+ => "add", :- => "sub", :/ => "div", :\ => "ldiv", :^ => "pow", :(==) => "eq",
+                       :!= => "ne", :< => "lt", :<= => "le", :> => "gt", :>= => "ge", :! => "not")
+fname(name::Symbol) = get(operators, name, string(name))
+
 """
     qualified(name, mod) -> String
 
