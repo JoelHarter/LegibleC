@@ -72,6 +72,7 @@ both languages, read-only.
 | `&&`, `\|\|`, `c ? x : y` | yes, in conditions and as values |
 | `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc round hypot copysign abs max min atan(y, x)` | yes; the `f` family on `Float32` |
 | `zero(x)`, `one(x)` | yes |
+| `s, c = sincos(x)` | yes, as `sin(x)` and `cos(x)`; only destructured |
 | `Float64(a)`, `Int64(x)`, `round(Int64, x)`, `floor(Int64, x)`, … | yes, as casts |
 | `pi`, `ℯ`, `Inf`, `NaN`, `Inf32`, `NaN32`, numeric literals | yes |
 | `isnan`, `isinf`, `isfinite`, `signbit`; `typemax`, `typemin`, `floatmax`, `floatmin`, `eps` of a type | yes, as the `math.h`, `stdint.h`, `float.h` names |

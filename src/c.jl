@@ -89,6 +89,9 @@ mutable struct Scope
     # Array negations folded into the scalar of the multiply or divide that consumes
     # them: `-x / s` is `div_3_s(x, -s, …)`. The SSA value reads as the array itself.
     negated::Set{Int}
+    # `sincos(x)`: the SSA value stands for the pair `("sin(x)", "cos(x)")`, read out by
+    # destructuring; it has no C value of its own.
+    pair::Dict{Int, Tuple{String, String}}
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, prog::Program, copycode::Bool, blocked)
@@ -110,7 +113,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), 1,
-                 Tuple{Int, Int, Any}[], Set{Int}())
+                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}())
 end
 
 include("flow.jl")
@@ -446,6 +449,13 @@ function statement!(lines, sc::Scope, i, st)
         printf!(lines, sc, st.args[2:end])
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.fill!, Base.materialize!)
         inplace!(lines, sc, i, st)
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.sincos && length(st.args) == 2
+        # `s, c = sincos(x)` is exactly `s = sin(x); c = cos(x)`: ISO C has no `sincos`,
+        # and the compiler fuses the two calls itself. The pair is read by destructuring.
+        a = expression(sc, st.args[2])[1]
+        f = ctype(valuetype(sc, st.args[2])) == "float" ? "f" : ""
+        push!(sc.headers, "math.h")
+        sc.pair[i] = ("sin$f($a)", "cos$f($a)")
     elseif st isa Expr && st.head === :call && (T === Nothing || T === Any) && userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end]) !== nothing
         # A call for its effect, or whose result goes unused (Julia then types it `Any`
         # and the callee's own return type says what C needs).
@@ -1446,6 +1456,7 @@ function fieldaccess(sc::Scope, x, f)
     S = valuetype(sc, x)
     f = literal(sc, f)
     f isa QuoteNode && (f = f.value)
+    x isa Core.SSAValue && haskey(sc.pair, x.id) && return sc.pair[x.id][f]   # `sincos`: sin or cos
     return value(sc, x) * arrow(S) * fieldcname(S, f)
 end
 
@@ -1713,6 +1724,7 @@ function value(sc::Scope, x)
     if x isa Core.SSAValue
         x.id in sc.inlined && return first(expression(sc, x))
         haskey(sc.expr, x.id) && return sc.expr[x.id]
+        haskey(sc.pair, x.id) && throw(ArgumentError("sincos is only available destructured, `s, c = sincos(x)` (statement $(x.id))"))
         sc.ci.code[x.id] isa GlobalRef && return value(sc, sc.ci.code[x.id])
         sc.ci.code[x.id] isa Core.SlotNumber && return sc.names[sc.ci.code[x.id].id]   # a read inside a loop header
         throw(ArgumentError("value of statement $(x.id) is not available in C"))

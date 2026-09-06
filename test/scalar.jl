@@ -28,6 +28,19 @@ fmod_(a::Float64, b::Float64) = mod(a, b)
 fmod32(a::Float32, b::Float32) = mod(a, b)
 zeroone(x::Float64, n::Int64) = zero(x) + one(x) * x + one(n) + zero(Float64)
 pie(x::Float64) = x * pi + ℯ
+function sincos_(x::Float64)
+    s, c = sincos(x)
+    return s * c
+end
+function sincos32(x::Float32)
+    s, c = sincos(2x)
+    return s + c
+end
+picked(x::Float64) = sincos(x)[2]
+function kept(x::Float64)
+    t = sincos(x)
+    return t[1]
+end
 bits(a::Int64, b::Int64) = (a & b) | (a << 2) ⊻ (b >> 1)
 special(x::Float64) = x + NaN + Inf - Inf
 special32(x::Float32) = x + NaN32 + Inf32
@@ -40,7 +53,7 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
                  Case(single, 7.0f0, Int32(2)), Case(smooth, 1.7), Case(intmath, 7, 3), Case(intmath, -7, 3),
                  Case(convert_, 3, 2.6), Case(strictly, 1.0, 2.0), Case(strictly, 2.0, 1.0), Case(either, true, false),
                  Case(ldiv, 4.0, 1.0), Case(cube, 2.0), Case(powers, 1.3), Case(intpow, 3), Case(pow32, 1.5f0), Case(math32, 1.7f0), Case(fmod_, 7.5, 2.0), Case(fmod_, -7.5, 2.0), Case(fmod_, 7.5, -2.0), Case(fmod_, 4.0, -2.0),
-                 Case(fmod32, -7.5f0, 2.0f0), Case(zeroone, 2.5, 3), Case(pie, 2.0), Case(bits, 12, 10),
+                 Case(fmod32, -7.5f0, 2.0f0), Case(zeroone, 2.5, 3), Case(pie, 2.0), Case(sincos_, 0.7), Case(sincos32, 0.7f0), Case(picked, 0.7), Case(bits, 12, 10),
                  Case(special, 1.0), Case(special32, 1.0f0), Case(classify, NaN), Case(classify, -Inf), Case(classify, -2.5), Case(classify, 3.0),
                  Case(limits), Case(biggest, 7.0)])
 @testset "scalar text" begin
@@ -48,6 +61,10 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
     @test occursin("sqrtf(x) + fabsf(-x) + fmaxf(x, 1.0f) + powf(x, 0.5f) + expf(x) + rintf(x)", src) && occursin("+ fmodf(x, 0.7f);", src)   # float math is the `f` family
     @test occursin("return modulo(a, b);", src) && occursin("static inline double modulo(double x, double y) {\n    double r = fmod(x, y);", src)
     @test occursin("return x * M_PI + M_E;", src) && occursin("#include <math.h>", src)
+    sc = csource("sincos", sincos_, sincos32, picked)
+    @test occursin("    double s = sin(x);\n    double c = cos(x);\n", sc) && occursin("return s * c;", sc)   # exactly as sin and cos written separately
+    @test occursin("    float s = sinf(2 * x);\n    float c = cosf(2 * x);", sc) && occursin("return cos(x);", sc)
+    @test_throws ArgumentError csource("keptpair", kept)                                  # the pair itself is not a value
     portable = csource("portable", pie; portable=true)
     @test occursin("#define LEGIBLEC_E 2.718281828459045  // the double nearest ℯ\n#define LEGIBLEC_PI 3.141592653589793  // the double nearest π\n", portable)
     @test occursin("return x * LEGIBLEC_PI + LEGIBLEC_E;", portable) && !occursin("M_PI", portable)
