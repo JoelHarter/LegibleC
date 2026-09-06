@@ -25,6 +25,7 @@ inv4(A::M(4)) = inv(A)
 chol3(A::M(3), b::V(3)) = cholesky(A) \ b
 chol4(A::M(4), b::V(4)) = cholesky(A) \ b
 cholinv3(A::M(3)) = inv(cholesky(A))
+cholB3(A::M(3), B::SMatrix{3,2,Float64,6}) = cholesky(A) \ B
 lu4(A::M(4), b::V(4)) = lu(A) \ b
 rdiv(B::SMatrix{2,3,Float64,6}, A::M(3)) = B / A
 rowdiv(v::V(3), A::M(3)) = v' / A
@@ -46,7 +47,7 @@ check("linear", [Case(det1, A1), Case(det2, A2), Case(det3, A3), Case(det4, A4),
                  Case(solve2, A2, b2), Case(solve3, A3, b3), Case(solve4, A4, b4), Case(solve5, A5, b5),
                  Case(solveM, A3, SMatrix{3,2}([1.0 2.0; 3.0 4.0; 5.0 6.0])),
                  Case(inv1, A1), Case(inv2, A2), Case(inv3, A3), Case(inv4, A4),
-                 Case(chol3, A3, b3), Case(chol4, S4, b4), Case(cholinv3, A3), Case(lu4, A4, b4),
+                 Case(chol3, A3, b3), Case(chol4, S4, b4), Case(cholinv3, A3), Case(cholB3, A3, SMatrix{3,2}(1.0, 2, 3, 4, 5, 6)), Case(lu4, A4, b4),
                  Case(rdiv, SMatrix{2,3}([1.0 2.0 3.0; 4.0 5.0 6.0]), A3), Case(rowdiv, b3, A3),
                  Case(rdiv4, SMatrix{2,4}([1.0 2.0 3.0 4.0; 5.0 6.0 7.0 8.0]), A4),
                  Case(tall, T43), Case(wide, T43'), Case(square, A3), Case(lsq, T43, b4), Case(minnorm, T43', b3),

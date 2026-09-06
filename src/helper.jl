@@ -797,13 +797,17 @@ end
 # `cholesky(A) \ b`: `solveLLT_3x3_3`. The factor, then two triangular solves.
 function solveLLThelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
     n = shape(T)[1]
-    ndims(B) == 1 || throw(ArgumentError("cholesky(A) \\ B with a matrix B is not supported yet"))
     extent(B, 1) == n || throw(ArgumentError("\\: a $(describe(T)) can't be solved against a $(describe(B))"))
     E = eltype(R)
     name = helpername(:solveLLT, (T, B))
     haskey(helpers, name) && return name
     A, b = inputs((T, B))
-    body = vcat(["$(ctype(E)) L[$n][$n];", "$(llthelper!(helpers, T))($A, L);"], lltsolve(n, "out", access(B, b, ["i", "0"])))
+    # A vector right-hand side is solved in place; a matrix, one column at a time.
+    body = ndims(B) == 1 ?
+        vcat(["$(ctype(E)) L[$n][$n];", "$(llthelper!(helpers, T))($A, L);"], lltsolve(n, "out", access(B, b, ["i", "0"]))) :
+        vcat(["$(ctype(E)) L[$n][$n];", "$(ctype(E)) x[$n];", "$(llthelper!(helpers, T))($A, L);", "for (int j = 0; j < $(extent(B, 2)); j++) {"],
+             "    " .* lltsolve(n, "x", access(B, b, ["i", "j"])),
+             ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
                                doc=["$(describe(T)) \\ $(describe(B)) solve by Cholesky", "out = $A \\ $b, $A symmetric positive definite"], inline=false)
     return name

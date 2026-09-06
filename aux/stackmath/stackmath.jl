@@ -48,7 +48,9 @@ lib("divide", [[(/, s..., F) for s in shapes]; broadcasts(:./)])
 lib("dot", [(dot, F, n, F, n) for n in N])
 lib("cross", [(cross, F, 3, F, 3)])
 lib("transpose", unary(transpose, matrices))
-lib("solve", [[(\, s..., F, s[2]) for s in squares]; [(\, s..., F, s[2], k) for s in squares for k in N]])
+lib("solve", [[(\, s..., F, s[2]) for s in squares]; [(\, s..., F, s[2], k) for s in squares for k in N];
+              [(((A, b) -> cholesky(A) \ b), s..., F, s[2]) for s in squares];                       # symmetric positive definite
+              [(((A, B) -> cholesky(A) \ B), s..., F, s[2], k) for s in squares for k in N]])
 lib("inverse", unary(inv, squares))
 lib("determinant", unary(det, squares))
 lib("trace", unary(tr, squares))
