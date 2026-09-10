@@ -9,7 +9,10 @@ using LegibleC
 using LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames, charliteral, returnkind!, Program, initializer
 
 # The setting the C is written for (doc/guide/start.md), so every test checks it holds up there.
-const flags = ["-std=c11", "-O2", "-ffast-math", "-fno-finite-math-only", "-ffp-contract=fast", "-march=native",
+# `-fno-cx-limited-range` keeps complex division overflow-safe under fast-math, as Julia's
+# is; GCC has it, Apple's clang doesn't, so it is added where the compiler takes it.
+const cxflag = success(pipeline(`cc -fno-cx-limited-range -x c -c /dev/null -o /dev/null`; stderr=devnull)) ? ["-fno-cx-limited-range"] : String[]
+const flags = ["-std=c11", "-O2", "-ffast-math", "-fno-finite-math-only", cxflag..., "-ffp-contract=fast", "-march=native",
                "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 
 # One call to check: a function and the values to call it with.
@@ -26,6 +29,7 @@ cliteral(x::Char) = charliteral(x)
 cliteral(x::AbstractString) = "\"" * replace(x, "\\" => "\\\\", "\"" => "\\\"") * "\""
 cliteral(x::Integer) = string(x)
 cliteral(x::AbstractFloat) = isinf(x) ? (x > 0 ? "INFINITY" : "-INFINITY") : isnan(x) ? "NAN" : repr(Float64(x))
+cliteral(x::Complex) = "CMPLX($(cliteral(real(x))), $(cliteral(imag(x))))"
 cliteral(x::Union{Adjoint{<:Any, <:AbstractVector}, Transpose{<:Any, <:AbstractVector}}) = cliteral(parent(x))
 cliteral(x::AbstractVector) = "{" * join(cliteral.(x), ", ") * "}"
 cliteral(x::AbstractArray) = "{" * join((cliteral(selectdim(x, 1, i)) for i in 1:size(x, 1)), ", ") * "}"   # row-major nesting
@@ -36,9 +40,10 @@ cliteral(x) = "{" * join((cliteral(getfield(x, k)) for k in 1:fieldcount(typeof(
 
 flat(::Nothing) = Float64[]
 flat(x::Number) = [Float64(x)]
+flat(x::Complex) = [Float64(real(x)), Float64(imag(x))]
 flat(x::Char) = [Float64(codepoint(x))]
 flat(x::Union{Adjoint{<:Any, <:AbstractVector}, Transpose{<:Any, <:AbstractVector}}) = flat(parent(x))
-flat(x::AbstractArray) = Float64.(vec(permutedims(collect(x), ndims(x):-1:1)))                          # row-major
+flat(x::AbstractArray) = reduce(vcat, flat.(vec(permutedims(collect(x), ndims(x):-1:1))); init=Float64[])   # row-major; a complex element is its two parts
 flat(x::Tuple) = reduce(vcat, flat.(x); init=Float64[])
 flat(x) = reduce(vcat, (flat(getfield(x, k)) for k in 1:fieldcount(typeof(x))); init=Float64[])
 
@@ -51,8 +56,13 @@ end
 
 # C lines printing the value `x` of type `T`, every number as `%.17g` and a space.
 function cprint(T::Type, x)
+    T <: Complex && return ["printf(\"%.17g %.17g \", creal($x), cimag($x));"]
     (T <: Number || T === Char) && return ["printf(\"%.17g \", (double)$x);"]
     if T <: AbstractArray
+        E = eltype(T)
+        E <: Complex && return ["for (int k = 0; k < $(prod(shape(T))); k++) {",
+                                "    printf(\"%.17g %.17g \", creal(((const $(ctype(E)) *)$x)[k]), cimag(((const $(ctype(E)) *)$x)[k]));",
+                                "}"]
         return ["for (int k = 0; k < $(prod(shape(T))); k++) {",
                 "    printf(\"%.17g \", (double)((const $(ctype(eltype(T))) *)$x)[k]);",
                 "}"]
@@ -83,7 +93,7 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
     LegibleC.booltype[] = get(kw, :bool, Bool)
     cnames = Dict(zip(fs, identifiers([identifier(string(nameof(f))) for f in fs])))
     headers = ["#include \"$h\"" for h in readdir(dirname(path)) if endswith(h, ".h") && h != "helper.h"]
-    main = ["#include <stdio.h>", "#include <stdbool.h>", "#include <math.h>", headers..., extra, "int main(void) {"]
+    main = ["#include <stdio.h>", "#include <stdbool.h>", "#include <math.h>", "#include <complex.h>", headers..., extra, "int main(void) {"]
     references = Any[]
     for (k, c) in enumerate(cases)
         passes = String[]

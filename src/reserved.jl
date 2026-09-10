@@ -29,6 +29,8 @@ const reserved = Set([
     "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long",
     "register", "restrict", "return", "short", "signed", "sizeof", "static", "struct",
     "switch", "typedef", "union", "unsigned", "void", "volatile", "while",
+    # <complex.h>
+    "complex", "imaginary", "I",
     # C23 keywords
     "alignas", "alignof", "bool", "constexpr", "false", "nullptr", "static_assert",
     "thread_local", "true", "typeof", "typeof_unqual",

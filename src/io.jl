@@ -21,6 +21,8 @@ function conversion(T::Type; precise::Bool=false, width::Bool=false)
     T <: AbstractString && return "%s"
     T <: Unsigned && return width ? "%12llu" : "%llu"
     T <: Integer && return width ? "%12lld" : "%lld"
+    # A complex value prints as Julia does, `1+2im`, its two parts.
+    T <: Complex && return (c = conversion(real(T); precise, width); c * replace(c, "%" => "%+") * "im")
     T <: AbstractFloat || throw(ArgumentError("printing a $T is not supported"))
     digits = T === Float32 ? 9 : 17
     precise || return width ? "%12g" : "%g"
@@ -30,6 +32,7 @@ end
 # The `printf` argument for a scalar value: integers cast to the width the conversion
 # names, since `int64_t`'s own format needs a macro.
 argument(T::Type, x) = T === Bool ? (booltype[] === Bool ? x : "$x != 0") : T <: Unsigned ? "(unsigned long long)$x" : T <: Integer ? "(long long)$x" :
+                       T <: Complex ? "$(mathname(T, "real"))($x), $(mathname(T, "imag"))($x)" :
                        c23floattypes[] ? "(double)$x" : x       # a `_FloatN` isn't promoted for `...`
 
 # `"stdout"` or `"stderr"` if the IR value is that global (by name, since a test may have

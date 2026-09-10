@@ -20,6 +20,8 @@ const scalars = (
     (UInt64,  "uint64_t", "U64"),
     (Float32, "float",    "F32"),
     (Float64, "double",   "F64"),
+    (ComplexF32, "float complex",  "C32"),   # C99 <complex.h>: a type, with the operators
+    (ComplexF64, "double complex", "C64"),
     (Char,    "char",     "C"),      # ASCII: Julia's Char is a code point, C's char a byte
 )
 
@@ -35,7 +37,6 @@ function ctype(T::Type)
     T <: AbstractString && return "const char *"   # UTF-8 bytes, as Julia's, read-only
     isstruct(T) && return structname(T) * (ismutabletype(T) ? " *" : "")
     istuple(T) && return structname(T)
-    T <: Complex && throw(ArgumentError("complex numbers are not yet supported (got $T)"))
     T <: AbstractArray && throw(ArgumentError("arrays are not yet supported (got $T)"))
     throw(ArgumentError("no C type for $T"))
 end
@@ -45,6 +46,15 @@ end
 function pointerdecl(T::Type, name::AbstractString, target::AbstractString)
     rows = join(("[$e]" for e in shape(T)[2:end]))
     return "$(ctype(eltype(T))) " * (isempty(rows) ? "*$name" : "(*$name)$rows") * " = $target"
+end
+
+# The C math function for `name` on values of type `E`: `sqrt`, `sqrtf`, `csqrt`,
+# `csqrtf` — the `c` of <complex.h>, and `f` for single precision. `abs` is `fabs` on
+# reals and `cabs` on complex.
+function mathname(E::Type, name::AbstractString)
+    E <: Complex || return name * (E === Float32 ? "f" : "")
+    base = name == "fabs" ? "cabs" : name == "angle" ? "carg" : name == "conj" ? "conj" : "c" * name
+    return base * (E === ComplexF32 ? "f" : "")
 end
 
 # The abbreviation for a scalar type in a mangled name.
@@ -113,20 +123,32 @@ shaped(T::Type, s) = Shaped{T, Tuple(s), length(s)}
 # (`axis`). So a transpose emits nothing, and named with a `T` in front: `T3`, `T2x3`.
 # Julia allows it for at most two dimensions; a scalar's transpose is itself and never
 # reaches us.
+# `Adjointed` is the same with the elements read conjugated: `A'` on complex elements.
+# On real ones `'` is a plain transpose, and `Transposed` it is. Names say `T` for the
+# one and `H` for the other, as a numerical C programmer writes Aᵀ and Aᴴ.
 struct Transposed{T, S, N} <: AbstractArray{T, N} end
+struct Adjointed{T, S, N} <: AbstractArray{T, N} end
 Base.size(::Type{Transposed{T, S, N}}) where {T, S, N} = S
-istransposed(T::Type) = T <: Transposed
+Base.size(::Type{Adjointed{T, S, N}}) where {T, S, N} = S
+istransposed(T::Type) = T <: Transposed || T <: Adjointed
+isconjugated(T::Type) = T <: Adjointed
 isrow(T::Type) = istransposed(T) && ndims(T) == 1
 
 # `T` without its transpose tag: the storage as a plain array.
 plain(T::Type) = istransposed(T) ? shaped(eltype(T), shape(T)) : T
 
-# The transpose of `T`: a transposed array is its original, anything else gets the tag.
-function transposed(T::Type)
+# The transpose of `T` — the adjoint, with `conj`, which on complex elements also
+# conjugates: a transposed array is its original, anything else gets the tag. An
+# adjoint of a transpose, or the other way round, would be a conjugate without a
+# transpose, which has no tag; that value must be stored, `conj.(A)`.
+function transposed(T::Type; conj::Bool=false)
     T <: AbstractArray || return T
-    istransposed(T) && return plain(T)
+    if istransposed(T)
+        isconjugated(T) == (conj && eltype(T) <: Complex) || throw(ArgumentError("a conjugate without a transpose, `transpose(A')` or `transpose(A)'`, is not supported; store it as `conj.(A)`"))
+        return plain(T)
+    end
     ndims(T) <= 2 || throw(ArgumentError("transpose of a $(ndims(T))-dimensional array (Julia allows at most two)"))
-    return Transposed{eltype(T), shape(T), ndims(T)}
+    return conj && eltype(T) <: Complex ? Adjointed{eltype(T), shape(T), ndims(T)} : Transposed{eltype(T), shape(T), ndims(T)}
 end
 
 # Julia's lazy `Adjoint`/`Transpose` wrappers, as the transpiler sees them: the
@@ -136,7 +158,7 @@ function normalize(T::Type)
     T <: LinearAlgebra.Adjoint || T <: LinearAlgebra.Transpose || return T
     P = T.parameters[2]
     shape(P) === nothing && return T
-    return transposed(P)
+    return transposed(P; conj=T <: LinearAlgebra.Adjoint)
 end
 
 # The dimensions of an array type as they appear in a mangled name: `3`, `2x3`, `4x3x4`;
@@ -146,7 +168,7 @@ end
 function dims(T::Type)
     s = shape(T)
     s === nothing && throw(ArgumentError("arrays without a size in their type are not yet supported (got $T)"))
-    return (istransposed(T) ? "T" : "") * join(s, "x")
+    return (eltype(T) <: Complex ? "C" : "") * (isconjugated(T) ? "H" : istransposed(T) ? "T" : "") * join(s, "x")
 end
 
 # The axis each of an operand's dimensions lines up with, in storage order. Nothing is

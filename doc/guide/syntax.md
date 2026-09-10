@@ -41,11 +41,11 @@ an array of that element type and size. Options: `outfile`, `outpath`,
 
 ## Scalar types
 
-`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `Char`,
-`String`. See `../math/scalar.md` for the C spelling of each. `struct` (immutable
-by value, mutable through a pointer, parametric at concrete types) and `Tuple`
-— see `../struct.md`. Not yet: complex, `Int128`, `Float16`, `Rational`,
-`BigInt`, `@enum`, `Union{T, Nothing}`.
+`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `ComplexF32`,
+`ComplexF64`, `Char`, `String`. See `../math/scalar.md` for the C spelling of
+each. `struct` (immutable by value, mutable through a pointer, parametric at
+concrete types) and `Tuple` — see `../struct.md`. Not yet: `Int128`,
+`Float16`, `Rational`, `BigInt`, `@enum`, `Union{T, Nothing}`.
 
 ## Characters and strings
 

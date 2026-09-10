@@ -243,6 +243,9 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, st
     mkpath(dir)
     base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
     base == helper && throw(ArgumentError("`$helper.c` is the file the generated helpers go to; name the functions' file something else"))
+    for name in (base, helper)
+        name * ".h" in first.(standard) && throw(ArgumentError("`$name.h` would shadow the standard header <$name.h> for every file compiled with `-I out`; name it something else"))
+    end
     where, order = placement(prog, base, separate, names, helper)
     writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper)
     return writefiles(dir, prog, base, where, order, names, functions, helper)
@@ -331,6 +334,11 @@ function mathguards(text)
     for (m, v) in (("M_PI", π), ("M_E", ℯ))
         occursin(Regex("\\b$m\\b"), text) || continue
         append!(lines, ["#ifndef $m", "#define $m $(Float64(v))  // not in ISO C; absent under a strict -std=c11", "#endif"])
+    end
+    # C11's `CMPLX` builds a complex from its parts exactly; an older <complex.h> lacks it.
+    for (m, t) in (("CMPLX", "double"), ("CMPLXF", "float"))
+        occursin(Regex("\\b$m\\("), text) || continue
+        append!(lines, ["#ifndef $m", "#define $m(x, y) __builtin_complex(($t)(x), ($t)(y))  // C11; here if <complex.h> predates it", "#endif"])
     end
     return lines
 end
@@ -516,6 +524,7 @@ const standard = (
     ("ctype.h", r"\b(isdigit|isalpha|isspace|isupper|islower|ispunct|iscntrl|isprint|isxdigit|toupper|tolower)\("),
     ("stdio.h", r"\b(printf|fprintf|snprintf|fputs|fputc|putchar|puts|fflush|fopen|fclose|FILE|stdout|stderr)\b"),
     ("float.h", r"\b(DBL|FLT)_(EPSILON|MAX|MIN)\b"),
+    ("complex.h", r"\b(creal|cimag|conj|cabs|carg|csqrt|cexp|clog|cpow|csin|ccos|ctan|casin|cacos|catan|csinh|ccosh|ctanh|cproj)f?\(|\bCMPLXF?\(|\b(double|float) complex\b|\bI\b"),
     ("math.h", r"\b(sqrt|cbrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|exp2|expm1|log|log2|log10|log1p|floor|ceil|trunc|rint|round|hypot|copysign|fabs|fmax|fmin|fmod|pow|isnan|isinf|isfinite|signbit)f?\(|\b(M_PI|M_E|INFINITY|NAN)\b"),
 )
 

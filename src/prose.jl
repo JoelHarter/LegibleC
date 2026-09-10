@@ -32,8 +32,10 @@ sizeword(T::Type) = join(shape(T), "×")
 noun(T::Type; plural::Bool=false) = ndims(T) == 1 ? (plural ? "vectors" : "vector") :
                                     ndims(T) == 2 ? (plural ? "matrices" : "matrix") : (plural ? "arrays" : "array")
 function describe(T::Type; typed::Bool=false, plural::Bool=false)
-    T <: AbstractArray || return (typed ? "$T " : "") * (plural ? "scalars" : "scalar")
-    return (istransposed(T) ? (eltype(T) <: Real ? "transposed " : "adjoint ") : "") * (typed ? "$(eltype(T)) " : "") * sizeword(T) * "-" * noun(T; plural)
+    # Complex says "complex", and its precision only when that isn't double, as the name does.
+    word(E) = E <: Complex ? "complex " * (typed && E !== ComplexF64 ? "$(real(E)) " : "") : typed ? "$E " : ""
+    T <: AbstractArray || return word(T) * (plural ? "scalars" : "scalar")
+    return (isconjugated(T) ? "adjoint " : istransposed(T) ? "transposed " : "") * word(eltype(T)) * sizeword(T) * "-" * noun(T; plural)
 end
 
 # The comment for the helper for `op` on `types`, producing `R`.

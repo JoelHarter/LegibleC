@@ -1610,3 +1610,35 @@ reads see its current value wherever it lives. So only the layout has to
 hold, and the layout is decided from the returns alone. The rule was
 first written for vectors and rewritten for rows before it landed, on the
 reminder that the general thing is what gets written (tenet 3).
+
+---
+
+## 2026-09-11 — Complex numbers, and `T` against `H`
+
+**Decision.** `ComplexF64` and `ComplexF32` are C99's `double complex` and
+`float complex`: the operators as they are, the `c` family for the
+functions, `CMPLX(a, b)` for a construction and `I` for `im`. Arrays of
+them go through the same helpers as everything else, named with a `C` in
+front of the shape — `add_C3`, `mul_CH3x2_C3x2`, `Cs` — placed like the
+`T` of a transpose. `'` on real elements transposes and is `T`; on complex
+elements it conjugates too and is `H`, read as `conj(A[k][i])` inside the
+helper; `transpose(A)` on complex stays `T`. `dot` conjugates its first
+argument, `norm` sums squared magnitudes into a real, Cholesky is `L Lᴴ`
+with real pivots, LU pivots on `cabs`, and `abs2` is one small helper.
+The comments follow the same fact: `ᵀ`/"transposed" for `T`, `ᴴ`/"adjoint"
+for `H`. Under fast-math, `-fno-cx-limited-range` keeps complex division
+overflow-safe, as Julia's is, where the compiler has the flag. An output
+file named like a standard header, `complex`, `math`, is refused, since
+`-I out` would shadow the real one.
+
+**Why.** C already has the type, so the scalar side is a table row and a
+prefix; the array side was generic all along. The one place the design
+had assumed reals was the transpose, which the `Adjointed` tag beside
+`Transposed` resolves without a second path: one element-access function
+adds the `conj`. `T` and `H` rather than one letter for all adjoints
+because the letter should say what the C does, `A` is already the name of
+every matrix, and a numerical C programmer reads Aᴴ. The `C` goes in
+front, like `T`, because that is where a reader looks for what kind of
+thing a helper takes. The harness prints a complex value as its two parts
+and compares them to Julia's; the first run caught the test's own output
+file shadowing `<complex.h>`, which became the refusal.

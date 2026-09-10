@@ -40,10 +40,14 @@ shape once and then the types run together, one if they agree: `add_2x2`,
 only the types: `cross`, `cross_F32`. Full rules in `doc/helper.md`.
 """
 function helpername(op::Symbol, types; pointwise::Bool=false)
+    # Complex is a `C` in front, like the `T` of a transpose — `C3`, `CH3x2`, `Cs` — and
+    # counts as double for the rule that leaves double unmarked; its precision, when it
+    # isn't double, is marked as a real's is.
     fundamental(T) = T <: AbstractArray ? eltype(T) : T
-    alldouble = all(T -> fundamental(T) === Float64, types)
-    sizes = [T <: AbstractArray ? dims(T) : "s" for T in types]
-    typs = [abbrev(fundamental(T)) for T in types]
+    precision(E) = E <: Complex ? real(E) : E
+    alldouble = all(T -> precision(fundamental(T)) === Float64, types)
+    sizes = [T <: AbstractArray ? dims(T) : fundamental(T) <: Complex ? "Cs" : "s" for T in types]
+    typs = [abbrev(precision(fundamental(T))) for T in types]
     if !pointwise && op in (:add, :sub, :dot, :cross) && allequal(sizes)
         # The contract fixes the shapes (a transposed operand still lists in full, since
         # the storage differs): one shape, then the types.
@@ -197,8 +201,10 @@ brackets(idx) = join("[$x]" for x in idx)
 # The C subscript for `var` of type `T` at `idx` (one index expression per axis): one
 # subscript per dimension `T` actually has, taken from the axis it lines up with, and
 # `0` wherever that dimension's extent is 1. A scalar gets no subscript at all.
+# An adjoint operand's element is read conjugated: that is what `Adjointed` means.
 function access(T::Type, var::AbstractString, idx)
-    return var * join("[" * (extent(T, d) == 1 ? "0" : idx[d]) * "]" for d in axis(T))
+    s = var * join("[" * (extent(T, d) == 1 ? "0" : idx[d]) * "]" for d in axis(T))
+    return isconjugated(T) ? "$(mathname(eltype(T), "conj"))($s)" : s
 end
 
 # ---- multiplication ---------------------------------------------------------------
@@ -257,7 +263,8 @@ function scalarhelper!(helpers::Dict{String, String}, op::Symbol, types, E::Type
     if !haskey(helpers, name)
         a, b = types
         an, bn = inputs(types)
-        row = isrow(a) ? a : Transposed{eltype(a), shape(a), 1}
+        # `dot` conjugates its first argument: on complex elements that is an adjoint row.
+        row = op == :dot && eltype(a) <: Complex ? Adjointed{eltype(a), shape(a), 1} : isrow(a) ? a : Transposed{eltype(a), shape(a), 1}
         body = contraction(row, b, an, bn, nothing, E)
         helpers[name] = definition(ctype(E), name, [declare(a, an; constant=true), declare(b, bn; constant=true)], body;
                                    doc=[prose(op, types), op == :dot ? "returns $an ⋅ $bn" : "returns $(an)$(tmark(a)) * $bn"])
@@ -268,7 +275,7 @@ end
 # `a^n` for a literal `n` as one C expression, the way `render` writes a scalar power:
 # squares, cubes and the reciprocal written out, anything else through `powi`.
 function powexpr(helpers, a::AbstractString, n::Integer, E::Type)
-    one = E <: AbstractFloat ? (E === Float32 ? "1.0f" : "1.0") : "1"
+    one = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? "1.0f" : "1.0") : "1"
     n == 0 && return one
     n == 1 && return a
     n == 2 && return "$a * $a"
@@ -289,7 +296,7 @@ function powhelper!(helpers::Dict{String, String}, E::Type)
     name = "powi" * (E === Float64 ? "" : abbrev(E))
     haskey(helpers, name) && return name
     t = ctype(E)
-    one = E <: AbstractFloat ? (E === Float32 ? "1.0f" : "1.0") : "1"
+    one = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? "1.0f" : "1.0") : "1"
     signed = E <: AbstractFloat
     body = [signed ? ["bool neg = n < 0;", "if (neg) {", "    n = -n;", "}"] : String[];
             "$t r = $one;"; "while (n > 0) {"; "    if (n & 1) {"; "        r *= x;"; "    }"; "    x *= x;"; "    n >>= 1;"; "}";
@@ -297,6 +304,17 @@ function powhelper!(helpers::Dict{String, String}, E::Type)
     helpers[name] = definition(t, name, ["$t x", "int n"], body;
                                doc=["integer power of $(E === Float64 ? "a scalar" : E <: AbstractFloat ? "a float" : "an integer"), by squaring",
                                     "returns x^n"])
+    return name
+end
+
+# `abs2(z)` of a complex number: the squared magnitude without the square root of `cabs`.
+function abs2helper!(helpers::Dict{String, String}, E::Type)
+    name = "abs2" * (E === ComplexF32 ? "F32" : "")
+    haskey(helpers, name) && return name
+    R = real(E)
+    re, im = mathname(E, "real"), mathname(E, "imag")
+    helpers[name] = definition(ctype(R), name, ["$(ctype(E)) z"], ["return $re(z) * $re(z) + $im(z) * $im(z);"];
+                               doc=["squared magnitude of a complex number", "returns |z|²"])
     return name
 end
 
@@ -348,7 +366,7 @@ function dethelper!(helpers::Dict{String, String}, T::Type, E::Type)
          "     + $(a(0, 2)) * ($(a(1, 0)) * $(a(2, 1)) - $(a(1, 1)) * $(a(2, 0)));"]
     else
         S = shaped(E, (n - 1, n - 1))
-        one, zero = E <: AbstractFloat ? (E === Float32 ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
+        one, zero = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
         cut = nest([("i", n - 1), ("k", n - 1)], ["M[i][k] = $(access(T, A, ["i + 1", "k < j ? k : k + 1"]));"])
         loop = nest([("j", n)], [cut; "det += sign * $(access(T, A, ["0", "j"])) * $(dethelper!(helpers, S, E))(M);"; "sign = -sign;"])
         ["$(ctype(E)) det = $zero;"; "$(ctype(E)) sign = $one;"; declare(S, "M") * ";"; loop; "return det;"]
@@ -367,8 +385,8 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
     idx, pairs = loopindices(shape(T))
     a = A * brackets(idx)
     first = A * brackets(["0" for _ in shape(T)])
-    zero = E <: AbstractFloat ? (E === Float32 ? "0.0f" : "0.0") : "0"
-    one = E <: AbstractFloat ? (E === Float32 ? "1.0f" : "1.0") : "1"
+    zero = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? "0.0f" : "0.0") : "0"
+    one = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? "1.0f" : "1.0") : "1"
     v = eltype(T) === Bool && booltype[] !== Bool ? "($a != 0)" : a       # an integer as bool: nonzero is true
     body = op == :sum     ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $v;"]); "return sum;"] :
            op == :prod    ? ["$(ctype(E)) product = $one;"; nest(pairs, ["product *= $v;"]); "return product;"] :
@@ -376,7 +394,7 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
            op == :minimum ? ["$(ctype(E)) min = $first;"; nest(pairs, ["if ($a < min) {", "    min = $a;", "}"]); "return min;"] :
            op == :any     ? [nest(pairs, ["if ($a) {", "    return true;", "}"]); "return false;"] :
            op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
-           op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a * $a;"]); "return $(E === Float32 ? "sqrtf" : "sqrt")(sum);"] :
+           op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $(eltype(T) <: Complex ? "$(mathname(eltype(T), "real"))($a) * $(mathname(eltype(T), "real"))($a) + $(mathname(eltype(T), "imag"))($a) * $(mathname(eltype(T), "imag"))($a)" : "$a * $a");"]); "return $(E === Float32 ? "sqrtf" : "sqrt")(sum);"] :
            op == :count   ? ["int64_t count = 0;"; nest(pairs, ["if ($a) {", "    count++;", "}"]); "return count;"] :
            op == :tr      ? ["$(ctype(E)) sum = $zero;"; "for (int i = 0; i < $(shape(T)[1]); i++) {"; "    sum += $A[i][i];"; "}"; "return sum;"] :
            # `argmax`, `argmin`: Julia's 1-based index of the first extreme element.
@@ -463,7 +481,7 @@ end
 # lives on the stack in arrays of the static size: no allocation anywhere.
 
 # The literal one and zero of `E`.
-onezero(E::Type) = E <: AbstractFloat ? (E === Float32 ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
+onezero(E::Type) = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? ("1.0f", "0.0f") : ("1.0", "0.0")) : ("1", "0")
 
 # Partial pivoting for column `k` of the LU work array: the row at or below `k` with the
 # largest magnitude in that column is swapped into row `k`, in both `LU` and the
@@ -473,7 +491,7 @@ function pivothelper!(helpers::Dict{String, String}, T::Type)
     E = eltype(T)
     name = "pivot_" * dims(T)
     haskey(helpers, name) && return name
-    fabs = E === Float32 ? "fabsf" : "fabs"
+    fabs = mathname(E, "fabs")
     body = ["int best = k;",
             "for (int i = k + 1; i < $n; i++) {",
             "    if ($fabs(LU[i][k]) > $fabs(LU[best][k])) {",
@@ -731,17 +749,22 @@ function llthelper!(helpers::Dict{String, String}, T::Type)
     name = "llt_" * dims(T)
     haskey(helpers, name) && return name
     A = inputs((T,))[1]
-    sqrt = E === Float32 ? "sqrtf" : "sqrt"
-    _, zero = onezero(E)
+    # Complex: the factor is L Lᴴ, the products against a conjugate, the pivots real.
+    cx = E <: Complex
+    R = cx ? real(E) : E
+    sqrt = mathname(R, "sqrt")
+    conj(x) = cx ? "$(mathname(E, "conj"))($x)" : x
+    re(x) = cx ? "$(mathname(E, "real"))($x)" : x
+    _, zero = onezero(R)
     body = String[]
     if n <= 3
         # Written out: each entry of L from the ones already known.
         for j in 0:n-1, i in j:n-1
-            s = access(T, A, [string(i), string(j)]) * join(" - L[$i][$k] * L[$j][$k]" for k in 0:j-1)
+            s = access(T, A, [string(i), string(j)]) * join(" - L[$i][$k] * $(conj("L[$j][$k]"))" for k in 0:j-1)
             if i == j
-                push!(body, "L[$j][$j] = $s;")
-                push!(body, "if (L[$j][$j] <= $zero) {", "    fprintf(stderr, \"PosDefException(%d)\\n\", $(j + 1));", "    abort();", "}")
-                push!(body, "L[$j][$j] = $sqrt(L[$j][$j]);")
+                push!(body, "L[$j][$j] = $(re(j == 0 ? s : "($s)"));")
+                push!(body, "if ($(re("L[$j][$j]")) <= $zero) {", "    fprintf(stderr, \"PosDefException(%d)\\n\", $(j + 1));", "    abort();", "}")
+                push!(body, "L[$j][$j] = $sqrt($(re("L[$j][$j]")));")
             else
                 push!(body, "L[$i][$j] = $(j == 0 ? s : "($s)") / L[$j][$j];")
             end
@@ -753,17 +776,17 @@ function llthelper!(helpers::Dict{String, String}, T::Type)
         body = ["for (int j = 0; j < $n; j++) {",
                 "    $(ctype(E)) s = $(access(T, A, ["j", "j"]));",
                 "    for (int k = 0; k < j; k++) {",
-                "        s -= L[j][k] * L[j][k];",
+                "        s -= L[j][k] * $(conj("L[j][k]"));",
                 "    }",
-                "    if (s <= $zero) {",
+                "    if ($(re("s")) <= $zero) {",
                 "        fprintf(stderr, \"PosDefException(%d)\\n\", j + 1);",
                 "        abort();",
                 "    }",
-                "    L[j][j] = $sqrt(s);",
+                "    L[j][j] = $sqrt($(re("s")));",
                 "    for (int i = j + 1; i < $n; i++) {",
                 "        s = $(access(T, A, ["i", "j"]));",
                 "        for (int k = 0; k < j; k++) {",
-                "            s -= L[i][k] * L[j][k];",
+                "            s -= L[i][k] * $(conj("L[j][k]"));",
                 "        }",
                 "        L[i][j] = s / L[j][j];",
                 "    }",
@@ -773,12 +796,13 @@ function llthelper!(helpers::Dict{String, String}, T::Type)
                 "}"]
     end
     helpers[name] = definition("void", name, [declare(T, A; constant=true), "$(ctype(E)) L[restrict $n][$n]"], body;
-                               doc=["Cholesky factor of a $(describe(T))", "$A = L Lᵀ"], inline=false)
+                               doc=["Cholesky factor of a $(describe(T))", "$A = L L$(cx ? "ᴴ" : "ᵀ")"], inline=false)
     return name
 end
 
 # The lines solving `L Lᵀ x = b` from a Cholesky factor: forward with L, back with Lᵀ.
-function lltsolve(n, x, b)
+function lltsolve(n, x, b, E::Type)
+    conj(t) = E <: Complex ? "$(mathname(E, "conj"))($t)" : t   # back-substitution is with Lᴴ
     ["for (int i = 0; i < $n; i++) {",
      "    $x[i] = $b;",
      "    for (int k = 0; k < i; k++) {",
@@ -788,7 +812,7 @@ function lltsolve(n, x, b)
      "}",
      "for (int i = $(n - 1); i >= 0; i--) {",
      "    for (int k = i + 1; k < $n; k++) {",
-     "        $x[i] -= L[k][i] * $x[k];",
+     "        $x[i] -= $(conj("L[k][i]")) * $x[k];",
      "    }",
      "    $x[i] /= L[i][i];",
      "}"]
@@ -804,12 +828,12 @@ function solveLLThelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Typ
     A, b = inputs((T, B))
     # A vector right-hand side is solved in place; a matrix, one column at a time.
     body = ndims(B) == 1 ?
-        vcat(["$(ctype(E)) L[$n][$n];", "$(llthelper!(helpers, T))($A, L);"], lltsolve(n, "out", access(B, b, ["i", "0"]))) :
+        vcat(["$(ctype(E)) L[$n][$n];", "$(llthelper!(helpers, T))($A, L);"], lltsolve(n, "out", access(B, b, ["i", "0"]), E)) :
         vcat(["$(ctype(E)) L[$n][$n];", "$(ctype(E)) x[$n];", "$(llthelper!(helpers, T))($A, L);", "for (int j = 0; j < $(extent(B, 2)); j++) {"],
-             "    " .* lltsolve(n, "x", access(B, b, ["i", "j"])),
+             "    " .* lltsolve(n, "x", access(B, b, ["i", "j"]), E),
              ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
-                               doc=["$(describe(T)) \\ $(describe(B)) solve by Cholesky", "out = $A \\ $b, $A symmetric positive definite"], inline=false)
+                               doc=["$(describe(T)) \\ $(describe(B)) solve by Cholesky", "out = $A \\ $b, $A positive definite"], inline=false)
     return name
 end
 
@@ -823,10 +847,10 @@ function invLLThelper!(helpers::Dict{String, String}, T::Type, R::Type)
     one, zero = onezero(E)
     body = vcat(["$(ctype(E)) L[$n][$n];", "$(ctype(E)) x[$n];", "$(llthelper!(helpers, T))($A, L);",
                  "for (int j = 0; j < $n; j++) {"],
-                "    " .* lltsolve(n, "x", "i == j ? $one : $zero"),
+                "    " .* lltsolve(n, "x", "i == j ? $one : $zero", E),
                 ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
     helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body;
-                               doc=["$(describe(T)) inverse by Cholesky", "out = $(A)⁻¹, $A symmetric positive definite"], inline=false)
+                               doc=["$(describe(T)) inverse by Cholesky", "out = $(A)⁻¹, $A positive definite"], inline=false)
     return name
 end
 

@@ -667,7 +667,7 @@ function statement!(lines, sc::Scope, i, st)
             # A transpose is the same storage with its axes read the other way round:
             # nothing to do in C, the value just carries the tag from here on.
             sc.expr[i] = value(sc, st.args[2])
-            sc.shapes[i] = transposed(valuetype(sc, st.args[2]))
+            sc.shapes[i] = transposed(valuetype(sc, st.args[2]); conj=f === Base.adjoint)
         elseif f in (Base.lastindex, Base.firstindex, Base.length, Base.size) && ci.ssavaluetypes[i] isa Core.Const && ci.ssavaluetypes[i].val isa Integer
             # A size inference already knows (`end` in an index): the number, no temp.
             sc.expr[i] = string(ci.ssavaluetypes[i].val)
@@ -815,7 +815,7 @@ function store!(lines, sc::Scope, i, x, rhs; declaration::Bool=false)
             # `B = A'`: a copy into whatever Julia says `B` is. A lazy `Adjoint` (a
             # vector's) is the same storage, known to be transposed; an eager one
             # (StaticArrays materializes a matrix transpose) is copied axes-swapped.
-            A = transposed(valuetype(sc, rhs.args[2]))
+            A = transposed(valuetype(sc, rhs.args[2]); conj=callee_or_nothing(sc.ci, rhs.args[1]) === Base.adjoint)
             R = slottype(sc, slot)
             shape(R) === nothing && (R = A)
             declaration && emit!(lines, sc, declare(R, x) * ";")
@@ -1008,7 +1008,9 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     end
     op, cfn = power === nothing ? broadcastop(f, length(inputs), E) : (Symbol("pow", power < 0 ? "m" : "", abs(power)), power)
     cfn isa String && push!(sc.headers, cfn == "llabs" ? "stdlib.h" : "math.h")
-    cfn isa String && cfn != "llabs" && E === Float32 && (cfn *= "f")   # the `f` family on floats
+    Ein = promote_type((isarray(t) ? eltype(t) : t for t in types)...)   # the elements the function is applied to
+    cfn isa String && cfn in ("real", "imag", "conj", "angle") && !(Ein <: Complex) && throw(ArgumentError("$cfn broadcast over real elements is not supported (statement $i)"))
+    cfn isa String && cfn != "llabs" && (cfn = mathname(Ein, cfn))        # the `f` family, the `c` family
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     name = broadcasthelper!(sc.helpers, op, cfn, types, R)
     emit!(lines, sc, "$name($(join((value(sc, a) for a in inputs), ", ")), $dest);")
@@ -1037,7 +1039,8 @@ function broadcastop(f, n, E)
                       (Base.asin, "asin"), (Base.acos, "acos"), (Base.atan, "atan"), (Base.sinh, "sinh"), (Base.cosh, "cosh"),
                       (Base.tanh, "tanh"), (Base.exp, "exp"), (Base.exp2, "exp2"), (Base.expm1, "expm1"), (Base.log, "log"),
                       (Base.log2, "log2"), (Base.log10, "log10"), (Base.log1p, "log1p"), (Base.floor, "floor"),
-                      (Base.ceil, "ceil"), (Base.trunc, "trunc"), (Base.round, "rint"))
+                      (Base.ceil, "ceil"), (Base.trunc, "trunc"), (Base.round, "rint"),
+                      (Base.real, "real"), (Base.imag, "imag"), (Base.conj, "conj"), (Base.angle, "angle"))
         f === g && return Symbol(name == "rint" ? "round" : name), name
     end
     throw(ArgumentError("unsupported broadcast function: $f"))
@@ -1101,6 +1104,7 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     # `-3A` is `mul_s_2x2(-3.0, A, out)`, not a mixed-type helper and an `int64_t`.
     function operand(x, other)
         x isa Integer && isarray(other) && eltype(other) <: AbstractFloat && return eltype(other), value(sc, eltype(other)(x))
+        x isa Integer && isarray(other) && eltype(other) <: Complex && return real(eltype(other)), value(sc, real(eltype(other))(x))   # `2y` on complex: a real 2.0
         return valuetype(sc, x), value(sc, x)
     end
     acc = args[1]
@@ -1540,8 +1544,26 @@ function render(sc::Scope, i, ex::Expr)
     # `-(-x)` is `x`, exactly.
     unary(sym) = (t = operand(sc, args[1], UNARY); sym == "-" && startswith(t, "-") ? (t[2:end], PRIMARY) : (sym * t, UNARY))
     # A `math.h` function on a `float` is the `f` variant: `sqrtf`, `fabsf`, `powf`.
-    fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$name$(hdr == "math.h" && T === Float32 ? "f" : "")(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
+    fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$(hdr == "math.h" ? mathname(valuetype(sc, args[1]), name) : name)(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
     floating = T <: AbstractFloat
+    # Complex scalars are C99's: the operators as they are, the functions with a `c`.
+    cplx = T <: Complex || any(a -> valuetype(sc, a) <: Complex, args)
+    if cplx
+        f in (Base.real, Base.imag, Base.conj, Base.abs, Base.angle) && n == 1 && valuetype(sc, args[1]) <: Complex &&
+            return (push!(sc.headers, "complex.h"); ("$(mathname(valuetype(sc, args[1]), f === Base.abs ? "fabs" : string(nameof(f))))($(expression(sc, args[1])[1]))", PRIMARY))
+        f === Base.adjoint && n == 1 && valuetype(sc, args[1]) <: Complex && return "$(mathname(valuetype(sc, args[1]), "conj"))($(expression(sc, args[1])[1]))", PRIMARY
+        f === Base.abs2 && n == 1 && valuetype(sc, args[1]) <: Complex && return "$(abs2helper!(sc.helpers, valuetype(sc, args[1])))($(expression(sc, args[1])[1]))", PRIMARY
+        (f === Base.complex || f isa Type && f <: Complex) && n == 2 && return "$(T === ComplexF32 ? "CMPLXF" : "CMPLX")($(expression(sc, args[1])[1]), $(expression(sc, args[2])[1]))", PRIMARY
+        if f in (Base.getproperty, Core.getfield) && n == 2 && valuetype(sc, args[1]) <: Complex
+            field = literal(sc, args[2])
+            field in (:re, :im) || throw(ArgumentError("a complex number has fields re and im, not $field (statement $i)"))
+            return "$(mathname(valuetype(sc, args[1]), field === :re ? "real" : "imag"))($(expression(sc, args[1])[1]))", PRIMARY
+        end
+    elseif f in (Base.real, Base.conj) && n == 1 && T <: Real
+        return expression(sc, args[1])                # a real's real part and conjugate are itself
+    elseif f === Base.imag && n == 1 && T <: Real
+        return value(sc, zero(T)), PRIMARY
+    end
     # `zero(x)`, `one(T)`: the literal of the result's type.
     f in (Base.zero, Base.one) && n == 1 && T <: Number && return value(sc, f === Base.zero ? zero(T) : one(T)), PRIMARY
 
@@ -1667,7 +1689,7 @@ function render(sc::Scope, i, ex::Expr)
         return "$(powhelper!(sc.helpers, T))($(expression(sc, args[2])[1]), $e)", PRIMARY
     end
     if f === Base.:^
-        floating || throw(ArgumentError("integer ^ with a non-literal exponent is not supported (statement $i)"))
+        floating || cplx || throw(ArgumentError("integer ^ with a non-literal exponent is not supported (statement $i)"))
         return fn("pow")
     end
 
@@ -1700,7 +1722,7 @@ function render(sc::Scope, i, ex::Expr)
     f === Base.:~ && return unary("~")
 
     # Math.
-    if floating
+    if floating || cplx
         f === Base.abs   && return fn("fabs")
         f === Base.max   && return fn("fmax")
         f === Base.min   && return fn("fmin")
@@ -2017,10 +2039,10 @@ function julian(sc::Scope, f, args)
     return "$sym($(join(parts, ", ")))"
 end
 
-# A value's name in a step comment: `Aᵀ` when it's transposed — `Aᴴ` when the elements
-# aren't real, since `'` is then the adjoint. (Names keep `T` either way: `mul_T3_3`.)
+# A value's name in a step comment: `Aᵀ` when it's transposed, `Aᴴ` when its elements are
+# read conjugated too, the adjoint of a complex array. Names say `T` and `H` the same way.
 spell(T::Type, name::AbstractString) = istransposed(T) ? name * tmark(T) : name
-tmark(T::Type) = eltype(T) <: Real ? "ᵀ" : "ᴴ"
+tmark(T::Type) = isconjugated(T) ? "ᴴ" : "ᵀ"
 
 # Write the step comments in. On a Julia line that became more than one step, each
 # step gets its text — at the end of the line when the step is one statement, on the
@@ -2268,6 +2290,8 @@ function value(sc::Scope, x)
     x isa AbstractFloat   && return isinf(x) ? (push!(sc.headers, "math.h"); x > 0 ? "INFINITY" : "-INFINITY") :
                                     isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(x)
     x isa Irrational      && return x === pi ? constant(sc, "PI") : x === ℯ ? constant(sc, "E") : repr(Float64(x))
+    x === im              && return "I"                       # <complex.h>'s imaginary unit
+    x isa Complex         && return "$(x isa ComplexF32 ? "CMPLXF" : "CMPLX")($(value(sc, real(x))), $(value(sc, imag(x))))"
     if x isa GlobalRef
         # A global the function reads: a function, type or Julia constant is itself; a
         # value of the user's becomes a global variable of the program, by name.

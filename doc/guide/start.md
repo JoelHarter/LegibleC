@@ -44,13 +44,16 @@ of `out/body.c`. The folder holds:
 It compiles as a unit, and this is the setting it is written for:
 
 ```
-cc -std=c11 -O2 -ffast-math -fno-finite-math-only -ffp-contract=fast -march=native -Wall -Wextra -c out/*.c
+cc -std=c11 -O2 -ffast-math -fno-finite-math-only -fno-cx-limited-range -ffp-contract=fast -march=native -Wall -Wextra -c out/*.c
 ```
 
 Every fast-math shortcut is welcome — reassociation, reciprocals, no
 `errno`, no traps — since only rounding changes; the one left out,
 `-ffinite-math-only`, would let the compiler assume NaN and Inf never
-happen, and a singular matrix must still come out as one. `-std=c11` on
+happen, and a singular matrix must still come out as one; and
+`-fno-cx-limited-range` keeps complex division safe from overflow in
+between, as Julia's is (GCC; Clang 18 spells it `-fcomplex-arithmetic=full`,
+and Apple's clang has neither — leave it out there). `-std=c11` on
 its own forbids fusing a multiply and an add, so `-ffp-contract=fast` puts
 FMA back, and `-march=native` gives the instruction on x86, where it isn't
 baseline. Leave `-march=native` off for a build that must run on other

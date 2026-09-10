@@ -20,14 +20,28 @@ scalar arithmetic and the math library come out.
 | `Char`    | `char`     | `C`     |
 | `String`  | `const char *` | `S` |
 | `Float64` | `double`   | `F64`   |
+| `ComplexF32` | `float complex`  | `C` in front, `F32` after |
+| `ComplexF64` | `double complex` | `C` in front |
 
 `Float64` is the default: a function or helper whose inputs are all
 `Float64` leaves the abbreviation out of its name entirely (`naming.md`,
-`helper.md`). The table in `src/type.jl` is the one the code reads; keep the
-two in step. `Nothing` is `void`, as a return type only.
+`helper.md`), and `ComplexF64` counts as double for that rule, marked by
+the `C` in front of the shape, `add_C3`, `mul_CH3x2_C3x2`, `Cs` for a scalar
+— placed like the `T` of a transpose and the `H` of an adjoint, which is
+what it reads like. The table in `src/type.jl` is the one the code reads;
+keep the two in step. `Nothing` is `void`, as a return type only.
 
-Not yet, though both languages have them: complex numbers (`double
-_Complex` ↔ `ComplexF64`, with the same operators), pointers (`T*` ↔
+Complex numbers are C99's, from `<complex.h>`: the operators as they are,
+`conj`, `creal`, `cimag`, `cabs`, `carg` and the `c` family of functions,
+`CMPLX(a, b)` for `Complex(a, b)`, `I` for `im`; `abs2` is one small helper.
+On real elements `'` transposes, on complex it conjugates too: an adjoint
+operand is read as `conj(A[k][i])` inside the helper, `dot` conjugates its
+first argument, `norm` sums squared magnitudes, `cholesky` factors `L Lᴴ`
+with real pivots, and LU pivots on `cabs`. Not on MSVC, which has no C99
+complex. `transpose(A')`, a conjugate without a transpose, must be stored
+as `conj.(A)`.
+
+Not yet, though both languages have them: pointers (`T*` ↔
 `Ptr{T}`, except inside `ccall`), characters (C's `char` is a byte; Julia's
 `Char` is a Unicode scalar, whose honest match is `char32_t`). Not cleanly
 on one side or the other: `Int128` (a compiler extension in C), `Float16`
