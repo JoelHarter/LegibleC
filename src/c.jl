@@ -120,6 +120,9 @@ mutable struct Scope
     kind::Union{Kind, Nothing}          # this function's returned tuple, if it returns one
     kinds::Dict{Int, Kind}              # SSA values holding a tuple of a known layout
     slotkinds::Dict{Int, Kind}          # slots likewise; a spread parameter has an empty cname
+    placed::Dict{Int, String}           # a construction whose destination a field's value was computed into, already declared (`placement`)
+    outplaced::Dict{Int, Int}           # array slots that live in `out` from the start, slot -> offset (`outplacement!`)
+    pointers::Set{String}               # C names that are pointers, not arrays: `sizeof` needs the type spelled out
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, prog::Program, copycode::Bool, blocked)
@@ -141,7 +144,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), 1,
-                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}())
+                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Int}(), Set{String}())
 end
 
 include("flow.jl")
@@ -180,6 +183,10 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     end
     analyze!(sc)
 
+    # The signature line's own comment comes before the prologue of copies; a short-form
+    # definition's line is its body, so that comment stays with the body.
+    head = String[]
+    sc.src !== nothing && !sc.src.short && annotate!(head, sc, sc.src.first)
     body = String[]
     block!(body, sc, 1, length(ci.code))
     if sc.src !== nothing && sc.src.last > sc.cursor   # whatever follows the last statement
@@ -198,19 +205,40 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     # Anything not declared along the way (a variable assigned only where the walk
     # doesn't look, such as a loop header) is declared at the top.
     lines = [slotdecl(sc, i) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden) && !(i in sc.declared)]
+    append!(lines, head)
     # Array parameters the function reassigns are worked on as copies, made here at
     # the top in one block with the reason above it, so the copy doesn't look gratuitous.
-    if !isempty(sc.rebound)
-        copies = sort(collect(sc.rebound); by=last)
-        names = [sc.names[p] for (_, p) in copies]
-        listed = length(names) == 1 ? names[1] :
-                 length(names) == 2 ? names[1] * " and " * names[2] :
-                 join(names[1:end-1], ", ") * ", and " * names[end]
-        push!(lines, "// copy $listed to prevent modification within this function")
+    # A copy that ends up in `out` is made there, and worked on there (`outplacement!`).
+    listing(names) = length(names) == 1 ? names[1] :
+                     length(names) == 2 ? names[1] * " and " * names[2] :
+                     join(names[1:end-1], ", ") * ", and " * names[end]
+    at(offset) = offset == 0 ? sc.resultname : "&$(sc.resultname)[$offset]"
+    copies = sort([(s, p) for (s, p) in sc.rebound if !haskey(sc.outplaced, s)]; by=last)
+    if !isempty(copies)
+        push!(lines, "// copy $(listing([sc.names[p] for (_, p) in copies])) to prevent modification within this function")
         push!(sc.headers, "string.h")
         for (s, p) in copies
             push!(lines, declare(slottype(sc, s), sc.names[s]) * ";")
             push!(lines, "memcpy($(sc.names[s]), $(sc.names[p]), sizeof $(sc.names[s]));")
+        end
+        push!(lines, "")
+    end
+    inout = sort([(s, p) for (s, p) in sc.rebound if haskey(sc.outplaced, s)]; by=last)
+    if !isempty(inout)
+        them = length(inout) == 1 ? "it" : "them"
+        push!(lines, "// copy $(listing([sc.names[p] for (_, p) in inout])) into $(sc.resultname), where the function works on $them and returns $them")
+        push!(sc.headers, "string.h")
+        for (s, p) in inout
+            push!(lines, "memcpy($(at(sc.outplaced[s])), $(sc.names[p]), sizeof($(sizeof_(slottype(sc, s)))));")
+            push!(lines, pointerdecl(slottype(sc, s), sc.names[s], at(sc.outplaced[s])) * ";")
+        end
+        push!(lines, "")
+    end
+    locals = sort([s for s in keys(sc.outplaced) if !haskey(sc.rebound, s)]; by=s -> sc.outplaced[s])
+    if !isempty(locals)
+        push!(lines, "// $(listing([sc.names[s] for s in locals])) $(length(locals) == 1 ? "is" : "are") built in $(sc.resultname), where the function returns $(length(locals) == 1 ? "it" : "them")")
+        for s in locals
+            push!(lines, pointerdecl(slottype(sc, s), sc.names[s], at(sc.outplaced[s])) * ";")
         end
         push!(lines, "")
     end
@@ -356,6 +384,7 @@ function analyze!(sc::Scope)
         push!(sc.skipped, at[1])
     end
     markinlined!(sc)
+    outplacement!(sc)
 end
 
 callee_or_nothing(ci, x) = try callee(ci, x) catch; nothing end
@@ -540,7 +569,7 @@ function statement!(lines, sc::Scope, i, st)
             # type is copied with its axes swapped. A `return` is only needed before
             # the end.
             shape(sc.rettype) === nothing && (sc.rettype = valuetype(sc, st.val))
-            v == sc.resultname || copy!(lines, sc, v, valuetype(sc, st.val), sc.resultname, sc.rettype)
+            v == sc.resultname || outplacedwhole(sc, st.val) || copy!(lines, sc, v, valuetype(sc, st.val), sc.resultname, sc.rettype)
             i == length(ci.code) || emit!(lines, sc, "return;")
         else
             emitexpr!(lines, sc, "return ", v)
@@ -590,9 +619,11 @@ function statement!(lines, sc::Scope, i, st)
     elseif st isa Expr && st.head === :call && (callee_or_nothing(ci, st.args[1]) === Core.tuple || (callee_or_nothing(ci, st.args[1]) isa Type && isstruct(T)))
         # A tuple or struct value: `(Point){x, y}`, or field by field when a field is an array.
         if callee_or_nothing(ci, st.args[1]) === Core.tuple && sc.kind !== nothing && onlyreturned(ci, i)
-            # A returned tuple with an array in it: the function's struct, field by field.
-            emit!(lines, sc, "$(sc.kind.cname) result;")
+            # A returned tuple with an array in it: the function's struct, field by field. A
+            # field computed into its place (`placement`) is there already.
+            haskey(sc.placed, i) || emit!(lines, sc, "$(sc.kind.cname) result;")
             for (F, c, a) in zip(T.parameters, sc.kind.fields, st.args[2:end])
+                value(sc, a) == "result.$c" && continue
                 isarray(F) ? copy!(lines, sc, value(sc, a), valuetype(sc, a), "result.$c", F) : emit!(lines, sc, "result.$c = $(value(sc, a));")
             end
             sc.expr[i] = "result"
@@ -605,8 +636,9 @@ function statement!(lines, sc::Scope, i, st)
             sc.expr[i] = compound(sc, T, st.args[2:end])
             return
         end
-        dest = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
-        compound!(lines, sc, i, T, st.args[2:end], dest; declared=false)
+        placed = haskey(sc.placed, i)
+        dest = placed ? sc.placed[i] : onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
+        compound!(lines, sc, i, T, st.args[2:end], dest; declared=placed)
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.indexed_iterate
         # `x, y = t`: the k-th field, as the value; the iterator state is compile-time.
         t, k = st.args[2], st.args[3]
@@ -654,6 +686,14 @@ function statement!(lines, sc::Scope, i, st)
             if onlyreturned(ci, i)
                 dest = result!(sc, i)
                 arraycall!(lines, sc, i, st, dest; declaration=!sc.resultparam)
+            elseif (p = placement(sc, i)) !== nothing
+                # Its one use is a field of a struct or tuple being built: computed straight
+                # into that field, `mul_s_3(s, axis, q.v)`, the struct declared here.
+                u, name, decl, field = p
+                decl === nothing || emit!(lines, sc, decl * ";")
+                sc.placed[u] = name
+                arraycall!(lines, sc, i, st, "$name.$field"; declaration=false)
+                sc.expr[i] = "$name.$field"
             else
                 arraycall!(lines, sc, i, st, temp!(sc, i, callparts(sc, st)); declaration=true)
             end
@@ -702,7 +742,7 @@ function statement!(lines, sc::Scope, i, st)
             emit!(lines, sc, "$(here ? sc.kind.cname * " " : "")$x = ($(sc.kind.cname)){$(join((value(sc, a) for a in rhs.args[2:end]), ", "))};")
             sc.slotkinds[slot.id] = sc.kind
         elseif rhs isa Expr && rhs.head === :call && (callee_or_nothing(ci, rhs.args[1]) === Core.tuple || (callee_or_nothing(ci, rhs.args[1]) isa Type && isstruct(T)))
-            compound!(lines, sc, i, T, rhs.args[2:end], x; declared=!here)
+            compound!(lines, sc, i, T, rhs.args[2:end], x; declared=!here || haskey(sc.placed, i))
         else
             text = rhs isa Expr ? first(render(sc, i, rhs)) : value(sc, rhs)
             short = here ? nothing : compound(x, T, text)
@@ -1069,22 +1109,25 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     # step has the destination's type, the helper lets its output alias an input (the
     # elementwise ones do; a matrix product's output is `restrict`), and no later operand
     # is the destination itself. Otherwise each step but the last gets a temp.
-    steps = Type[]
+    steps = Type[]                    # each step's own result type; the last is the statement's
+    aliasable = true
     let t = acctype
-        for a in args[2:end]
+        for (n, a) in enumerate(args[2:end])
             at = operand(a, t)[1]
-            push!(steps, op === :mul && isarray(t) && isarray(at) ? Union{} : result((t, at)))
-            t = steps[end]
+            op === :mul && isarray(t) && isarray(at) && (aliasable = false)
+            t = n == length(args) - 1 ? result((t, at)) : resulttype(op, (t, at), E)
+            push!(steps, t)
         end
     end
-    inplace = length(args) > 2 && all(==(steps[end]), steps) && all(a -> operand(a, acctype)[2] != dest, args[2:end])
+    alike(T) = shape(T) == shape(steps[end]) && eltype(T) == eltype(steps[end])   # the same array, however the type spells it
+    inplace = length(args) > 2 && aliasable && all(alike, steps) && all(a -> operand(a, acctype)[2] != dest, args[2:end])
     inplace && declaration && emit!(lines, sc, declare(steps[end], dest) * ";")
     R = acctype
     for (n, a) in enumerate(args[2:end])
         last = n == length(args) - 1
         atype, aname = operand(a, acctype)
         types = (acctype, atype)
-        R = result(types)
+        R = steps[n]
         out = last || inplace ? dest : temp!(sc, nothing, unique([contribution(sc, acc); contribution(sc, a)]))
         !inplace && (last ? declaration : true) && emit!(lines, sc, declare(R, out) * ";")
         # A folded negation (`foldable`) lands on the scalar operand.
@@ -1907,15 +1950,27 @@ function compound!(lines, sc::Scope, i, T::Type, args, dest; declared::Bool)
         emit!(lines, sc, (declared ? "" : "$(ctype(T)) ") * "$dest = $(compound(sc, T, args));")
         return
     end
+    # `b = Bag(s * axis, vsum(b))`: an argument reads the variable being built, and Julia
+    # evaluated every argument before building — so the struct is built beside it and
+    # assigned whole, never field by field over what an argument still has to read.
+    if any(a -> touches(sc, a, dest), args)
+        beside = temp!(sc, nothing, [dest])
+        compound!(lines, sc, i, T, args, beside; declared=false)
+        emit!(lines, sc, (declared ? "" : "$(ctype(T)) ") * "$dest = $beside;")
+        return
+    end
     start = length(lines) + 1
     declared || emit!(lines, sc, "$(ctype(T)) $dest;")
     fields = istuple(T) ? collect(T.parameters) : [fieldtype(T, k) for k in 1:fieldcount(T)]
+    copied = false
     for (F, c, a) in zip(fields, fieldcnames(T), args)
-        isarray(F) ? copy!(lines, sc, value(sc, a), valuetype(sc, a), "$dest.$c", F) :
+        value(sc, a) == "$dest.$c" && continue          # computed into its place (`placement`)
+        isarray(F) ? (copy!(lines, sc, value(sc, a), valuetype(sc, a), "$dest.$c", F); copied = true) :
                      emit!(lines, sc, "$dest.$c = $(value(sc, a));")
     end
-    # Built over several lines, the construction is a step of its line like any other.
-    istuple(T) || step!(lines, sc, "$dest = $(ctype(T))($(join([value(sc, a) for a in args], ", ")))"; from=start)
+    # Built over several lines, the construction is a step of its line like any other;
+    # with every array computed into its place, what's left is scalar stores, no step.
+    istuple(T) || !copied || step!(lines, sc, "$dest = $(ctype(T))($(join([value(sc, a) for a in args], ", ")))"; from=start)
 end
 
 # Is the tuple made at statement `i` used only by constructors and block
@@ -1938,6 +1993,7 @@ end
 # comments use and with the C names: `temp2_A_b_c = temp1_A_b \\ c`. `steps!` turns
 # these into comments once the function is built.
 function step!(lines, sc::Scope, text; from::Int=length(lines))
+    from <= length(lines) || return                 # a step that emitted nothing: nothing to comment
     push!(sc.steps, (from, length(lines), text, sc.stmtline[sc.current]))
 end
 

@@ -40,6 +40,13 @@ function ctype(T::Type)
     throw(ArgumentError("no C type for $T"))
 end
 
+# A pointer to an array's first row, initialized: `double *x = out` for a vector,
+# `double (*A)[3] = &out[2]` for a matrix — the rows beyond the first give the type.
+function pointerdecl(T::Type, name::AbstractString, target::AbstractString)
+    rows = join(("[$e]" for e in shape(T)[2:end]))
+    return "$(ctype(eltype(T))) " * (isempty(rows) ? "*$name" : "(*$name)$rows") * " = $target"
+end
+
 # The abbreviation for a scalar type in a mangled name.
 function abbrev(T::Type)
     T === Bool && booltype[] !== Bool && return abbrev(booltype[])

@@ -13,13 +13,29 @@ const M_earth = 5.972_2e24    # mass of the Earth, kg
 const R_earth = 6.371_0e6     # mean radius of the Earth, m
 end
 
-"The Lorentz factor `γ` for a speed `v`: moving clocks run slow by this."
+# Special relativity: what speed does to a clock.
+
+"""
+    lorentz(v) -> γ
+
+The Lorentz factor `γ = 1 / √(1 - v²/c²)` for a speed `v` in m/s: moving clocks run slow
+by this, lengths along the motion shrink by it, and it is what makes `c` unreachable.
+"""
 lorentz(v::Float64) = 1 / sqrt(1 - v^2 / CODATA.c^2)
 
-"The Schwarzschild radius of a mass `M`."
+# General relativity: what mass does to a clock.
+
+"The Schwarzschild radius `2 G M / c²` of a mass `M` in kg: the horizon, were the mass a black hole."
 schwarzschild(M::Float64) = 2CODATA.G * M / CODATA.c^2
 
-"Gravitational time dilation at a distance `r` from a mass `M`: a clock there runs at this rate relative to one far away."
+"""
+    dilation(M, r)
+
+Gravitational time dilation at a distance `r` from a mass `M`: a clock there runs at
+this rate relative to one far away, `√(1 - rₛ/r)` with `rₛ` the Schwarzschild radius.
+At the Earth's surface it is short of 1 by seven parts in ten billion, which is
+enough that satellite clocks must be corrected for it.
+"""
 dilation(M::Float64, r::Float64) = sqrt(1 - schwarzschild(M) / r)
 
 transpile(lorentz, dilation; outpath=@__DIR__, outfile="relativity")

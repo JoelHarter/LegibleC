@@ -67,10 +67,11 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
               mixedarray, outer, nine, scaled32, crossed, crossed32, crossmixed, dotted, physics)
 @testset "name" begin
     # A reassigned array parameter is worked on as a copy `x_` made at the top under a
-    # comment; elementwise helpers then write it in place. A reassigned scalar is the parameter.
-    @test occursin("    // copy x and v to prevent modification within this function\n    double x_[3];\n    memcpy(x_, x, sizeof x_);\n    double v_[3];\n    memcpy(v_, v, sizeof v_);\n\n    // @name.jl", src)
+    # comment — in `out`, when that is where it ends up (`outplacement!`); elementwise
+    # helpers then write it in place. A reassigned scalar is the parameter.
+    @test occursin("    // copy x and v into out, where the function works on them and returns them\n    memcpy(out, x, sizeof(double[3]));\n    double *x_ = out;\n    memcpy(&out[3], v, sizeof(double[3]));\n    double *v_ = &out[3];\n\n    // @name.jl", src)
     @test occursin("mul_s_3(dt, x_, temp1_dt_x);", src) && occursin("add_3(v_, temp1_dt_x, v_);", src) && occursin("div_3_s(x_, 2.0, x_);", src)   # temps are named from the Julia, not the copy
-    @test occursin("    // copy x to prevent modification within this function\n    double x_[3];\n    memcpy(x_, x, sizeof x_);\n\n", src) && occursin("mul_3_s(x_, 2.0, x_);", src)
+    @test occursin("    // copy x into out, where the function works on it and returns it\n    memcpy(out, x, sizeof(double[3]));\n    double *x_ = out;\n\n", src) && occursin("mul_3_s(x_, 2.0, x_);", src)
     @test occursin("mul_2x2_2x2(A_, A_, temp", src) && occursin("add_2x2(A_, A_, A_);", src)
     @test occursin("a = c * 2.0;", src) && !occursin(r"\ba_\b", src)   # scalar: reassign the parameter itself
     @test occursin("double out[2][2]) {", src) && occursin("double out[restrict 2][2]) {", src)   # elementwise helpers plain, products restrict

@@ -32,7 +32,9 @@ transpiler does today is in [doc/](..), starting with
         ✅ `memcpy(out, x_new, sizeof x_new)` for a whole local array; `sizeof(double[3])` where the source is a parameter or a partial row — done 2026-09-05
         ✅ Step comments: two spaces and no alignment — done 2026-09-05
         ✅ `-x / r^3` — the sign folds onto the scalar, `div_3_s(x, -temp2_r, a)` — done 2026-09-05; the general fusion into one loop stays under Language coverage
-        ⬜ Result placement: a variable whose value ends up in `out` (`return [x; v]` after `x = …`, `v = …`) should be computed in `out` from the start, so the final `memcpy`s vanish. Parked by request 2026-09-05 — to be discussed
+        ✅ Placement into a constructed struct's or tuple's field, `Quat(c, s * axis)` as `mul_s_3(s, axis, q.v)` — done 2026-09-10 (`placement` in flow.jl)
+        ✅ Placement into `out` through a variable: `return [x; v]`, `return x`, `[A; B]` — the variables live in `out` from the start — done 2026-09-11 (`outplacement!`)
+        ⬜ Tuple-of-array returns through out parameters, and in-out parameters for `A, B = f(A, B)` — discussed 2026-09-08, not built
         ✅ Collapse a single-use scalar temp into its use: `div_3_s(x, -(r * r * r), a)` — done 2026-09-05 with the general item above; `-x / -s` now cancels to `div_3_s(x, s, d)`
         ✅ A blank line before each Julia statement's C, none against a brace — done 2026-09-05, `doc/comment.md` *Spacing*
         ✅ Doxygen tail: `Julia signature:`, `@param[in]  x    3-vector`, `@param[out] out  6-vector, the result; must not overlap an input` — done 2026-09-05

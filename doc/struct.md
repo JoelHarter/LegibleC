@@ -26,7 +26,13 @@ it is one: the operator's word and each input's kind, `mul_Quaternion_Quaternion
 binary calls. A struct built to be returned is the literal in the `return`,
 `return (Point){x, y};`, broken one field per line when long; a small struct
 value used once — a constructor, a call returning one — is written where it
-is used, like a scalar. A struct with an array field is built field by field
+is used, like a scalar. An array whose one use is a field of a struct or
+tuple being built is computed straight into that field — `Quat(c, s * axis)`
+is `mul_s_3(s, axis, result.v)`, no temp, no copy — when nothing between
+the computation and the store can see the destination: not a statement in
+between, not the value's own operands, not the construction's other
+arguments, not a call handed the variable, not a `return` of it. Anything
+that can, and the temp stays. A struct with an array field is built field by field
 as above, but a call returning one is still written where it is used when
 the whole struct goes there — `return conj_Quat(q);`, or as an argument to
 another call — and gets a variable when a field of it is read, since

@@ -70,13 +70,16 @@ function leading(src::Source)
             if endswith(s, "\"\"\"") && !(startswith(s, "\"\"\"") && length(s) > 6)
                 start = something(findprev(l -> startswith(strip(l), "\"\"\""), src.lines, s == "\"\"\"" ? k - 1 : k), k)
             end
-            block = [strip(l) for l in src.lines[start:k]]
-            block[1] = replace(block[1], r"^\"+" => "")
+            block = [String(rstrip(l)) for l in src.lines[start:k]]
+            block[1] = replace(block[1], r"^\s*\"+" => "")
             block[end] = replace(block[end], r"\"+$" => "")
             # Keep blank lines inside the docstring; drop the ones the delimiters leave.
-            while !isempty(block) && isempty(block[1]); popfirst!(block); end
-            while !isempty(block) && isempty(block[end]); pop!(block); end
-            append!(doc, block)
+            while !isempty(block) && isempty(strip(block[1])); popfirst!(block); end
+            while !isempty(block) && isempty(strip(block[end])); pop!(block); end
+            # Lines keep their indentation past the docstring's own, so an indented
+            # formula or signature stays a block, as it reads in Julia.
+            by = minimum((indentof(l) for l in block if !isempty(strip(l))); init=0)
+            append!(doc, [isempty(strip(l)) ? "" : l[by+1:end] for l in block])
             k = start - 1
         elseif endswith(s, "=#")
             # A `#= … =#` block above the definition: one `/* … */` block.

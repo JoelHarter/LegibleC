@@ -2,7 +2,7 @@
 # Cholesky beyond, least squares through the Gram matrix.
 module Linear
 using Test, StaticArrays, LinearAlgebra
-import Main: Case, check
+import Main: Case, check, csource
 
 M(n) = SMatrix{n,n,Float64,n*n}
 V(n) = SVector{n,Float64}
@@ -52,4 +52,16 @@ check("linear", [Case(det1, A1), Case(det2, A2), Case(det3, A3), Case(det4, A4),
                  Case(rdiv4, SMatrix{2,4}([1.0 2.0 3.0 4.0; 5.0 6.0 7.0 8.0]), A4),
                  Case(tall, T43), Case(wide, T43'), Case(square, A3), Case(lsq, T43, b4), Case(minnorm, T43', b3),
                  Case(lsqM, T43, SMatrix{4,2}([1.0 2.0; 3.0 4.0; 5.0 6.0; 7.0 8.0]))])
+
+# A chain of products goes through a temp per step, each of its own shape; the temp's
+# shape is the step's, not the statement's (A * B * C at 2×3, 3×4, 4×5 has a 2×4 in the
+# middle). A product with a transposed operand in a chain, then a sum.
+chain3(A::SMatrix{2,3,Float64,6}, B::SMatrix{3,4,Float64,12}, C::SMatrix{4,5,Float64,20}) = A * B * C
+sandwich(A::M(3), B::M(3)) = A * B * A' + B
+check("chain", [Case(chain3, SMatrix{2,3}(1.0, 2, 3, 4, 5, 6), SMatrix{3,4}(1.0:12...), SMatrix{4,5}(1.0:20...)),
+                Case(sandwich, SMatrix{3,3}(2.0, 1, 0, 1, 3, 1, 0, 1, 4), SMatrix{3,3}(1.0:9...))])
+@testset "chain" begin
+    src = csource("chain", chain3)
+    @test occursin("double temp1_A_B[2][4];", src) && occursin("mul_2x3_3x4(A, B, temp1_A_B);", src) && occursin("mul_2x4_4x5(temp1_A_B, C, out);", src)
+end
 end

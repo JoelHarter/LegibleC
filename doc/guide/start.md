@@ -41,11 +41,21 @@ of `out/body.c`. The folder holds:
 - `helper.c` — the larger helpers: solvers, factorizations, array printing;
   absent when there are none.
 
-It compiles as a unit:
+It compiles as a unit, and this is the setting it is written for:
 
 ```
-cc -std=c11 -O2 -Wall -Wextra -c out/*.c
+cc -std=c11 -O2 -ffast-math -fno-finite-math-only -ffp-contract=fast -march=native -Wall -Wextra -c out/*.c
 ```
+
+Every fast-math shortcut is welcome — reassociation, reciprocals, no
+`errno`, no traps — since only rounding changes; the one left out,
+`-ffinite-math-only`, would let the compiler assume NaN and Inf never
+happen, and a singular matrix must still come out as one. `-std=c11` on
+its own forbids fusing a multiply and an add, so `-ffp-contract=fast` puts
+FMA back, and `-march=native` gives the instruction on x86, where it isn't
+baseline. Leave `-march=native` off for a build that must run on other
+machines. The test suite compiles with these flags. When linking, add
+`-lm` for the math library, which Linux doesn't link on its own.
 
 Argument types must be concrete: `Float64`, `SVector{3,Float64}`,
 `SMatrix{2,3,Float64,6}`, a `struct` of those. A function whose method has

@@ -130,4 +130,58 @@ end
 targets = Any[f for f in unique(c.f for c in cases) if !(f in (regmul, regchain, regvec))]
 append!(targets, [(regmul, Float64, 2, 3, Float64, 3, 3), (regchain, Float64, 2, 2, Float64), (regvec, Float64, 3, 3, Float64, 3)])
 check("array", cases; targets)
+
+# Variables that live in `out` from the start (`outplacement!`): a reassigned parameter's
+# working copy made there, a local built there, and the cases that must keep the copies.
+const M3 = SMatrix{3,3,Float64,9}
+function state(x::V3, v::V3, dt::Float64)          # both halves placed: no copies at the end
+    r = norm(x)
+    a = -x / r^3
+    v = v + dt * a
+    x = x + dt * v
+    return [x; v]
+end
+function whole(x::V3, s::Float64)                  # returned whole: placed at 0
+    x = x * s
+    x = x + x
+    return x
+end
+function grown(a::V3)                              # locals built in out
+    b = a .* 2
+    c = b .+ 1.0
+    return [b; c]
+end
+function swapped(x::V3, v::V3, flag::Bool)         # two returns disagree on the places: refused
+    x = x + v
+    flag && return [v; x]
+    return [x; v]
+end
+function scaled(x::V3, v::V3, flag::Bool)          # another return computes into out from a placed variable: refused
+    x = x + v
+    flag && return [x; v] .* 2.0
+    return [x; v]
+end
+function turned(x::V3, M::M3)                      # a product into itself keeps its temp; the doubled half is copied
+    x = M * x
+    return [x; x .* 2]
+end
+function stacked(A::SMatrix{2,3,Float64,6}, r::SVector{3,Float64})   # a matrix's rows in out, a row vector copied beside them
+    A = A .* 2
+    return [A; r']
+end
+check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 0.1), Case(whole, SVector(1.0, 2.0, 3.0), 2.0), Case(grown, SVector(1.0, 2.0, 3.0)),
+                    Case(swapped, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), true), Case(swapped, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), false),
+                    Case(scaled, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), true), Case(scaled, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), false),
+                    Case(turned, SVector(1.0, 2.0, 3.0), SMatrix{3,3}(1.0:9...)), Case(stacked, SMatrix{2,3}(1.0:6...), SVector(7.0, 8.0, 9.0))])
+@testset "outplaced" begin
+    src = csource("outplaced", state, whole, grown, swapped, scaled, turned, stacked)
+    fn(name) = (i = findfirst("void $name(", src)[1]; src[i:findnext("\n}", src, i)[end]])
+    @test occursin("// copy x and v into out, where the function works on them and returns them\n    memcpy(out, x, sizeof(double[3]));\n    double *x_ = out;\n    memcpy(&out[3], v, sizeof(double[3]));\n    double *v_ = &out[3];", src)
+    @test occursin("add_3(x_, temp2_dt_v, x_);  // x_ += temp2_dt_v", fn("state")) && !occursin("memcpy(out, x_", fn("state")) && !occursin("memcpy(&out[3], v_", fn("state"))
+    @test occursin("// copy x into out, where the function works on it and returns it\n    memcpy(out, x, sizeof(double[3]));\n    double *x_ = out;", src) && occursin("mul_3_s(x_, s, x_);", src)
+    @test occursin("// b and c are built in out, where the function returns them\n    double *b = out;\n    double *c = &out[3];", src) && occursin("mulP_3F64_sI64(a, 2, b);", src) && occursin("addP_3_s(b, 1.0, c);", src)
+    @test occursin("double x_[3];\n    memcpy(x_, x, sizeof x_);", src)          # swapped and scaled: the copy stays
+    @test occursin("mul_3x3_3(M, x_, temp1_M_x);", src) && occursin("memcpy(x_, temp1_M_x, sizeof temp1_M_x);", src)   # turned: through a temp, into place
+    @test occursin("memcpy(out, A, sizeof(double[2][3]));\n    double (*A_)[3] = out;", src) && occursin("mulP_2x3F64_sI64(A_, 2, A_);", src) && occursin("memcpy(out[2], r, sizeof(double[3]));", src)   # stacked
+end
 end

@@ -422,6 +422,138 @@ function markinlined!(sc::Scope)
     end
 end
 
+# Where an array value can be computed straight into its place, sparing a temp and a
+# copy: its one use is a field of a struct or tuple being built — `Quat(c, s * axis)`
+# gives `mul_s_3(s, axis, q.v)` — and the destination is not touched, read, written or
+# passed, by anything from the computation to the store: the statements between, the
+# value's own operands, the construction's other arguments. The store moves earlier,
+# so nothing may see it early; a destination nobody names, `result` or a temp, is safe
+# by construction. Returns the construction's statement, the destination's name, its
+# declaration if it needs one here, and the field — or `nothing`, and the temp stays.
+function placement(sc::Scope, i)
+    ci = sc.ci
+    code = ci.code
+    users = findall(st -> uses(st, i), code)
+    length(users) == 1 || return nothing
+    u = users[1]
+    st = code[u]
+    rhs = st isa Expr && st.head === :(=) ? st.args[2] : st
+    rhs isa Expr && rhs.head === :call || return nothing
+    f = callee_or_nothing(ci, rhs.args[1])
+    T = widen(ci.ssavaluetypes[u])
+    (f === Core.tuple && istuple(T) || f isa Type && isstruct(T) && !ismutabletype(T)) || return nothing
+    args = rhs.args[2:end]
+    count(a -> a isa Core.SSAValue && a.id == i, args) == 1 || return nothing
+    k = findfirst(a -> a isa Core.SSAValue && a.id == i, args)
+    if st isa Expr && st.head === :(=)
+        slot = st.args[1].id
+        slot in sc.hidden && return nothing
+        istuple(T) && sc.kind !== nothing && returnedslot(ci) == slot && return nothing   # the function's own struct, built elsewhere
+        # Touched means by C name, not by IR slot: a reassigned parameter is two slots
+        # sharing one variable, and a read of the one is a read of the other.
+        name = sc.names[slot]
+        any(touches(sc, code[m], name) for m in i:u-1) && return nothing
+        any(touches(sc, a, name) for a in args if !(a isa Core.SSAValue && a.id == i)) && return nothing
+        declared = slot in sc.declared
+        declared || sc.depth == 0 || return nothing     # declared here, or hoisted by the assignment: not both
+        declared || push!(sc.declared, slot)
+        return (u, sc.names[slot], declared ? nothing : declare(T, sc.names[slot]), fieldcnames(T)[k])
+    elseif f === Core.tuple && sc.kind !== nothing && onlyreturned(ci, u)
+        return (u, "result", sc.kind.cname * " result", sc.kind.fields[k])
+    elseif f === Core.tuple
+        return nothing                                  # a tuple spread into calls, or held whole: as before
+    elseif onlyreturned(ci, u)
+        isempty(sc.result) && return nothing
+        return (u, result!(sc, u), declare(T, sc.expr[u]), fieldcnames(T)[k])
+    else
+        return (u, temp!(sc, u, parts(sc, rhs)), declare(T, sc.expr[u]), fieldcnames(T)[k])
+    end
+end
+
+# Array variables that live in `out` from the start, so that the copies at the end
+# vanish: for a function returning an array through `out`, a variable that every
+# `return` places at one and the same rows of `out` — returned whole, `return x`, or
+# as a block of a concatenation along the first dimension, `return [x; v]`, `[A; B]` —
+# is those rows of `out` under its own name, a pointer to its first row; a reassigned
+# parameter's working copy is made there instead of beside it, a local is declared
+# there. Rows are the general case because the C is row-major: a block stacked along
+# the first dimension with the full trailing extents is one contiguous span.
+#
+# Why this is safe by construction: `out` is the caller's memory, `restrict`, so nothing
+# can see it before the function returns, and inside the function a variable's reads
+# see its current value wherever that value lives. What must hold is only that the
+# pieces don't overlap, that no `return` wants a variable somewhere else, and that no
+# `return` computes into `out` from a variable now living in it — an operand aliasing a
+# `restrict` output. Any of those, and nothing is placed: the copies stay.
+function outplacement!(sc::Scope)
+    sc.resultparam && shape(sc.rettype) !== nothing || return
+    ci = sc.ci
+    code = ci.code
+    rows, trailing... = shape(sc.rettype)
+    # A variable that can be rows of `out`: a local or working copy with the full trailing extents.
+    fits(s) = s !== nothing && s > ci.nargs && !(s in sc.hidden) && isarray(slottype(sc, s)) &&
+              shape(slottype(sc, s)) !== nothing && collect(shape(slottype(sc, s))[2:end]) == collect(trailing)
+    wanted = Dict{Int, Int}()                       # slot -> its first row of `out`
+    others = Any[]                                  # returned values computed into `out`
+    for st in code
+        st isa Core.ReturnNode && isdefined(st, :val) || continue
+        v = st.val
+        s = slotof(sc, v)
+        if fits(s)
+            get(wanted, s, 0) == 0 || return
+            wanted[s] = 0
+            continue
+        end
+        def = v isa Core.SSAValue ? code[v.id] : nothing
+        if def isa Expr && def.head === :call && callee_or_nothing(ci, def.args[1]) in (Base.vcat, Base.vect, Base.typed_vcat)
+            blocks = callee_or_nothing(ci, def.args[1]) === Base.typed_vcat ? def.args[3:end] : def.args[2:end]
+            row = 0
+            for b in blocks
+                T = valuetype(sc, b)
+                s = slotof(sc, b)
+                if fits(s)
+                    get(wanted, s, row) == row || return
+                    wanted[s] = row
+                end
+                row += isarray(T) ? extent(T, 1) : 1
+            end
+            row == rows || return
+            continue
+        end
+        push!(others, v)
+    end
+    isempty(wanted) && return
+    # Pieces that don't overlap, and no other `return` reading a placed variable.
+    spans = sort([(r, r + extent(slottype(sc, s), 1), s) for (s, r) in wanted])
+    all(spans[k][2] <= spans[k+1][1] for k in 1:length(spans)-1) && spans[end][2] <= rows || return
+    for v in others, (s, _) in wanted
+        touches(sc, v, sc.names[s]) && return
+    end
+    for (s, r) in wanted
+        sc.outplaced[s] = r
+        push!(sc.declared, s)
+        push!(sc.pointers, sc.names[s])
+    end
+end
+
+# The slot an IR value is, if it is one: the slot itself, or an SSA value that just reads it.
+slotof(sc::Scope, x) = x isa Core.SlotNumber ? x.id : x isa Core.SSAValue && sc.ci.code[x.id] isa Core.SlotNumber ? sc.ci.code[x.id].id : nothing
+
+# Is the returned value a variable that lives in all of `out` already?
+outplacedwhole(sc::Scope, v) = (s = slotof(sc, v); s !== nothing && get(sc.outplaced, s, -1) == 0 && extent(slottype(sc, s), 1) == shape(sc.rettype)[1])
+
+# Is this block of a concatenation a variable living from row `row` of `out` already?
+outplacedat(sc::Scope, b, row) = (s = slotof(sc, b); s !== nothing && get(sc.outplaced, s, -1) == row)
+
+# Does the IR value or statement name the C variable anywhere — as a read, an
+# assignment, an argument — itself or through the values it is built from? Any slot
+# with that C name counts; so does an array parameter's working copy of that name.
+touches(sc::Scope, x, name) = x isa Core.SlotNumber ? sc.names[x.id] == name || get(sc.rebound, x.id, 0) != 0 && sc.names[sc.rebound[x.id]] == name :
+                              x isa Core.SSAValue   ? touches(sc, sc.ci.code[x.id], name) :
+                              x isa Expr            ? any(a -> touches(sc, a, name), x.args) :
+                              x isa Core.ReturnNode ? isdefined(x, :val) && touches(sc, x.val, name) :
+                              x isa Core.GotoIfNot  ? touches(sc, x.cond, name) : false
+
 # Does the call at `u`, consuming SSA value `i`, write that operand more than once?
 function duplicates(sc::Scope, u, use::Expr, i)
     f = callee_or_nothing(sc.ci, use.args[1])

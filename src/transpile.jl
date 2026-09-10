@@ -323,6 +323,18 @@ end
 # `#define`s for the portable constants, each written where it is used.
 macros(prog::Program) = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the double nearest $(constants[m])" for m in sort!(collect(prog.macros))]
 
+# `M_PI` and `M_E` are POSIX, not ISO C: glibc's <math.h> leaves them out under a strict
+# `-std=c11`. A file that uses one defines it itself if the header didn't, the way C
+# programmers do.
+function mathguards(text)
+    lines = String[]
+    for (m, v) in (("M_PI", π), ("M_E", ℯ))
+        occursin(Regex("\\b$m\\b"), text) || continue
+        append!(lines, ["#ifndef $m", "#define $m $(Float64(v))  // not in ISO C; absent under a strict -std=c11", "#endif"])
+    end
+    return lines
+end
+
 # `helper.h` and `helper.c`: everything generated that the user's functions need —
 # `add_3`, `solve_4x4_4`, `powi`, `printarray_F64`. The header holds what the helpers
 # need — standard includes, constants, typedefs — plus prototypes of the out-of-line
@@ -337,7 +349,7 @@ function writehelpers(dir, prog::Program, external, helper)
     outline = [n for n in order if !isinline(prog.helpers[n])]
     guard = "LEGIBLEC_" * uppercase(identifier(helper)) * "_H"
     htext = String[]
-    used = [m for m in macros(prog) if occursin(split(m)[2], text)]
+    used = [[m for m in macros(prog) if occursin(split(m)[2], text)]; mathguards(text)]
     append!(htext, used); isempty(used) || push!(htext, "")
     headers = String[]
     for (T, def) in prog.structs
@@ -463,7 +475,7 @@ function writefiles(dir, prog::Program, base, where, order, names, functions, he
         cglobals = [globaldecl(g) for g in gls if !inheader(g)]
         defs = [functions[k][3] for k in fns]
         isempty(cglobals) && isempty(defs) && isempty(fgn) && continue
-        used = [m for m in macros(prog) if occursin(split(m)[2], join(defs, "\n"))]
+        used = [[m for m in macros(prog) if occursin(split(m)[2], join(defs, "\n"))]; mathguards(join([cglobals; fgn; defs], "\n"))]
         ctext = join([used; cglobals; fgn; defs], "\n")
         path = joinpath(dir, file * ".c")
         push!(paths, path)

@@ -1523,3 +1523,90 @@ anything more is refused with "give the function a name", since a
 function of the user's is theirs to name. Before this an anonymous target
 came out under a mangled nonsense name. `tr(A)` joins the reductions as
 `tr_3x3`, the sum of the diagonal.
+
+---
+
+## 2026-09-07 — The compiler setting the C is written for
+
+**Decision.** `-std=c11 -O2 -ffast-math -fno-finite-math-only
+-ffp-contract=fast -march=native`. Every fast-math shortcut is in —
+reassociation, reciprocals, no `errno`, no traps, no signed zeros — except
+`-ffinite-math-only`. FMA contraction is asked for by name, and the
+machine's own instructions. The test suite compiles with this setting;
+stackmath's CMake builds with it, `-march=native` as an option that is on.
+
+**Why.** Tenet 1 says one fixed compiler setting should reach full speed,
+and tenet 0 says the answer must be the Julia's; rounding is not the
+answer. So anything that only moves rounding is taken, and FMA moves it
+toward the exact result. `-ffinite-math-only` is the one flag that changes
+answers: the compiler then folds `isnan` to false and drops the checks a
+singular matrix trips, which is a different program, not a faster one.
+`-std=c11` silently switches contraction off, which is why the flag has
+to be spelled out; on x86 the FMA instruction also needs `-march`.
+
+**`M_PI` guarded** (same day, from the first Linux CI run). Under a
+strict `-std=c11`, glibc's `<math.h>` defines neither `M_PI` nor `M_E`;
+macOS defines both regardless, which is why no local test ever saw it. A
+file that uses one now defines it under `#ifndef` after its includes, the
+idiom C programmers use for exactly this, so the recommended setting
+compiles everywhere. `portable` still swaps in `LEGIBLEC_PI` for anyone
+who wants no POSIX name at all.
+
+---
+
+## 2026-09-10 — Computing into place, and a construction that reads itself
+
+**Decision.** An array value used exactly once, as a field of a struct or
+tuple being built, is computed straight into that field: `Quat(c, s *
+axis)` becomes `Quat result; mul_s_3(s, axis, result.v); result.w = c;`,
+and `q = Quat(c, s * axis)` mid-function likewise into `q.v`, the struct
+declared where the computation is. The temp and the copy are gone, and
+the step comment names the field. The rule is local — one producer, its
+one consumer — and refused whenever anything from the computation to the
+store could see the destination: a statement between that names the
+variable, the value's own operands, the construction's other arguments,
+a call handed the variable, a `return` of it. "Names" means by C name,
+not IR slot, since a reassigned parameter is two slots sharing one
+variable. Destinations nobody can name — `result`, a temp — are safe by
+construction. On the way, a real bug: `b = Bag(s * axis, vsum(b))` was
+built field by field into `b`, so `vsum(b)` read the new `b.v`; Julia
+evaluates every argument first. Such a struct is now built beside the
+variable and assigned whole.
+
+**Why.** Rule 2 over the compiler's back: an optimizer would drop the
+temp anyway, but the C on the page should read as a person wrote it. And
+rule 0 first: the only thing this changes is when a value reaches its
+memory, so the only way it can go wrong is someone seeing it early, and
+the refusals close every path by which anyone could — a case the checks
+can't classify keeps its temp and today's output. The tests run each
+placed and each refused case against Julia on real inputs; it was that,
+not the text checks, that found the construction bug.
+
+---
+
+## 2026-09-11 — Variables that live in `out`
+
+**Decision.** For a function returning an array through `out`, a variable
+that every `return` places at one and the same rows of `out` — returned
+whole, `return x`, or as a block of a concatenation along the first
+dimension, `return [x; v]`, `[A; B]` — is those rows of `out` from the
+start, under its own name as a pointer: `double *x_ = out; double *v_ =
+&out[3]`, `double (*A_)[3] = out`. A reassigned parameter's working copy is
+made there rather than beside it, so the copies at the end vanish and the
+two at the top are the only ones the function ever needed; a local is
+declared there and never copied at all. Rows are the general case, since
+the C is row-major: a block stacked along the first dimension with the full
+trailing extents is one contiguous span, whatever the rank. Refused, and
+the copies kept, when two returns want a variable in different places,
+when the pieces would overlap, or when another `return` computes into
+`out` from a placed variable, which would alias a `restrict` output.
+
+**Why.** `orbit` copied `x` and `v` into working arrays, updated them in
+place, and copied them into `out`: four copies where a person writes two,
+working in `out` from the start. The argument that it's safe is shorter
+than the struct case's: `out` is the caller's memory and `restrict`, so
+nothing can observe it before the function returns, and a variable's
+reads see its current value wherever it lives. So only the layout has to
+hold, and the layout is decided from the returns alone. The rule was
+first written for vectors and rewritten for rows before it landed, on the
+reminder that the general thing is what gets written (tenet 3).

@@ -61,6 +61,8 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
     @test occursin("sqrtf(x) + fabsf(-x) + fmaxf(x, 1.0f) + powf(x, 0.5f) + expf(x) + rintf(x)", src) && occursin("+ fmodf(x, 0.7f);", src)   # float math is the `f` family
     @test occursin("return modulo(a, b);", src) && occursin("static inline double modulo(double x, double y) {\n    double r = fmod(x, y);", src)
     @test occursin("return x * M_PI + M_E;", src) && occursin("#include <math.h>", src)
+    # POSIX names, not ISO C: a file that uses one defines it if <math.h> didn't (glibc under -std=c11).
+    @test occursin("#ifndef M_PI\n#define M_PI 3.141592653589793  // not in ISO C; absent under a strict -std=c11\n#endif", src) && occursin("#ifndef M_E\n", src)
     sc = csource("sincos", sincos_, sincos32, picked)
     @test occursin("    double s = sin(x);\n    double c = cos(x);\n", sc) && occursin("return s * c;", sc)   # exactly as sin and cos written separately
     @test occursin("    float s = sinf(2 * x);\n    float c = cosf(2 * x);", sc) && occursin("return cos(x);", sc)

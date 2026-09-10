@@ -8,7 +8,9 @@ using LegibleC
 # The internals the harness needs to build a `main` around the generated C.
 using LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames, charliteral, returnkind!, Program, initializer
 
-const flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
+# The setting the C is written for (doc/guide/start.md), so every test checks it holds up there.
+const flags = ["-std=c11", "-O2", "-ffast-math", "-fno-finite-math-only", "-ffp-contract=fast", "-march=native",
+               "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 
 # One call to check: a function and the values to call it with.
 struct Case
@@ -131,7 +133,7 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
     exe = joinpath(dir, "main")
     out = dirname(path)
     sources = [joinpath(out, f) for f in readdir(out) if endswith(f, ".c")]
-    run(`cc $flags -I$out $(joinpath(dir, "main.c")) $sources -o $exe`)
+    run(`cc $flags -I$out $(joinpath(dir, "main.c")) $sources -o $exe -lm`)   # -lm: Linux doesn't link libm by itself
     lines = split(read(`$exe`, String), "\n")
     @testset "$name" begin
         @test length(lines) == length(cases) + 1

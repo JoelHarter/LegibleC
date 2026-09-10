@@ -59,8 +59,8 @@ src = csource("comment", scaled, project, nodoc, steps, built, single, longexpr,
     @test occursin("// Scale first.", bare) && !occursin("B = A * s      #", bare)
     # Spacing: a blank line before each Julia statement's C, source comments or not;
     # none after the opening brace or before the closing one.
-    @test occursin("mul_2x2_s(A, s, B);\n\n    // @comment.jl:", src) && occursin("mul_2x2_s(A, s, B);\n\n    double C[2][2];", bare)
-    @test occursin(") {\n    // trailing on the signature\n    // Scale first.", src) && occursin("    return x * x;\n}", src)
+    @test occursin("mul_2x2_s(A, s, B);\n\n    // @comment.jl:", src) && occursin("mul_2x2_s(A, s, B);\n\n    add_2x2(B, A, C);", bare)   # C lives in out (`outplacement!`)
+    @test occursin(") {\n    // trailing on the signature\n", src) && occursin("double (*C)[2] = out;\n\n    // Scale first.", src) && occursin("    return x * x;\n}", src)
     @test !occursin("\n\n\n", src) && !occursin("\n\n}", src)
     # A multi-line expression: its C at the first line, the continuation lines after it
     # (the known imprecision); a line that is only a bracket contributes its comment only.

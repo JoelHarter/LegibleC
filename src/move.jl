@@ -52,7 +52,7 @@ function copy!(lines, sc::Scope, src, S::Type, dst, D::Type)
         push!(sc.headers, "string.h")
         # `sizeof src` when the source is a whole local array; a parameter has decayed
         # to a pointer, so its type is spelled out.
-        size = occursin(r"^\w+$", src) && !(src in sc.names[2:sc.ci.nargs]) ? "sizeof $src" : "sizeof($(sizeof_(D)))"
+        size = occursin(r"^\w+$", src) && !(src in sc.names[2:sc.ci.nargs]) && !(src in sc.pointers) ? "sizeof $src" : "sizeof($(sizeof_(D)))"
         emit!(lines, sc, "memcpy($dst, $src, $size);")
     else
         move!(lines, sc, eltype(D), dst, whole(D), src, whole(S), [extent(D, a) for a in 1:maximum(axis(D))])
@@ -142,6 +142,8 @@ function construct!(lines, sc::Scope, tree, blocks, dst, R::Type)
     for (b, off) in places
         S = types[b]
         off = [off; zeros(Int, N - length(off))]
+        # A block that lives at this very place in `out` already (`outplacement!`).
+        dst == sc.resultname && all(==(0), off[2:end]) && outplacedat(sc, blocks[b], off[1]) && continue
         dsub = [(string(off[j]), j) for j in 1:N]
         extents = [isarray(S) ? extent(S, a) : 1 for a in 1:N]
         pairs, inner = movement(sc, eltype(R), dst, dsub, value(sc, blocks[b]), isarray(S) ? whole(S) : [], extents)
