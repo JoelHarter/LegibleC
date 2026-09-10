@@ -120,6 +120,12 @@ end
 
 function transpiled(target...; outfile, outpath, separate, helper, templimit, staticarray, source, precise, width, portable, suffix, scope, variables)
     staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
+    # The file names, checked before any work is done on their account.
+    base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
+    base == helper && throw(ArgumentError("`$helper.c` is the file the generated helpers go to; name the functions' file something else"))
+    for name in (base, helper)
+        name * ".h" in first.(standard) && throw(ArgumentError("`$name.h` would shadow the standard header <$name.h> for every file compiled with `-I out`; name it something else"))
+    end
     # Each instance is paired with its signature: the instance's own argument types,
     # except that a regular array is given as a shaped stand-in carrying its size.
     instances = Tuple{Core.MethodInstance, Vector{Type}}[]
@@ -241,11 +247,6 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, st
     end
     dir = joinpath(outpath, "out")
     mkpath(dir)
-    base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
-    base == helper && throw(ArgumentError("`$helper.c` is the file the generated helpers go to; name the functions' file something else"))
-    for name in (base, helper)
-        name * ".h" in first.(standard) && throw(ArgumentError("`$name.h` would shadow the standard header <$name.h> for every file compiled with `-I out`; name it something else"))
-    end
     where, order = placement(prog, base, separate, names, helper)
     writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper)
     return writefiles(dir, prog, base, where, order, names, functions, helper)
