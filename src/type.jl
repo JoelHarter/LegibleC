@@ -144,7 +144,7 @@ plain(T::Type) = istransposed(T) ? shaped(eltype(T), shape(T)) : T
 function transposed(T::Type; conj::Bool=false)
     T <: AbstractArray || return T
     if istransposed(T)
-        isconjugated(T) == (conj && eltype(T) <: Complex) || throw(ArgumentError("a conjugate without a transpose, `transpose(A')` or `transpose(A)'`, is not supported; store it as `conj.(A)`"))
+        isconjugated(T) == (conj && eltype(T) <: Complex) || throw(ArgumentError("a conjugate without a transpose has no tag; the emitter makes it as conj.(A) (`conjugate!`)"))
         return plain(T)
     end
     ndims(T) <= 2 || throw(ArgumentError("transpose of a $(ndims(T))-dimensional array (Julia allows at most two)"))

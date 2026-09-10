@@ -665,9 +665,18 @@ function statement!(lines, sc::Scope, i, st)
             construct!(lines, sc, i, st, dest; declaration=!(onlyreturned(ci, i) && sc.resultparam))
         elseif (f === Base.adjoint || f === Base.transpose) && isarray(T)
             # A transpose is the same storage with its axes read the other way round:
-            # nothing to do in C, the value just carries the tag from here on.
-            sc.expr[i] = value(sc, st.args[2])
-            sc.shapes[i] = transposed(valuetype(sc, st.args[2]); conj=f === Base.adjoint)
+            # nothing to do in C, the value just carries the tag from here on. A
+            # transpose of an adjoint, or the reverse, is a conjugate without a
+            # transpose, which no tag says: that one is made, `conj.(A)` into a temp.
+            S = valuetype(sc, st.args[2])
+            if istransposed(S) && isconjugated(S) != (f === Base.adjoint && eltype(S) <: Complex)
+                returned = onlyreturned(ci, i) && sc.resultparam
+                conjugate!(lines, sc, value(sc, st.args[2]), S, returned ? result!(sc, i) : temp!(sc, i, callparts(sc, st)); declaration=!returned)
+                sc.shapes[i] = plain(S)
+            else
+                sc.expr[i] = value(sc, st.args[2])
+                sc.shapes[i] = transposed(S; conj=f === Base.adjoint)
+            end
         elseif f in (Base.lastindex, Base.firstindex, Base.length, Base.size) && ci.ssavaluetypes[i] isa Core.Const && ci.ssavaluetypes[i].val isa Integer
             # A size inference already knows (`end` in an index): the number, no temp.
             sc.expr[i] = string(ci.ssavaluetypes[i].val)
@@ -815,14 +824,20 @@ function store!(lines, sc::Scope, i, x, rhs; declaration::Bool=false)
             # `B = A'`: a copy into whatever Julia says `B` is. A lazy `Adjoint` (a
             # vector's) is the same storage, known to be transposed; an eager one
             # (StaticArrays materializes a matrix transpose) is copied axes-swapped.
-            A = transposed(valuetype(sc, rhs.args[2]); conj=callee_or_nothing(sc.ci, rhs.args[1]) === Base.adjoint)
-            R = slottype(sc, slot)
-            shape(R) === nothing && (R = A)
-            declaration && emit!(lines, sc, declare(R, x) * ";")
-            start = length(lines) + 1
-            copy!(lines, sc, value(sc, rhs.args[2]), A, x, R)
-            step!(lines, sc, "$x = $(value(sc, rhs.args[2]))$(tmark(A))"; from=start)
-            sc.shapes[i] = R
+            S = valuetype(sc, rhs.args[2])
+            if istransposed(S) && isconjugated(S) != (callee_or_nothing(sc.ci, rhs.args[1]) === Base.adjoint && eltype(S) <: Complex)
+                conjugate!(lines, sc, value(sc, rhs.args[2]), S, x; declaration)   # `B = transpose(A')`: conj.(A)
+                sc.shapes[i] = plain(S)
+            else
+                A = transposed(S; conj=callee_or_nothing(sc.ci, rhs.args[1]) === Base.adjoint)
+                R = slottype(sc, slot)
+                shape(R) === nothing && (R = A)
+                declaration && emit!(lines, sc, declare(R, x) * ";")
+                start = length(lines) + 1
+                copy!(lines, sc, value(sc, rhs.args[2]), A, x, R)
+                step!(lines, sc, "$x = $(value(sc, rhs.args[2]))$(tmark(A))"; from=start)
+                sc.shapes[i] = R
+            end
         elseif any(a -> mentions(sc, x, a), rhs.args[2:end]) && !inplace(sc, rhs, slottype(sc, slot))
             # `x` is also an operand of something that reads elements it has already
             # written — a product, a solve, a transpose, a construction: through a temp.
@@ -1044,6 +1059,15 @@ function broadcastop(f, n, E)
         f === g && return Symbol(name == "rint" ? "round" : name), name
     end
     throw(ArgumentError("unsupported broadcast function: $f"))
+end
+
+# `conj.(A)` of the storage behind `src`, into `dest`: what a conjugate without a
+# transpose comes to, since no tag says it.
+function conjugate!(lines, sc::Scope, src, S::Type, dest; declaration::Bool)
+    P = plain(S)
+    declaration && emit!(lines, sc, declare(P, dest) * ";")
+    emit!(lines, sc, "$(broadcasthelper!(sc.helpers, :conj, mathname(eltype(S), "conj"), (P,), P))($src, $dest);")
+    step!(lines, sc, "$dest = conj.($src)")
 end
 
 # Emit the helper call for an array operation, writing into `dest`. An n-ary `+` or `*`

@@ -25,6 +25,9 @@ cdet(A::SMatrix{3,3,C,9}) = det(A)
 cchol(A::SMatrix{3,3,C,9}, b::SVector{3,C}) = cholesky(A) \ b
 cchol4(A::SMatrix{4,4,C,16}, b::SVector{4,C}) = cholesky(A) \ b
 cabsv(v::SVector{3,C}) = abs.(v)
+cstore(A::SMatrix{3,2,C,6}) = (B = A'; B * A)             # the adjoint stored: copied axes-swapped, conjugated
+cflip(A::SMatrix{3,2,C,6}) = transpose(A')                # a conjugate without a transpose: conj.(A), made
+cblock(A::SMatrix{2,2,C,4}) = [A A']                      # an adjoint as a block: conjugated on the way
 cparts(v::SVector{3,C}) = real.(v) .+ imag.(v)
 csum(v::SVector{3,C}) = sum(v) * prod(v)
 printed(z::C) = println(z)
@@ -40,9 +43,9 @@ check("cx", [Case(zsq, z), Case(parts, z), Case(mag, w), Case(mk, 1.5, -2.0), Ca
                   Case(cadd, x, y), Case(cdot, x, y), Case(cnorm, x), Case(crow, x, y), Case(cgram, A), Case(ctr, A), Case(crossgram, A, A),
                   Case(csolve, SMatrix{2,2}(z, w, C(1, 0), C(0, 2)), SVector(z, w)), Case(csolve4, M4, SVector(z, w, C(1, 1), C(-1, 2))),
                   Case(cinv3, M3), Case(cdet, M3), Case(cchol, H3, SVector(z, w, C(1, 1))), Case(cchol4, H4, SVector(z, w, C(1, 1), C(0, -1))),
-                  Case(cabsv, x), Case(cparts, x), Case(csum, x)])
+                  Case(cabsv, x), Case(cparts, x), Case(csum, x), Case(cstore, A), Case(cflip, A), Case(cblock, SMatrix{2,2}(z, w, C(1, 1), C(0, -1)))])
 @testset "complex" begin
-    src = csource("cx", zsq, parts, mk, cadd, cdot, cnorm, cgram, ctr, cchol, cabsv, printed)
+    src = csource("cx", zsq, parts, mk, cadd, cdot, cnorm, cgram, ctr, cchol, cabsv, printed, cstore, cflip)
     @test occursin("double complex zsq(double complex z)", src) && occursin("return z * z + conj(z);", src)
     @test occursin("return creal(z) + 2 * cimag(z) + creal(z) - cimag(z);", src)
     @test occursin("return (a + b * I) * CMPLX(b, a) / csqrt(CMPLX(a, b));", src) && occursin("#ifndef CMPLX", src) && occursin("#include <complex.h>", src)
@@ -57,7 +60,7 @@ check("cx", [Case(zsq, z), Case(parts, z), Case(mag, w), Case(mk, 1.5, -2.0), Ca
     @test occursin("L[1][0] = A[1][0] / L[0][0];", src) && occursin("conj(L[1][0])", src) && occursin("L[1][1] = creal(", src) && occursin("/// A = L Lᴴ", src)
     @test occursin("void absP_C3(const double complex a[3], double out[restrict 3])", src) && occursin("out[i] = cabs(a[i]);", src)
     @test occursin("printf(\"%g%+gim\\n\", creal(z), cimag(z));", src)
-    @test_throws ArgumentError csource("mixed", (A -> transpose(A'), Float64, 2, 3))
+    @test occursin("B[i][j] = conj(A[j][i]);", src) && occursin("conjP_C3x2(A, out);", src)   # cstore, cflip
     @test_throws ArgumentError csource("complex", zsq)     # the file would shadow <complex.h>
 end
 end

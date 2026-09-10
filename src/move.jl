@@ -11,8 +11,8 @@
 # whole subscript when `axis` is 0. A scalar side has no subscripts. The run along the
 # last looped axis goes through `memcpy` when it is contiguous on both sides — that
 # axis is the last storage dimension of each.
-function move!(lines, sc::Scope, E::Type, dst, dsub, src, ssub, extents)
-    pairs, inner = movement(sc, E, dst, dsub, src, ssub, extents)
+function move!(lines, sc::Scope, E::Type, dst, dsub, src, ssub, extents; conj::Bool=false)
+    pairs, inner = movement(sc, E, dst, dsub, src, ssub, extents; conj)
     for line in nest(pairs, inner)
         emit!(lines, sc, line)
     end
@@ -20,20 +20,21 @@ end
 
 # The loops (as index-extent pairs) and the innermost line of one movement, so that
 # movements sharing the same loops can be written inside one nest.
-function movement(sc::Scope, E::Type, dst, dsub, src, ssub, extents)
+# With `conj`, each element is conjugated on the way: an adjoint's storage made plain.
+function movement(sc::Scope, E::Type, dst, dsub, src, ssub, extents; conj::Bool=false)
     looped = [a for a in eachindex(extents) if extents[a] > 1]
     vars = Dict(zip(looped, indices(length(looped); taken=sc.names)))
     sub(off, a) = a == 0 || !haskey(vars, a) ? off : off == "0" ? vars[a] : "$off + $(vars[a])"
     at(name, subs) = name * join("[$(sub(o, a))]" for (o, a) in subs)
     run = isempty(looped) ? 0 : looped[end]
-    if run != 0 && !isempty(dsub) && !isempty(ssub) && dsub[end][2] == run && ssub[end][2] == run
+    if !conj && run != 0 && !isempty(dsub) && !isempty(ssub) && dsub[end][2] == run && ssub[end][2] == run
         # The start of the run on each side: a whole row is the row itself.
         start(name, subs) = subs[end][1] == "0" ? at(name, subs[1:end-1]) : "&" * at(name, subs[1:end-1]) * "[$(subs[end][1])]"
         inner = ["memcpy($(start(dst, dsub)), $(start(src, ssub)), sizeof($(ctype(E))[$(extents[run])]));"]
         pairs = [(vars[a], extents[a]) for a in looped[1:end-1]]
         push!(sc.headers, "string.h")
     else
-        inner = ["$(at(dst, dsub)) = $(at(src, ssub));"]
+        inner = ["$(at(dst, dsub)) = $(conj ? "$(mathname(E, "conj"))($(at(src, ssub)))" : at(src, ssub));"]
         pairs = [(vars[a], extents[a]) for a in looped]
     end
     return pairs, inner
@@ -55,7 +56,7 @@ function copy!(lines, sc::Scope, src, S::Type, dst, D::Type)
         size = occursin(r"^\w+$", src) && !(src in sc.names[2:sc.ci.nargs]) && !(src in sc.pointers) ? "sizeof $src" : "sizeof($(sizeof_(D)))"
         emit!(lines, sc, "memcpy($dst, $src, $size);")
     else
-        move!(lines, sc, eltype(D), dst, whole(D), src, whole(S), [extent(D, a) for a in 1:maximum(axis(D))])
+        move!(lines, sc, eltype(D), dst, whole(D), src, whole(S), [extent(D, a) for a in 1:maximum(axis(D))]; conj=isconjugated(S) && !isconjugated(D))
     end
 end
 
@@ -146,7 +147,7 @@ function construct!(lines, sc::Scope, tree, blocks, dst, R::Type)
         dst == sc.resultname && all(==(0), off[2:end]) && outplacedat(sc, blocks[b], off[1]) && continue
         dsub = [(string(off[j]), j) for j in 1:N]
         extents = [isarray(S) ? extent(S, a) : 1 for a in 1:N]
-        pairs, inner = movement(sc, eltype(R), dst, dsub, value(sc, blocks[b]), isarray(S) ? whole(S) : [], extents)
+        pairs, inner = movement(sc, eltype(R), dst, dsub, value(sc, blocks[b]), isarray(S) ? whole(S) : [], extents; conj=isarray(S) && isconjugated(S))
         !isempty(groups) && groups[end].first == pairs ? append!(groups[end].second, inner) : push!(groups, pairs => inner)
     end
     for (pairs, inner) in groups, line in nest(pairs, inner)
