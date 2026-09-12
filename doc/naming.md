@@ -106,15 +106,14 @@ for the names to differ, and applied uniformly to the whole group:
    `fun4_2x2_2x2`, `fun4_2x2F32_2x2F32`
    `h_3`, `h_3F64_I64`
 
-There is no static/mutable distinction in the name: C has none, and under
-`staticarray` every array is the same thing in C. Asking for the same method
+There is no static/mutable distinction in the name: C has none, and every
+array is the same thing in C. Asking for the same method
 at `SMatrix{2,2}` and at `MMatrix{2,2}` yields one C function, emitted once.
 The only error is two *different* Julia methods landing on the same C
 signature — C can't hold both bodies.
 
-A regular array is described exactly like a static one under the
-`staticarray` option — it needs a size from somewhere other than its type
-(`math/array.md`).
+A regular array is described exactly like a static one — it needs a size
+from somewhere other than its type (`math/array.md`).
 
 Implementation: `mangled` in `src/name.jl`.
 

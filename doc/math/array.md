@@ -21,9 +21,9 @@ type; if the function has a method for it, inference does the rest. If not
 — the method says `::Matrix{Float64}` — it uses a regular `Array` and
 carries the size itself, propagating it through every operation by the same
 rules the helpers use; by the time the array is first assigned, and so
-declared, its size is known. Either way the C is identical. That is what the `staticarray` option means:
-a regular array *is* a static array. Runtime sizes are not supported yet;
-the design is in `dev/map.md`.
+declared, its size is known. Either way the C is identical: a regular array
+*is* a static array here. Runtime sizes are not supported yet; the design is
+in `dev/map.md`.
 
 ## Representation
 

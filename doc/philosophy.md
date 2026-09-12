@@ -1,14 +1,15 @@
 # Philosophy
 
-These principles govern every decision in this project. When they seem to
+These tenets govern every decision in this project. When they seem to
 conflict, the earlier one wins.
 
 ### 0. Logic
 
-The C **carries out the Julia author's logical intent**: the same
-calculation, by the same steps, in the same order, with the same results.
-Rounding differences are fine — bit-for-bit agreement is not the goal.
-Nothing below is worth anything without this.
+The C **carries out the Julia author's logical intent**: the same calculation,
+by the same steps, in the same order. What the author asked for is what is
+computed — the same problem, the same method, the same kind of answer.
+Bit-for-bit agreement is not the goal. Nothing below is worth anything without
+this.
 
 ### 1. Speed
 

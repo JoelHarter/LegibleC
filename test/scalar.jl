@@ -97,9 +97,26 @@ function reuse(x::Float64)
 end
 floated(n::Int64, x::Float64) = float(n) + float(x)
 zeroed(r::Float64) = r > 0 ? r : 0                   # a union of numbers returned: a double
+pick(x::Int64) = 1.0
+pick(x::Float64) = 2.0
+twice(x) = 2x
+function bypath(c::Bool)                              # a widened variable reaching a function: only if the method is the same
+    a = 5
+    if c
+        a = 2.5
+    end
+    return pick(a)
+end
+function samepath(c::Bool)
+    a = 5
+    if c
+        a = 2.5
+    end
+    return twice(a)
+end
 signs(x::Float64, y::Float64) = x * y > 0 ? x + y : "mixed"   # a number or a string: refused by name and line
 check("onetype", [Case(accum, SVector(1.5, 2.5, 3.0)), Case(joined, 2.0, true), Case(joined, 2.0, false), Case(widened, ComplexF64(0.1, 0.2)), Case(floated, 3, 0.5),
-                  Case(zeroed, 1.5), Case(zeroed, -1.5)])
+                  Case(zeroed, 1.5), Case(zeroed, -1.5), Case(samepath, true), Case(samepath, false)])
 @testset "onetype" begin
     src = csource("onetype", accum, joined, widened, floated, zeroed)
     @test occursin("double s = 0.0;", src) && occursin("s += x;", src)
@@ -109,6 +126,8 @@ check("onetype", [Case(accum, SVector(1.5, 2.5, 3.0)), Case(joined, 2.0, true), 
     @test_throws ArgumentError csource("reuse", reuse)
     @test occursin("`a` is assigned values of different types (Int64 at line", sprint(showerror, try csource("reuse", reuse) catch e; e end))
     @test occursin("double zeroed(double r)", src) && occursin("return 0;", src)
+    msg = sprint(showerror, try csource("bypath", bypath) catch e; e end)
+    @test occursin("`a` is a ", msg) && occursin("on one path and a ", msg) && occursin("which method of `pick` runs depends on which", msg)
     msg = sprint(showerror, try csource("signs", signs) catch e; e end)
     @test occursin("`signs` returns values of different types from the same argument types (Float64 at line", msg) && occursin("String at line", msg) && occursin("one return type", msg)
 end

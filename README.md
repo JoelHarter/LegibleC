@@ -123,8 +123,9 @@ transpile(f, g; outfile="name")
 - **No runtime.** Nothing to allocate, initialize or link. The folder
   compiles on its own, on anything with a C compiler.
 - **Errors at transpile time, never wrong C.** Julia the transpiler doesn't
-  understand is refused with a message. What comes out computes what the
-  Julia computes, in the same order, to rounding.
+  understand is refused with a message. What comes out carries out the
+  Julia's logical intent: the same calculation, the same steps, the same
+  order.
 - **One source of truth.** The Julia is the program; the C is a view of it.
   Change the Julia, regenerate, and the two never drift.
 

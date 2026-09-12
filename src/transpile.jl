@@ -36,9 +36,6 @@ Options:
   Julia's current working directory.
 - `templimit`: longest name an intermediate value may be given before its
   descriptive suffix is dropped (see [`temp!`](@ref)).
-- `staticarray`: treat every Julia array as fixed-size, and refuse anything a
-  fixed-size array can't do (growing, resizing, …). Turning it off asks for
-  dynamic arrays, which are not yet supported.
 - `source`: copy each line of the Julia body into the C as a comment, prefixed
   `file:line:`, where that line's work happens. Comments are carried over
   regardless; this controls the code. See `doc/comment.md`.
@@ -74,7 +71,6 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
                    templimit::Integer=40,
                    # On by default only until dynamic arrays are supported; then it flips
                    # to off, and static becomes something you opt into.
-                   staticarray::Bool=true,
                    source::Bool=true,
                    precise::Bool=false,
                    width::Integer=100,
@@ -92,7 +88,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
     LegibleC.c23floattypes[] = c23floattypes
     LegibleC.booltype[] = bool
     try
-        return transpiled(target...; outfile, outpath, separate=split, helper=(endswith(helper, ".c") || endswith(helper, ".h") ? helper[1:end-2] : helper), templimit, staticarray, source, precise, width, portable, suffix=tempsuffix, scope, variables)
+        return transpiled(target...; outfile, outpath, separate=split, helper=(endswith(helper, ".c") || endswith(helper, ".h") ? helper[1:end-2] : helper), templimit, source, precise, width, portable, suffix=tempsuffix, scope, variables)
     finally
         LegibleC.spelling[] = Dict{Char, String}()
         LegibleC.scope[] = Main
@@ -118,8 +114,7 @@ macro transpile(args...)
     return Expr(:call, GlobalRef(@__MODULE__, :transpile), Expr(:parameters, kws...), esc.(rest)...)
 end
 
-function transpiled(target...; outfile, outpath, separate, helper, templimit, staticarray, source, precise, width, portable, suffix, scope, variables)
-    staticarray || throw(ArgumentError("dynamic arrays are not yet supported; use staticarray=true"))
+function transpiled(target...; outfile, outpath, separate, helper, templimit, source, precise, width, portable, suffix, scope, variables)
     # The file names, checked before any work is done on their account.
     base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
     base == helper && throw(ArgumentError("`$helper.c` is the file the generated helpers go to; name the functions' file something else"))
@@ -200,7 +195,7 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, st
         prog.structs[k] = T => "/**\n" * join(" * " .* split(doc, "\n"), "\n") * "\n */\n" * prog.structs[k].second
     end
     for (mod, name, value, constant) in values; global!(prog, mod, name, value; constant); end
-    generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, staticarray, source=source && !haskey(synthetics, mi), blocked)
+    generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, source=source && !haskey(synthetics, mi), blocked)
     functions = [generate(n, mi, sig) for (n, (mi, sig)) in zip(names, instances)]
     # A call to a function that wasn't asked for brings it in, and it may call others.
     while !isempty(prog.pending)

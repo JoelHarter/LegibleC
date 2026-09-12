@@ -16,7 +16,6 @@ Every keyword option of `transpile`.
 | `width` | `100` | the longest line; a long scalar expression wraps at its loosest operators |
 | `templimit` | `40` | the longest name a temporary may be given before its descriptive suffix is dropped |
 | `tempsuffix` | `true` | temporaries carry what they were computed from, `temp1_a_b = a + b`; off, they are `temp1`, `temp2`, … |
-| `staticarray` | `true` | every array is fixed-size; `false` is refused until dynamic arrays exist |
 | `spelling` | `Dict()` | your own C spellings for characters in names — see [name.md](name.md) |
 | `scope` | `Main` | the module a keyword variable's name is looked up in, to decide `const`; `@transpile` sets it to the module the call is written in |
 | any other keyword | | a variable to include, named after the keyword — see [target.md](target.md) |

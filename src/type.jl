@@ -162,7 +162,7 @@ function normalize(T::Type)
 end
 
 # The dimensions of an array type as they appear in a mangled name: `3`, `2x3`, `4x3x4`;
-# `T3`, `T2x3` when transposed. Under `staticarray` a regular array is treated exactly like a
+# `T3`, `T2x3` when transposed. A regular array is treated exactly like a
 # static one, so it needs a size too; until there's a way to supply one, it's an error
 # rather than a guess.
 function dims(T::Type)

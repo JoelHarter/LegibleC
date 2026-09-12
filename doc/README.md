@@ -4,7 +4,7 @@ How the transpiler works and what it does today, one topic per file. A
 suggested order for a first read:
 
 1. [guide/](guide/README.md) — the user guide: install, what's accepted, targets, options, calling the C, names, when it refuses.
-2. [philosophy.md](philosophy.md) — the principles behind every decision: logic, speed, craft, generality.
+2. [philosophy.md](philosophy.md) — the tenets behind every decision: logic, speed, craft, generality.
 3. [design.md](design.md) — how it works: the pipeline, the source files, the shape of the output.
 4. [math/scalar.md](math/scalar.md) — numbers: types, arithmetic, math, conversions.
 5. [flow.md](flow.md) — control flow, recovered from the IR.

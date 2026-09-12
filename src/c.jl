@@ -70,7 +70,6 @@ mutable struct Scope
     result::String                      # name for an unnamed result, `result` unless that's taken
     resultname::String                  # the same, kept after `result` is claimed
     resultparam::Bool                   # the result is an array, passed out through a parameter
-    staticarray::Bool                   # every array is fixed-size; dynamic operations are errors
     limit::Int                          # longest temp name we're willing to mangle to
     blocked::Set{Int}                   # temp numbers already taken by the user's own names
     counter::Int
@@ -125,7 +124,7 @@ mutable struct Scope
     pointers::Set{String}               # C names that are pointers, not arrays: `sizeof` needs the type spelled out
 end
 
-function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, staticarray::Bool, prog::Program, copycode::Bool, blocked)
+function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool, blocked)
     names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])]; blocked)]
     hidden = Set{Int}(i for (i, s) in enumerate(ci.slotnames) if i > 1 && isempty(string(s)))
     result = "result"
@@ -140,7 +139,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
     slotshapes = Dict{Int, Type}(i + 1 => T for (i, T) in enumerate(sig) if isarray(T))
     src = Source(mi.def)
     stmtline = statementlines(mi, length(ci.code))   # from the IR, so it works without the file
-    return Scope(ci, names, result, result, false, staticarray, limit, blocked, 0, Dict{Int, String}(), prog.helpers, prog.headers,
+    return Scope(ci, names, result, result, false, limit, blocked, 0, Dict{Int, String}(), prog.helpers, prog.headers,
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), 1,
@@ -152,7 +151,7 @@ include("io.jl")
 include("move.jl")
 
 """
-    cfunction(name, mi, sig, helpers, headers; templimit=40, staticarray=true, source=true) -> (prototype, definition)
+    cfunction(name, mi, sig, helpers, headers; templimit=40, source=true) -> (prototype, definition)
 
 C source for the concrete MethodInstance `mi`, named `name` in C, with argument types
 `sig` — the instance's own types, except that a regular array is given as a shaped
@@ -160,11 +159,11 @@ stand-in carrying the size the IR doesn't know. Any array helpers it needs are a
 to `helpers`, and any standard headers to `headers`.
 """
 function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Program;
-                   templimit::Integer=40, staticarray::Bool=true, source::Bool=true, blocked=())
+                   templimit::Integer=40, source::Bool=true, blocked=())
     ci, rettype = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     rettype === Union{} && throw(ArgumentError("$(mi.def.name) never returns normally according to inference: something in it always throws"))
     rettype = returntype(mi)                # one C type: numbers settled, anything else refused by line
-    sc = Scope(ci, mi, sig, templimit, staticarray, prog, source, blocked)
+    sc = Scope(ci, mi, sig, templimit, prog, source, blocked)
     sc.resultparam = isarray(rettype)
     sc.rettype = rettype
     istuple(sc.rettype) && (sc.kind = returnkind!(prog, mi, name))
@@ -2138,7 +2137,33 @@ function userinstance!(sc::Scope, f, args)
         T <: Shaped && (push!(spec, eltype(T)); append!(spec, shape(T)); continue)
         push!(spec, juliatype(T))
     end
+    samedispatch(sc, f, args, spec)
     return register!(sc.prog, f, spec)
+end
+
+# A variable the one-type rule widened (`onetype!`) is an `Int64` on one path and a
+# `Float64` on another in Julia, and a `double` on both in C. That is harmless where the
+# value is the same number either way, and not where Julia would pick a *method* by the
+# path's type: then the C would always call the one method. So a widened argument may
+# reach only a function whose dispatch doesn't depend on which member it is.
+function samedispatch(sc::Scope, f, args, spec)
+    ci = sc.ci
+    for (k, a) in enumerate(args)
+        s = slotof(sc, a)
+        s === nothing && continue
+        T = ci.slottypes[s]
+        T isa Union || continue
+        members = Base.uniontypes(T)
+        # Julia's own methods differ by type too — `Int * Float64` and `Float64 * Float64` —
+        # but they are the same arithmetic, spelled by one C operator; only a method of the
+        # user's becomes a different C function.
+        try
+            picks = [Base.which(f, Tuple(Any[j == k ? M : (S isa Type ? S : typeof(S)) for (j, S) in enumerate(spec)])) for M in members]
+            (allequal(picks) || all(m -> nameof(Base.moduleroot(m.module)) in known, picks)) && continue
+        catch
+        end
+        throw(ArgumentError("`$(ci.slotnames[s])` is a $(join(members, " on one path and a ")) on another, and which method of `$(nameof(f))` runs depends on which; C holds it as one type, so give the variable one type (`$(ci.slotnames[s]) = 0.0`, say)"))
+    end
 end
 
 # The instance, signature and C name of user function `f` at the argument spec (types,
@@ -2421,6 +2446,16 @@ end
 
 # Inference wraps known constants as Core.Const and partially-known structs as
 # Core.PartialStruct; we only want the type.
-widen(t) = normalize(t isa Core.Const ? typeof(t.val) :
-                     t isa Core.PartialStruct ? t.typ :
-                     t isa Type ? t : throw(ArgumentError("unsupported type lattice element: $t")))
+widen(t) = settle(normalize(t isa Core.Const ? typeof(t.val) :
+                            t isa Core.PartialStruct ? t.typ :
+                            t isa Type ? t : throw(ArgumentError("unsupported type lattice element: $t"))))
+
+# A union of numbers is the one number type that holds them all, wherever it shows up: a
+# widened variable read into a value, `a + 1` on such a variable. Other unions pass, to
+# be refused where they land with a message that knows what they are (`onetype!`,
+# `returntype`).
+function settle(T)
+    T isa Union || return T
+    members = Base.uniontypes(T)
+    all(M -> M isa DataType && M <: Number && isconcretetype(M), members) ? promote_type(members...) : T
+end

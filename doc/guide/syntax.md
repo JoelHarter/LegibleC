@@ -14,7 +14,7 @@ transpile(f, g, (h, Float64, 3, Float64, 2, 3); outfile="name", outpath=dir)
 A target is a function with one concrete method, a `MethodInstance`, or a
 tuple of a function and argument types — where a type followed by integers is
 an array of that element type and size. Options: `outfile`, `outpath`,
-`templimit`, `staticarray` (on), `source` (on), `precise`, `portable`, `width`
+`templimit`, `source` (on), `precise`, `portable`, `width`
 (100), `spelling` (your own C names for characters, `../naming.md`). An
 `out/` folder comes out: the functions in `<outfile>.c`, the helpers in
 `helper.h`/`.c` — see `start.md`.
@@ -102,8 +102,8 @@ reassignment, and reassigning a loop variable's name outside the loop. See
 ## Arrays
 
 Arrays are `StaticArrays` types (`SVector`, `SMatrix`, `SArray`, and their
-mutable forms) of any dimension, or `Array{T,N}` under the `staticarray`
-option with the size supplied in the `transpile` call. The size is always
+mutable forms) of any dimension, or `Array{T,N}` with the size supplied in
+the `transpile` call. The size is always
 known at transpile time; dynamic sizes and allocation are not yet supported.
 
 | Julia | works |
@@ -128,7 +128,7 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `B = A`, `B = A'`, `A = A * A` | yes (copies, and a temp when the destination is an operand) |
 | `.==`, `.<`, `.<=`, `.>`, `.>=`, `.!=`, `.&`, `.\|`, `.!`, `ifelse.` | yes, a `Bool` array |
 | a range in a variable, `A[:, 1] .= 0` | not yet |
-| runtime-sized `Array` arguments (`staticarray=false`) | not yet — see `../dev/map.md` §3.4 for the VLA design |
+| runtime-sized `Array` arguments | not yet — every array has a size at transpile time; see `../dev/map.md` §3.4 for the VLA design |
 
 ## Comments
 
