@@ -163,9 +163,10 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
                    templimit::Integer=40, staticarray::Bool=true, source::Bool=true, blocked=())
     ci, rettype = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     rettype === Union{} && throw(ArgumentError("$(mi.def.name) never returns normally according to inference: something in it always throws"))
+    rettype = returntype(mi)                # one C type: numbers settled, anything else refused by line
     sc = Scope(ci, mi, sig, templimit, staticarray, prog, source, blocked)
     sc.resultparam = isarray(rettype)
-    sc.rettype = widen(rettype)
+    sc.rettype = rettype
     istuple(sc.rettype) && (sc.kind = returnkind!(prog, mi, name))
     # A tuple parameter is spread into one parameter per element: `t1`, `t2`, …
     for i in 2:ci.nargs
@@ -2166,7 +2167,23 @@ function register!(prog::Program, f, spec)
 end
 
 # What an instance returns, as the transpiler sees types.
-returntype(mi::Core.MethodInstance) = normalize(only(Base.code_typed_by_type(mi.specTypes; optimize=false))[2])
+# What an instance returns, as the transpiler sees types. A C function has one return
+# type, so a union of numbers — `r > 0 ? r : 0` — settles to the one holding them all,
+# the same numbers Julia returns; any other union — a number on one path and a string
+# on another — is refused, naming the function and the line of each `return`, since
+# no C signature can say it.
+function returntype(mi::Core.MethodInstance)
+    ci, R = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
+    R = widen(R)
+    R isa Union || return R
+    members = Base.uniontypes(R)
+    all(M -> M isa DataType && M <: Number && isconcretetype(M), members) && return promote_type(members...)
+    lines = statementlines(mi, length(ci.code))
+    at = [(widen(valuetype_ir(ci, st.val)), lines[k]) for (k, st) in enumerate(ci.code) if st isa Core.ReturnNode && isdefined(st, :val)]
+    spell(M) = isarray(M) && shape(M) !== nothing ? describe(M) : string(M)
+    listed = join(("$(spell(M)) at line $l" for (M, l) in at), ", ")
+    throw(ArgumentError("`$(mi.def.name)` returns values of different types from the same argument types ($listed); a C function has one return type, and no C signature can say this"))
+end
 
 # The Julia type behind a value the transpiler tracks: a row is an `Adjoint` of a
 # static vector; an eagerly transposed matrix is the matrix Julia would have made.

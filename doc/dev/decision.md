@@ -1669,3 +1669,14 @@ what `a = 5` followed by `a = [3 4; 4 5.0]` would do. Widening numbers is
 what a C programmer declares and changes no value Julia held; refusing
 the rest is right because Julia can't tell whether the author meant one
 variable or two, so neither can the C, and a message beats a guess.
+
+**A function's return type, the same way** (same day). A method that
+returns values of different types from the same argument types is refused
+naming the function and the line of each `return` — "`signs` returns
+values of different types from the same argument types (Float64 at line
+5, String at line 5); a C function has one return type" — where before
+it died on `no C type for Union{…}`. A union of numbers alone, `r > 0 ? r
+: 0`, settles to the type holding them all, as a variable's does. A
+function whose return type follows its argument types, `x + y` on ints
+or on floats, was never a problem: each instance is one C function with
+one type.
