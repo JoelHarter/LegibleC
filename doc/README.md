@@ -18,5 +18,4 @@ suggested order for a first read:
 13. [copy.md](copy.md) — why the C has the temps it has, and no more.
 14. [io.md](io.md) — printing, and later files.
 
-What's still to be decided is in [dev/](dev/); what's open is in the repo's
-`dev/todo.md`.
+What's still to be decided is in [dev/](dev/).

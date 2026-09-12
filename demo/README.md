@@ -23,5 +23,3 @@ top of each file says what to look at.
   `CODATA.c` and `CODATA.G` come out, as `CODATA_c` and `CODATA_G` with their values and the
   comments from their definitions, the other six are never mentioned, and
   `schwarzschild` comes along because `dilation` calls it.
-
-More candidates are in `doc/dev/todo.md`.

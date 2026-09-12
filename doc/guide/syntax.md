@@ -3,8 +3,7 @@
 Every piece of Julia the transpiler accepts, in one place. The other documents
 explain *how* each part is handled; this one only says *what* works, so a
 reader can tell at a glance whether a function will go through. Anything not
-listed here is an error at transpile time, never silently wrong C — and
-`dev/todo.md` lists what is coming.
+listed here is an error at transpile time, never silently wrong C.
 
 ## Calling the transpiler
 
