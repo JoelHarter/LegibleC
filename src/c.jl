@@ -291,6 +291,7 @@ end
 function analyze!(sc::Scope)
     ci = sc.ci
     code = ci.code
+    onetype!(sc)
     sc.fors = findfors(ci)
     for F in values(sc.fors)
         push!(sc.hidden, F.var)
@@ -761,7 +762,11 @@ function statement!(lines, sc::Scope, i, st)
                 k = returnkind!(sc.prog, r[1], r[3])   # `t = step(…)`: the callee's struct
             end
             k === nothing || isempty(k.cname) || (sc.slotkinds[slot.id] = k)
-            short === nothing ? emitexpr!(lines, sc, (here ? (k === nothing || isempty(k.cname) ? ctype(T) : k.cname) * " " : "") * "$x = ", text) : emit!(lines, sc, short * ";")
+            # Declared with the variable's type, which may be wider than this value's
+            # (`onetype!`); an integer literal going into a float variable is spelled as one.
+            D = slottype(sc, slot.id)
+            D <: AbstractFloat && rhs isa Integer && (text = value(sc, D(rhs)))
+            short === nothing ? emitexpr!(lines, sc, (here ? (k === nothing || isempty(k.cname) ? ctype(D) : k.cname) * " " : "") * "$x = ", text) : emit!(lines, sc, short * ";")
         end
         if fresh && !here
             s = slot.id
@@ -1585,6 +1590,8 @@ function render(sc::Scope, i, ex::Expr)
         end
     elseif f in (Base.real, Base.conj) && n == 1 && T <: Real
         return expression(sc, args[1])                # a real's real part and conjugate are itself
+    elseif f === Base.float && n == 1
+        return valuetype(sc, args[1]) <: AbstractFloat ? expression(sc, args[1]) : ("($(ctype(T)))" * operand(sc, args[1], UNARY), UNARY)
     elseif f === Base.imag && n == 1 && T <: Real
         return value(sc, zero(T)), PRIMARY
     end
@@ -2364,6 +2371,35 @@ function callee(ci, x)
     x isa Expr && x.head === :call && ci.ssavaluetypes !== nothing && return throw(ArgumentError("unsupported callee: $x"))
     (x isa Function || x isa Type || x isa Colon) && return x
     throw(ArgumentError("unsupported callee: $x"))
+end
+
+# A C variable has one type, so a Julia variable assigned values of more than one has
+# to be settled: a union of numbers widens to the one that holds them all — `s = 0`
+# then `s += x` on floats is `double s = 0.0`, `z = 0` then `z = z^2 + c` on a complex
+# `c` is `double complex z = 0`, which is what a C programmer declares and the same
+# numbers Julia holds — and anything else, a scalar rebound to a matrix, a float to a
+# string, is refused by name and line: Julia can't tell whether the author meant one
+# variable or two, so neither can the C.
+function onetype!(sc::Scope)
+    ci = sc.ci
+    for s in ci.nargs+1:length(ci.slottypes)
+        T = ci.slottypes[s]
+        T isa Union || continue
+        # Julia's own slots — a `for`'s iterator state, a `#temp#` — aren't C variables.
+        (s in sc.hidden || startswith(string(ci.slotnames[s]), "#")) && continue
+        members = Base.uniontypes(T)
+        if all(M -> M isa DataType && M <: Number && isconcretetype(M), members)
+            sc.slotshapes[s] = promote_type(members...)     # the override `slottype` reads
+            continue
+        end
+        # Arrays of one shape spelled by different types (a sized `Vector`, an `SVector`)
+        # are one variable already: the shape tracking at the first store settles them.
+        all(M -> M isa DataType && M <: AbstractArray, members) && continue
+        at = [(widen(ci.ssavaluetypes[k]), sc.stmtline[k]) for k in eachindex(ci.code) if assigns(ci.code[k], s)]
+        spell(M) = isarray(M) && shape(M) !== nothing ? describe(M) : string(M)
+        listed = join(("$(spell(M)) at line $l" for (M, l) in at), ", ")
+        throw(ArgumentError("the variable `$(ci.slotnames[s])` is assigned values of different types ($listed); a C variable has one type, so give each its own name"))
+    end
 end
 
 # Inference wraps known constants as Core.Const and partially-known structs as

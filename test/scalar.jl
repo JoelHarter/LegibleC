@@ -71,4 +71,39 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
     @test occursin("#define LEGIBLEC_E 2.718281828459045  // the double nearest ℯ\n#define LEGIBLEC_PI 3.141592653589793  // the double nearest π\n", portable)
     @test occursin("return x * LEGIBLEC_PI + LEGIBLEC_E;", portable) && !occursin("M_PI", portable)
 end
+
+# One C type per variable (`onetype!`): a union of numbers widens to the one holding
+# them all, and anything else is refused by name and line.
+accum(v::SVector{3,Float64}) = (s = 0; for x in v; s += x; end; s)
+function joined(x::Float64, c::Bool)
+    a = 5
+    if c
+        a = 2.5
+    end
+    return a * x
+end
+function widened(c::ComplexF64)
+    z = 0
+    for i in 1:3
+        z = z^2 + c
+    end
+    return z
+end
+function reuse(x::Float64)
+    a = 5
+    b = a + 1
+    a = SVector(3.0, 4.0)
+    return a[1] * x + b
+end
+floated(n::Int64, x::Float64) = float(n) + float(x)
+check("onetype", [Case(accum, SVector(1.5, 2.5, 3.0)), Case(joined, 2.0, true), Case(joined, 2.0, false), Case(widened, ComplexF64(0.1, 0.2)), Case(floated, 3, 0.5)])
+@testset "onetype" begin
+    src = csource("onetype", accum, joined, widened, floated)
+    @test occursin("double s = 0.0;", src) && occursin("s += x;", src)
+    @test occursin("double a = 5.0;", src) && occursin("a = 2.5;", src)
+    @test occursin("double complex z = 0;", src) && occursin("z = z * z + c;", src)
+    @test occursin("return (double)n + x;", src)
+    @test_throws ArgumentError csource("reuse", reuse)
+    @test occursin("`a` is assigned values of different types (Int64 at line", sprint(showerror, try csource("reuse", reuse) catch e; e end))
+end
 end

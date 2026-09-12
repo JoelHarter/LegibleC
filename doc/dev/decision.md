@@ -1642,3 +1642,30 @@ front, like `T`, because that is where a reader looks for what kind of
 thing a helper takes. The harness prints a complex value as its two parts
 and compares them to Julia's; the first run caught the test's own output
 file shadowing `<complex.h>`, which became the refusal.
+
+---
+
+## 2026-09-12 — One C type per variable
+
+**Decision.** A Julia variable assigned values of more than one type is
+settled before anything is emitted (`onetype!`). A union of numbers widens
+to the one that holds them all: `s = 0` then `s += x` on floats is
+`double s = 0.0;`, `a = 5` then `a = 2.5` in a branch is `double a = 5.0;`,
+`z = 0` then `z = z^2 + c` on a complex `c` is `double complex z = 0;`.
+Any other mix — a scalar rebound to a matrix, a number to a string — is
+refused, naming the variable and the line of each assignment, with the
+advice to use a name for each. A declaration uses the variable's type, not
+the first value's; an integer literal going into a float variable is
+spelled as a float. Julia's own slots, a `for`'s iterator state, are not
+variables and are left alone, as are unions of array types of one shape,
+which the shape tracking settles at the first store.
+
+**Why.** Before this the declaration took the first value's type and later
+assignments went in blind: `int64_t a = 5; a = 2.5;` compiled and
+truncated, a complex went into an `int64_t` and lost its imaginary part,
+and an accumulator started at `0` on a float vector summed as an integer.
+Silent wrong answers in the most ordinary Julia there is, found by asking
+what `a = 5` followed by `a = [3 4; 4 5.0]` would do. Widening numbers is
+what a C programmer declares and changes no value Julia held; refusing
+the rest is right because Julia can't tell whether the author meant one
+variable or two, so neither can the C, and a message beats a guess.
