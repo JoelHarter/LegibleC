@@ -41,9 +41,12 @@ Options:
   regardless; this controls the code. See `doc/comment.md`.
 - `precise`: print every digit of a floating value (`%.17g`, `%.9g` for
   `Float32`) instead of `%g`. See `doc/io.md`.
-- `portable`: define `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file and use those,
-  instead of `M_PI` and `M_E` from `math.h`, which are POSIX rather than ISO C and
-  can be missing under a strict `-std=c11`.
+- `posix`: write `pi` and `ℯ` as `M_PI` and `M_E` from `math.h`, which are POSIX
+  rather than ISO C and can be missing under a strict `-std=c11` (the helper header
+  then defines them under `#ifndef`). Off, they are `LEGIBLEC_PI` and `LEGIBLEC_E`
+  like every irrational: any `AbstractIrrational` — `Base.MathConstants.catalan`, one
+  of your own by `Base.@irrational` — is a macro named after it, defined in the helper
+  header to 128-bit precision.
 - `tempsuffix`: temps carry what they were computed from, `temp1_a_b = a + b`
   (`doc/naming.md`); off, they are `temp1`, `temp2`, …
 - `spelling`: your own C spellings for characters in names, `Dict('ħ' => "hred",
@@ -74,7 +77,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
                    source::Bool=true,
                    precise::Bool=false,
                    width::Integer=100,
-                   portable::Bool=false,
+                   posix::Bool=false,
                    tempsuffix::Bool=true,
                    spelling::AbstractDict=Dict{Char, String}(),
                    c23floattypes::Bool=false,
@@ -87,12 +90,16 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
     LegibleC.scope[] = scope
     LegibleC.c23floattypes[] = c23floattypes
     LegibleC.booltype[] = bool
+    LegibleC.posix[] = posix
+    empty!(LegibleC.irrationals)
     try
-        return transpiled(target...; outfile, outpath, separate=split, helper=(endswith(helper, ".c") || endswith(helper, ".h") ? helper[1:end-2] : helper), templimit, source, precise, width, portable, suffix=tempsuffix, scope, variables)
+        return transpiled(target...; outfile, outpath, separate=split, helper=(endswith(helper, ".c") || endswith(helper, ".h") ? helper[1:end-2] : helper), templimit, source, precise, width, suffix=tempsuffix, scope, variables)
     finally
         LegibleC.spelling[] = Dict{Char, String}()
         LegibleC.scope[] = Main
         LegibleC.c23floattypes[] = false
+        LegibleC.posix[] = false
+        empty!(LegibleC.irrationals)
         LegibleC.booltype[] = Bool
     end
 end
@@ -114,7 +121,7 @@ macro transpile(args...)
     return Expr(:call, GlobalRef(@__MODULE__, :transpile), Expr(:parameters, kws...), esc.(rest)...)
 end
 
-function transpiled(target...; outfile, outpath, separate, helper, templimit, source, precise, width, portable, suffix, scope, variables)
+function transpiled(target...; outfile, outpath, separate, helper, templimit, source, precise, width, suffix, scope, variables)
     # The file names, checked before any work is done on their account.
     base = endswith(outfile, ".c") ? outfile[1:end-2] : outfile
     base == helper && throw(ArgumentError("`$helper.c` is the file the generated helpers go to; name the functions' file something else"))
@@ -183,7 +190,7 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
 
     names = cnames(instances)
     for (k, (mi, _)) in enumerate(instances); haskey(synthetics, mi) && (names[k] = startswith(string(mi.def.name), "#") ? "anonymous$k" : string(mi.def.name)); end
-    prog = Program(; precise, width, portable, suffix)
+    prog = Program(; precise, width, suffix)
     union!(prog.names, names)
     for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
     for T in types
@@ -243,8 +250,28 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
     dir = joinpath(outpath, "out")
     mkpath(dir)
     where, order = placement(prog, base, separate, names, helper)
-    writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper)
-    return writefiles(dir, prog, base, where, order, names, functions, helper)
+    files = unique(String(mi.def.file) for (mi, _) in instances)   # where a global's line may be
+    # The whole program's text, for the macros it uses.
+    everything = String[]
+    for f in functions; push!(everything, f[2], f[3]); end
+    for g in prog.globals; append!(everything, globallines(g, files, source, "")); end
+    append!(everything, Base.values(prog.helpers))
+    everything = join(everything, "\n")
+    writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper, everything)
+    return writefiles(dir, prog, base, where, order, names, functions, helper, files, source)
+end
+
+# A global with its value: its Julia line above it, as a statement's is, when the source
+# is being copied — its trailing `# note` riding along, otherwise after the declaration
+# — and the initializer written from that line's expression where it can be (`symbolic`),
+# so `π` is the macro; from the value otherwise.
+function globallines(g::Global, files, source::Bool, prefix)
+    src = globalsource(g, files)
+    lines = String[]
+    source && src !== nothing && push!(lines, "// @$(src.file):$(src.line): $(src.text)")
+    push!(lines, prefix * globaldecl(g; note=source && src !== nothing ? nothing : src === nothing ? nothing : src.note,
+                                         text=src === nothing ? nothing : symbolic(g, src.text)))
+    return lines
 end
 
 # Methods made on request stand in for Julia's own operators as targets (`synthetic`).
@@ -319,8 +346,22 @@ function includes(text)
     return [h for (h, pattern) in standard if occursin(pattern, code)]
 end
 
-# `#define`s for the portable constants, each written where it is used.
-macros(prog::Program) = ["#define LEGIBLEC_$m $(Float64(constants[m]))  // the double nearest $(constants[m])" for m in sort!(collect(prog.macros))]
+# The `#define`s a text needs, for the helper header: each irrational it uses, to
+# 128-bit precision — the compiler rounds the literal to the double nearest it, and a
+# `long double` build keeps more of it — and the guards for POSIX's `M_PI` and for
+# `CMPLX`. A file that uses any of them includes that header.
+function defines(text)
+    lines = String[]
+    for name in sort!(collect(keys(irrationals)))
+        occursin(Regex("\\b" * name * "\\b"), text) || continue
+        push!(lines, "#define $name $(digits128(irrationals[name]))  // $(irrationalname(irrationals[name])) to 128-bit precision")
+    end
+    return [lines; mathguards(text)]
+end
+usesdefine(text) = any(occursin(Regex("\\b" * name * "\\b"), text) for name in keys(irrationals)) || occursin(r"\b(M_PI|M_E)\b|\bCMPLXF?\(", text)
+
+# A constant to 128-bit precision: the digits of the binary128 nearest it, 113 bits.
+digits128(x) = setprecision(BigFloat, 113) do; string(BigFloat(x)); end
 
 # `M_PI` and `M_E` are POSIX, not ISO C: glibc's <math.h> leaves them out under a strict
 # `-std=c11`. A file that uses one defines it itself if the header didn't, the way C
@@ -329,7 +370,7 @@ function mathguards(text)
     lines = String[]
     for (m, v) in (("M_PI", π), ("M_E", ℯ))
         occursin(Regex("\\b$m\\b"), text) || continue
-        append!(lines, ["#ifndef $m", "#define $m $(Float64(v))  // not in ISO C; absent under a strict -std=c11", "#endif"])
+        append!(lines, ["#ifndef $m", "#define $m $(digits128(v))  // not in ISO C; absent under a strict -std=c11", "#endif"])
     end
     # C11's `CMPLX` builds a complex from its parts exactly; an older <complex.h> lacks it.
     for (m, t) in (("CMPLX", "double"), ("CMPLXF", "float"))
@@ -341,19 +382,20 @@ end
 
 # `helper.h` and `helper.c`: everything generated that the user's functions need —
 # `add_3`, `solve_4x4_4`, `powi`, `printarray_F64`. The header holds what the helpers
-# need — standard includes, constants, typedefs — plus prototypes of the out-of-line
-# helpers and the inline ones themselves; the `.c` holds the out-of-line ones, and is
-# written only when there is one. A struct a helper mentions is defined here, unless
-# `external` names the header that has it, which is then included.
-function writehelpers(dir, prog::Program, external, helper)
+# need — standard includes, typedefs — the macros the whole program uses (`LEGIBLEC_PI`;
+# `everything` is the program's text), plus prototypes of the out-of-line helpers and
+# the inline ones themselves; the `.c` holds the out-of-line ones, and is written only
+# when there is one. A struct a helper mentions is defined here, unless `external`
+# names the header that has it, which is then included.
+function writehelpers(dir, prog::Program, external, helper, everything)
     order = filter(!in(prog.exported), helperorder(prog.helpers))
-    isempty(order) && return
+    used = defines(everything)
+    isempty(order) && isempty(used) && return
     text = join((prog.helpers[n] for n in order), "\n")
     inline = [n for n in order if isinline(prog.helpers[n])]
     outline = [n for n in order if !isinline(prog.helpers[n])]
     guard = "LEGIBLEC_" * uppercase(identifier(helper)) * "_H"
     htext = String[]
-    used = [[m for m in macros(prog) if occursin(split(m)[2], text)]; mathguards(text)]
     append!(htext, used); isempty(used) || push!(htext, "")
     headers = String[]
     for (T, def) in prog.structs
@@ -424,7 +466,8 @@ end
 # `<base>` header of a split includes every other header, so a caller can include just
 # that. A file with nothing for a `.c` — a struct's header — gets none. Returns the
 # path of the `.c`, or the paths in file order when there are several.
-function writefiles(dir, prog::Program, base, where, order, names, functions, helper)
+function writefiles(dir, prog::Program, base, where, order, names, functions, helper, files, source::Bool)
+    declared(g::Global, prefix) = globallines(g, files, source, prefix)
     definition = Dict(zip(names, (f[3] for f in functions)))
     # What each file defines, for the includes: functions and foreign wrappers are looked
     # for as calls, the rest as words.
@@ -460,7 +503,12 @@ function writefiles(dir, prog::Program, base, where, order, names, functions, he
             push!(protos, prototype, "")
         end
         for (n, def) in tds; n in done || push!(body, def); end
-        for g in gls; push!(body, inheader(g) ? "static " * globaldecl(g) : "extern " * globaldecl(g; value=false)); end
+        for (k, g) in enumerate(gls)
+            inheader(g) || (push!(body, "extern " * globaldecl(g; value=false)); continue)
+            lines = declared(g, "static ")
+            length(lines) > 1 && k > 1 && push!(body, "")
+            append!(body, lines)
+        end
         isempty(gls) || push!(body, "")
         append!(body, protos)
         htext = join(body, "\n")
@@ -468,7 +516,7 @@ function writefiles(dir, prog::Program, base, where, order, names, functions, he
         header = ["#ifndef $guard", "#define $guard", ""]
         n0 = length(header)
         for h in includes(htext); push!(header, "#include <$h>"); end
-        any(mentions(htext, n) for n in helperstructs) && push!(header, "#include \"$helper.h\"")
+        (any(mentions(htext, n) for n in helperstructs) || usesdefine(htext)) && push!(header, "#include \"$helper.h\"")
         included = [f for f in order if f != file && (umbrella && file == base || needs(htext, f))]
         for f in included; push!(header, "#include \"$f.h\""); end
         length(header) > n0 && push!(header, "")
@@ -476,20 +524,24 @@ function writefiles(dir, prog::Program, base, where, order, names, functions, he
         write(joinpath(dir, file * ".h"), join(header, "\n") * "\n")
         # The `.c`: the includes it needs beyond its own header, then the mutable globals
         # with their values, then the definitions. Nothing to hold, no file.
-        cglobals = [globaldecl(g) for g in gls if !inheader(g)]
+        cglobals = String[]
+        for g in gls
+            inheader(g) && continue
+            lines = declared(g, "")
+            length(lines) > 1 && !isempty(cglobals) && push!(cglobals, "")
+            append!(cglobals, lines)
+        end
         defs = [functions[k][3] for k in fns]
         isempty(cglobals) && isempty(defs) && isempty(fgn) && continue
-        used = [[m for m in macros(prog) if occursin(split(m)[2], join(defs, "\n"))]; mathguards(join([cglobals; fgn; defs], "\n"))]
-        ctext = join([used; cglobals; fgn; defs], "\n")
+        ctext = join([cglobals; fgn; defs], "\n")
         path = joinpath(dir, file * ".c")
         push!(paths, path)
         open(path, "w") do io
             for h in includes(ctext); println(io, "#include <", h, ">"); end
-            (any(mentions(ctext, n; call=true) for n in keys(prog.helpers) if !(n in prog.exported)) || any(mentions(ctext, n) for n in helperstructs)) && println(io, "#include \"$helper.h\"")
+            (any(mentions(ctext, n; call=true) for n in keys(prog.helpers) if !(n in prog.exported)) || any(mentions(ctext, n) for n in helperstructs) || usesdefine(ctext)) && println(io, "#include \"$helper.h\"")
             for f in order; f != file && needs(ctext, f) && !(f in included) && println(io, "#include \"$f.h\""); end
             println(io, "#include \"$file.h\"")
             println(io)
-            foreach(m -> println(io, m), used); isempty(used) || println(io)
             foreach(g -> println(io, g), cglobals); isempty(cglobals) || println(io)
             foreach(x -> println(io, x), fgn); isempty(fgn) || println(io)
             for (k, d) in enumerate(defs); k == 1 || println(io); print(io, d); end

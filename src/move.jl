@@ -8,9 +8,11 @@
 # only where that's more than 1 — the element of `src` at `ssub` goes to the element of
 # `dst` at `dsub`. A side's subscripts are one per storage dimension, each `(offset,
 # axis)`: `offset` is a C expression to which the loop index of `axis` is added, or the
-# whole subscript when `axis` is 0. A scalar side has no subscripts. The run along the
-# last looped axis goes through `memcpy` when it is contiguous on both sides — that
-# axis is the last storage dimension of each.
+# whole subscript when `axis` is 0; an `offset` with `#` in it is the subscript with the
+# loop index in place of the `#` — `idx[#] - 1`, a gather through an index array. A
+# scalar side has no subscripts. The run along the last looped axis goes through
+# `memcpy` when it is contiguous on both sides — that axis is the last storage
+# dimension of each, and neither gathers along it.
 function move!(lines, sc::Scope, E::Type, dst, dsub, src, ssub, extents; conj::Bool=false)
     pairs, inner = movement(sc, E, dst, dsub, src, ssub, extents; conj)
     for line in nest(pairs, inner)
@@ -24,10 +26,12 @@ end
 function movement(sc::Scope, E::Type, dst, dsub, src, ssub, extents; conj::Bool=false)
     looped = [a for a in eachindex(extents) if extents[a] > 1]
     vars = Dict(zip(looped, indices(length(looped); taken=sc.names)))
-    sub(off, a) = a == 0 || !haskey(vars, a) ? off : off == "0" ? vars[a] : "$off + $(vars[a])"
+    sub(off, a) = a == 0 ? off : occursin("#", off) ? replace(off, "#" => get(vars, a, "0")) :
+                  !haskey(vars, a) ? off : off == "0" ? vars[a] : "$off + $(vars[a])"
     at(name, subs) = name * join("[$(sub(o, a))]" for (o, a) in subs)
     run = isempty(looped) ? 0 : looped[end]
-    if !conj && run != 0 && !isempty(dsub) && !isempty(ssub) && dsub[end][2] == run && ssub[end][2] == run
+    if !conj && run != 0 && !isempty(dsub) && !isempty(ssub) && dsub[end][2] == run && ssub[end][2] == run &&
+       !occursin("#", dsub[end][1]) && !occursin("#", ssub[end][1])
         # The start of the run on each side: a whole row is the row itself.
         start(name, subs) = subs[end][1] == "0" ? at(name, subs[1:end-1]) : "&" * at(name, subs[1:end-1]) * "[$(subs[end][1])]"
         inner = ["memcpy($(start(dst, dsub)), $(start(src, ssub)), sizeof($(ctype(E))[$(extents[run])]));"]
@@ -157,20 +161,68 @@ end
 
 # ---- slices ------------------------------------------------------------------------
 
-# `A[i, :]`, `A[:, j]`, `A[1:2, 2:3]`, `v[2:4]`, in any dimension: a copy, as in Julia,
-# into `dst`. `spans` gives each index of `A` as `(offset, extent, scalar)`; the
-# non-scalar ones are the dimensions the result has.
+# `A[i, :]`, `A[:, j]`, `A[1:2, 2:3]`, `v[2:4]`, `A[2:end, [1, 3]]`, in any dimension: a
+# copy, as in Julia, into `dst`. `spans` gives each index of `A` as `(offset, extent,
+# scalar, list)` (see `span`); the non-scalar ones are the dimensions the result has.
 function slice!(lines, sc::Scope, src, S::Type, spans, dst, D::Type)
-    spanned = [d for d in eachindex(spans) if !spans[d].scalar]
-    ssub = [(spans[a].offset, spans[a].scalar ? 0 : a) for a in axis(S)]
-    dsub = [("0", spanned[axis(D)[j]]) for j in 1:ndims(D)]
-    move!(lines, sc, eltype(D), dst, dsub, src, ssub, [s.extent for s in spans])
+    groups = Pair{Vector, Vector{String}}[]
+    gather!(groups, sc, src, S, spans, dst, D, fill("0", ndims(D)))
+    for (pairs, inner) in groups, line in nest(pairs, inner)
+        emit!(lines, sc, line)
+    end
 end
 
-# `A[i, :] = v`, `A[:, 3:4] = B`, `v[2:3] = w`: the same, the other way round.
-function setslice!(lines, sc::Scope, dst, D::Type, spans, src, S::Type)
+# The movements of a slice, grouped by the loops they share. A list of indices written
+# out, `[1, 3]`, is one movement per listed index — the slice at that index, landing at
+# its place in `dst`, `doff` being the offset along each storage dimension of `dst` —
+# and those taking the same loops are written in one nest, as a person would. A list
+# held at run time is a loop over it, reading through `idx[j] - 1`.
+function gather!(groups, sc::Scope, src, S::Type, spans, dst, D::Type, doff)
     spanned = [d for d in eachindex(spans) if !spans[d].scalar]
-    dsub = [(spans[a].offset, spans[a].scalar ? 0 : a) for a in axis(D)]
-    ssub = isarray(S) ? [("0", spanned[axis(S)[j]]) for j in 1:ndims(S)] : []
-    move!(lines, sc, eltype(D), dst, dsub, src, ssub, [s.extent for s in spans])
+    k = findfirst(d -> spans[d].list isa AbstractVector, eachindex(spans))
+    if k !== nothing
+        j = findfirst(j -> spanned[axis(D)[j]] == k, 1:ndims(D))
+        for (n, o) in enumerate(spans[k].list)
+            each = copy(spans)
+            each[k] = (offset=string(o), extent=1, scalar=false, list=nothing)
+            off = copy(doff)
+            off[j] = string(n - 1)
+            gather!(groups, sc, src, S, each, dst, D, off)
+        end
+        return
+    end
+    ssub = [(spans[a].list === nothing ? spans[a].offset : "$(spans[a].list)[#] - 1", spans[a].scalar ? 0 : a) for a in axis(S)]
+    dsub = [(doff[j], spanned[axis(D)[j]]) for j in 1:ndims(D)]
+    pairs, inner = movement(sc, eltype(D), dst, dsub, src, ssub, [s.extent for s in spans])
+    !isempty(groups) && groups[end].first == pairs ? append!(groups[end].second, inner) : push!(groups, pairs => inner)
+end
+
+# `A[i, :] = v`, `A[:, 3:4] = B`, `v[2:3] = w`, `A[:, [1, 3]] = B`: the same, the other
+# way round.
+function setslice!(lines, sc::Scope, dst, D::Type, spans, src, S::Type)
+    groups = Pair{Vector, Vector{String}}[]
+    scatter!(groups, sc, dst, D, spans, src, S, fill("0", isarray(S) ? ndims(S) : 0))
+    for (pairs, inner) in groups, line in nest(pairs, inner)
+        emit!(lines, sc, line)
+    end
+end
+
+function scatter!(groups, sc::Scope, dst, D::Type, spans, src, S::Type, soff)
+    spanned = [d for d in eachindex(spans) if !spans[d].scalar]
+    k = findfirst(d -> spans[d].list isa AbstractVector, eachindex(spans))
+    if k !== nothing
+        j = isarray(S) ? findfirst(j -> spanned[axis(S)[j]] == k, 1:ndims(S)) : nothing
+        for (n, o) in enumerate(spans[k].list)
+            each = copy(spans)
+            each[k] = (offset=string(o), extent=1, scalar=false, list=nothing)
+            off = copy(soff)
+            j === nothing || (off[j] = string(n - 1))
+            scatter!(groups, sc, dst, D, each, src, S, off)
+        end
+        return
+    end
+    dsub = [(spans[a].list === nothing ? spans[a].offset : "$(spans[a].list)[#] - 1", spans[a].scalar ? 0 : a) for a in axis(D)]
+    ssub = isarray(S) ? [(soff[j], spanned[axis(S)[j]]) for j in 1:ndims(S)] : []
+    pairs, inner = movement(sc, eltype(D), dst, dsub, src, ssub, [s.extent for s in spans])
+    !isempty(groups) && groups[end].first == pairs ? append!(groups[end].second, inner) : push!(groups, pairs => inner)
 end

@@ -152,14 +152,18 @@ for (int i = 0; i < 2; i++) {
 
 A literal with no arrays in it — `[1.0 2.0; 3.0 4.0]`,
 `[1.0, 2.0, 3.0]`, `SVector(1.0, 2.0, 3.0)`, `@SMatrix […]`, `SA[…]` — is
-assigned element by element, no helper:
+declared with its initializer, in one go as the Julia was written, a vector
+on one line and a matrix one row per line (a global array the same way):
 
 ```c
-out[0][0] = 1.0;
-out[0][1] = 2.0;
-out[1][0] = 3.0;
-out[1][1] = 4.0;
+double A[2][2] = {
+    {1.0, 2.0},
+    {3.0, 4.0},
+};
 ```
+
+Where it can't be declared there — into the out parameter, or a
+reassignment — it is assigned element by element, `out[0][0] = 1.0;`.
 
 `zeros`, `zeros(T)`, and `zero(A)` are one `memset`, inline; `ones` and
 `fill` are a loop; `one(A)` and `SMatrix{3,3}(I)` are the `memset` and then
@@ -171,11 +175,17 @@ changes layout (`B = A'` where Julia makes a real matrix) is a loop.
 `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[:, 2:end]`, `A[i, 2:3]`, in
 any dimension, are copies, as in Julia, written inline: a row or a run is
 one `memcpy`, a block a `memcpy` per row, a column a loop. Each index is a
-scalar (that dimension is dropped), a colon, or a literal range; `end` is
-the size, which inference already knows.
+scalar (that dimension is dropped), a colon, a literal range, or a list of
+indices; `end` is the size, which inference knows for a static array and the
+transpiler for a regular one it sized. A list written out, `A[2:end, [1, 3]]`
+or `v[[3, 1, 2]]`, is a gather: one copy per listed index, those sharing loops
+written in one nest, and the list itself never built; a listed index beyond
+the dimension is refused. A list held at run time, `v[idx]` with `idx` an
+integer vector of known length, is a loop reading `v[idx[i] - 1]`.
 
 Assigning the other way into a mutable array — `A[2, :] = v`, `A[:, 1] = v`,
-`A[:, 3:end] = B`, `v[2:3] = w` — is the same movement reversed. The shapes
+`A[:, 3:end] = B`, `v[2:3] = w`, `A[:, [1, 3]] = B`, `v[idx] = w` — is the
+same movement reversed. The shapes
 must match, as Julia requires. Not yet: a scalar or broadcast into a slice
 (`A[:, 1] .= 0`), and a range held in a variable. `sum`,
 `prod`, `maximum`, `minimum`, `any`, `all`, and `norm` are one loop each,
@@ -263,7 +273,8 @@ The meaning of each follows Julia's definition.
 | `[A B; C D]`, `[u; v]`, `[u v]`, `[A;; B]`, `[B;; C;;; D;; E]` | inline `memcpy` per row, or a loop | any dimension, any pieces that line up |
 | `zeros`, `zero(A)`; `ones`, `fill`; `one(A)`, `SMatrix{3,3}(I)` | inline `memset`; a loop; both | |
 | `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[i, 2:3]` | inline `memcpy` or a loop | any dimension |
-| `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:4] = B`, `v[2:3] = w` | inline `memcpy` or a loop | into a mutable array |
+| `A[2:end, [1, 3]]`, `v[[3, 1, 2]]`, `v[idx]` | a gather: one copy per listed index, sharing a nest; a loop over `idx[i] - 1` for a list held at run time | a listed index beyond the dimension is refused |
+| `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:4] = B`, `v[2:3] = w`, `A[:, [1, 3]] = B`, `v[idx] = w` | inline `memcpy` or a loop | into a mutable array |
 | `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm`, `count` | `sum_3`, `maximum_2x3`, `norm_3`, `count_3` | to a scalar |
 | `argmax`, `argmin`, `extrema` | `argmax_4` (Julia's 1-based index), `extrema_4` (a `(min, max)` tuple, as a struct) | vectors only for `argmax`/`argmin`; a matrix gives a `CartesianIndex` in Julia |
 | `sum(A; dims=1)`, `prod`, `maximum`, `minimum` with `dims` | `sum1_2x3(A, out)`, a 1×3 | the dimension is on the operation's name |

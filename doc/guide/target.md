@@ -31,12 +31,26 @@ becomes a declaration with its value near the top of the functions file:
 Julia binding is, and a plain global when the Julia is `k::Float64 = 2.0`.
 A global read by a function must be `const` or typed, since an untyped
 mutable global has no type Julia can compile against; the transpiler says
-so if it meets one. A constant defined in a module keeps the comment on
-its definition line — `const c = 299_792_458.0  # speed of light, m/s`
-gives `static const double CODATA_c = 2.99792458e8;  // speed of light,
-m/s` in the header, where every file that includes it can fold it — and
-only the constants a function reads come out, however many the module
-defines. A mutable global is defined in the `.c` and `extern` in the header.
+so if it meets one. A global comes with its Julia line above it, as a
+statement in a function does, comment and all — `const c = 299_792_458.0
+# speed of light, m/s` gives
+
+```c
+// @codata.jl:5: const c = 299_792_458.0  # speed of light, m/s
+static const double CODATA_c = 2.99792458e8;
+```
+
+in the header, where every file that includes it can fold it (with `source`
+off, just the note: `… = 2.99792458e8;  // speed of light, m/s`). The
+initializer is written from that Julia line's expression where a static
+initializer can hold it — number literals, `π` and `ℯ` as `LEGIBLEC_PI` and
+`LEGIBLEC_E`, signs, `+ - * /`, and array literals of those, a matrix one
+row per line — so `const τ = 2π` is `2 * LEGIBLEC_PI` and `[1.0, π]` is
+`{1.0, LEGIBLEC_PI}`; anything else, a name or a call, is the value Julia
+holds, as digits. Every element written from the expression is checked
+against the value. Only the constants a function reads come out, however
+many the module defines. A
+mutable global is defined in the `.c` and `extern` in the header.
 
 Listing a variable by keyword, `transpile(fall; g)`, or `; g, μ` for
 several, adds it whether or not anything reads it, so a constant can sit in

@@ -70,7 +70,7 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc hypot copysign` | the same, from `math.h`; the `f` family on a `Float32` (`sqrtf`, `fabsf`, `powf`) | |
 | `'a'`, `c + 1`, `c - 'a'`, `Int(c)`, `Char(n)`, `isdigit(c)`, `uppercase(c)` | `'a'`, `c + 1`, `c - 'a'`, `(int64_t)c`, `(char)n`, `isdigit(c)`, `(char)toupper(c)` | a `Char` is an ASCII `char`; the `ctype.h` classes agree with Julia's there |
 | `s == "abc"`, `length(s)`, `ncodeunits(s)`, `isempty(s)`, `s[i]` | `strcmp(s, "abc") == 0`, `utf8len(s)`, `(int64_t)strlen(s)`, `s[0] == '\0'`, `s[i - 1]` | a `String` is `const char *`, UTF-8 in both languages |
-| `pi`, `ℯ` | `M_PI`, `M_E` | POSIX, not ISO C; the `portable` option defines `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file instead |
+| `pi`, `ℯ`, `Base.MathConstants.γ`, `catalan`, your own `Base.@irrational` | `LEGIBLEC_PI`, `LEGIBLEC_E`, `LEGIBLEC_GAMMA`, `LEGIBLEC_CATALAN`, `LEGIBLEC_<NAME>` | any `AbstractIrrational`, by its symbol: a macro named after it, defined in the helper header to 128-bit precision, which the compiler rounds to the nearest double; the `posix` option writes POSIX's `M_PI` and `M_E` for π and ℯ instead |
 | `abs(x)` | `fabs(x)`; `llabs(x)` for `Int64`, `abs(x)` for `Int32` (`stdlib.h`) | |
 | `max`, `min` on floats | `fmax`, `fmin` | |
 | `max`, `min` on integers | `(a > b ? a : b)` | |
@@ -78,7 +78,7 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `atan(y, x)` | `atan2(y, x)` | |
 | `Float64(a)`, `Int64(x)`, … | `(double)a`, `(int64_t)x` | a cast |
 | `round(Int64, x)`, `floor(Int64, x)`, … | `(int64_t)rint(x)`, … | |
-| `pi`, `ℯ`, `Inf`, `NaN`, `Inf32`, `NaN32` | `M_PI`, `M_E`, `INFINITY`, `NAN` | from `math.h`; the macros serve both widths. `M_PI` and `M_E` are POSIX rather than ISO C — see the todo |
+| `Inf`, `NaN`, `Inf32`, `NaN32` | `INFINITY`, `NAN` | from `math.h`; the macros serve both widths |
 | `isnan`, `isinf`, `isfinite`, `signbit` | the same | `math.h` |
 | `typemax(Int64)`, `typemin(Int32)`, `typemax(UInt8)` | `INT64_MAX`, `INT32_MIN`, `UINT8_MAX` | `stdint.h`; `typemin` of an unsigned type is `0` |
 | `typemax(Float64)`, `typemin(Float64)` | `INFINITY`, `-INFINITY` | |

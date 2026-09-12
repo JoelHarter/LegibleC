@@ -10,7 +10,7 @@ Every keyword option of `transpile`.
 | `outpath` | `pwd()` | the folder |
 | `source` | `true` | copy each Julia line above its C as `// @file.jl:12: …`; comments are always carried, this controls the code lines |
 | `precise` | `false` | print floats with every digit (`%.17g`) instead of `%g` |
-| `portable` | `false` | define `LEGIBLEC_PI` and `LEGIBLEC_E` at the top of the file instead of using `M_PI` and `M_E`, which are POSIX rather than ISO C. Off, a file that uses `M_PI` or `M_E` still defines it under `#ifndef`, since glibc's `<math.h>` leaves them out under a strict `-std=c11` |
+| `posix` | `false` | write `pi` and `ℯ` as `M_PI` and `M_E` from `math.h`, which are POSIX rather than ISO C; a file that uses one defines it under `#ifndef`, since glibc's `<math.h>` leaves them out under a strict `-std=c11`. Off, they are `LEGIBLEC_PI` and `LEGIBLEC_E`, as every irrational — `Base.MathConstants.catalan`, one of your own by `Base.@irrational` — is a macro named after it, defined in the helper header to 128-bit precision, only where used |
 | `c23floattypes` | `false` | write `Float64` and `Float32` as C23's `_Float64` and `_Float32` instead of `double` and `float` |
 | `bool` | `Bool` | the C type for a `Bool`: `Bool` for C's `bool`, or one of Julia's integer types for that integer wherever a `Bool` appears, names included; the C then writes `0` and `1` and reads any nonzero value as true |
 | `width` | `100` | the longest line; a long scalar expression wraps at its loosest operators |

@@ -1680,3 +1680,97 @@ it died on `no C type for Union{…}`. A union of numbers alone, `r > 0 ? r
 function whose return type follows its argument types, `x + y` on ints
 or on floats, was never a problem: each instance is one C function with
 one type.
+
+---
+
+## 2026-09-13 — The returned variable is the out parameter
+
+**Decision.** When every exit of a function returns the same local
+variable of the author's — `return a`, or `a = …` as the last line, which
+Julia returns as the value stored — the output parameter is that variable:
+`void f(…, double a[restrict 3])`, built there from the start (the
+`outplacement!` of 2026-09-11) and never copied. Exits that return
+different things keep `out`. For this, `a = …` as a last line, whose value
+the IR gives two users (the store and the `return`) and would have
+computed into a temp then copied into `a`, is folded into the store
+(`foldstores!`): `%i = (a = A[2, :])`, and the return says `a`. A regular
+array whose size Julia doesn't know can now live in `out` in this one
+case, since its size is `out`'s by definition; and a regular array
+reassigned at another size — `a = [1.0; 2.0]` then `a = [1.0; 2.0; 3.0]`,
+one Julia type — is refused by name and line, where before the second
+store ran past the first declaration.
+
+**Why.** `a = ⛄[2, :]` as a function's body came out as a row copy into a
+temp, a copy into `a`, and a copy into `out`, where one `memcpy` into
+the parameter is what the Julia says. A reader who sees `a` returned in
+the Julia wants to see `a` in the C's signature; `out` is for when the
+Julia gives no name. The size refusal is the one-type rule (2026-09-12)
+applied to sizes, which Julia's types can't tell apart.
+
+**Index lists** (same day). `A[2:end, [1, 3]]`, `v[[3, 1, 2]]`, `v[idx]`,
+and their assignments: a fourth kind of index span, a list. One written out
+is evaluated at transpile time (`literal` on `Base.vect`), never built in C,
+and becomes one movement per listed index, each the slice at that index
+landing at its place in the result; movements taking the same loops share a
+nest, so `A[2:end, [1, 3]]` is one loop with two assignments in it. A list
+held at run time is a loop through `idx[i] - 1`, written as a subscript with
+a `#` where the loop index goes, which `movement` fills in; a run through
+such a subscript is never a `memcpy`. A listed index outside the dimension is
+refused at transpile time, as Julia would throw at run time. Before this the
+list was built as a C array and then used as a pointer subscript, which was
+wrong C, not a refusal.
+
+**Globals read inside a function** (same day). A global array read by name
+now carries its size from its value, so `end` folds on it as on a local. A
+global with neither `const` nor a type, `❄️ = […]` at top level, is `Any` to
+Julia wherever it is read; it was refused by whatever went wrong first, and
+is now refused by name, with the two ways to fix it. Variation selectors and
+zero-width joiners in a name spell as nothing: `❄️` is `snowflake`, not
+`snowflakeUFE0F`.
+
+**π and ℯ as our own macros** (same day). `pi` and `ℯ` are `LEGIBLEC_PI`
+and `LEGIBLEC_E` by default — what the `portable` option used to give, so
+that option is gone — defined once, in the helper header, which any file
+using them includes; the header is written for them even when there are no
+helpers. `M_PI` and `M_E` are POSIX, not ISO C, and are now the `posix`
+option, guarded under `#ifndef` in the same header. Bare digits were tried
+for an afternoon and rejected as against the craft tenet: a reader wants
+the name. Generalized the same evening to every `AbstractIrrational`: `π`,
+`ℯ`, `Base.MathConstants.γ` and `catalan`, and the author's own made with
+`Base.@irrational` are each a macro named `LEGIBLEC_` plus the symbol's C
+spelling in capitals, defined to 128-bit precision (the digits of the
+binary128 nearest it, which the compiler rounds to the double), so that
+π and ℯ come out exactly as before under one rule, and the author has a way
+to make macro constants of their own. The name follows the symbol the
+Julia wrote, never a value.
+Matching by value was tried the same afternoon and taken out: a
+`3.141592653589793` the author typed must stay digits, and the author's
+own `ONEPI` of the same value is their own. A global reaches the
+transpiler as a value, after Julia has turned its `π` into a double; so a
+global's initializer is written from its Julia line's *expression*
+(`symbolic`), found the way its comment is: number literals, `π` and `ℯ`
+when they are Base's, signs and `+ - * /`, and array literals of those,
+laid out by evaluating the literal with each leaf replaced by its number.
+`const τ = 2π` is `2 * LEGIBLEC_PI`; `[…; π; ℯ; 0]` has the macros in
+its rows. A leaf that is anything else has only its value, written as
+digits, and every rendered leaf is checked against the value Julia holds,
+so a line that isn't the assignment behind the value falls back to the
+value and can do no harm.
+
+**Literals as initializers** (same day). An array the Julia writes out in
+one go — `[1.0 2.0; 3.0 x]`, `SVector(x, 2.0, π)`, a global's value — is
+declared with its initializer, a vector on one line and a matrix one row
+per line, in the header and in a function body alike; C99 allows the
+elements of an automatic array's initializer to be expressions, so `x` is
+fine there. Where there is no declaration to attach it to — the out
+parameter, a reassignment, a declaration hoisted above an `if` — the
+elements are assigned one by one as before.
+
+**A global's Julia line** (same day). A global with its value gets its
+Julia line above it, `// @file.jl:4: const ❄️ = […]`, as a statement in a
+function does, its trailing `# note` riding along; with `source` off the
+note goes after the declaration as before. Julia keeps no location for a
+binding, so the line is found by searching: the module's own file from its
+first line when it has one, else the files the program's functions came
+from, taking the last top-level `name = …`, since that is the value the
+transpiler saw. A `Main` global in a script had no comment at all before.

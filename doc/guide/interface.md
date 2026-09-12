@@ -12,8 +12,10 @@ A scalar result is the return value.
 **Arrays** are fixed-size C arrays, row-major: a 2×3 matrix is
 `double A[2][3]`, and `A[i][j]` is Julia's `A[i+1, j+1]`. Inputs are
 `const`, unless the function writes into them. A function whose Julia result
-is an array returns `void` and takes a trailing `out` parameter, declared
-`restrict`: pass a fresh array, never one of the inputs.
+is an array returns `void` and takes a trailing output parameter, declared
+`restrict`: pass a fresh array, never one of the inputs. It is named after
+the variable the function returns when every exit returns the same one,
+`return a` or `a = …` as the last line, and `out` otherwise.
 
 ```c
 double x[3] = {1.0, 0.0, 0.0}, v[3] = {0.0, 1.0, 0.0}, out[6];

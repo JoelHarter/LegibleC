@@ -151,6 +151,9 @@ end
 # The C spelling of one (decomposed) character.
 function piece(c::Char)
     isascii(c) && (isletter(c) || isdigit(c) || c == '_') && return string(c)
+    # A variation selector (the `️` that makes ❄ into ❄️) or a zero-width joiner says how
+    # to draw a glyph, not what it is: nothing.
+    (c in '\ufe00':'\ufe0f' || c in '\U000e0100':'\U000e01ef' || c == '\u200d' || c == '\u200c') && return ""
     haskey(overrides, c) && return overrides[c]
     haskey(spelled, c) && return spelled[c]
     return "U" * uppercase(string(UInt32(c), base=16))

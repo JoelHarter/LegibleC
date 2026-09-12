@@ -26,8 +26,6 @@ mutable struct Program
     width::Int                                                     # the longest line; scalar expressions wrap past it
     suffix::Bool                                                   # temps carry what they were computed from: `temp1_a_b`
     returned::Dict{Core.MethodInstance, Union{String, Nothing}}    # the variable a user function returns, if it returns one (`returnname!`)
-    portable::Bool                                                 # our own `LEGIBLEC_PI` macros instead of POSIX `M_PI`
-    macros::Set{String}                                            # the constants used: "PI", "E"
     effects::Dict{Core.MethodInstance, Set{Symbol}}                # what a user function does besides compute (see `effects!`)
     kinds::Dict{Core.MethodInstance, Any}                          # the C struct a tuple-returning function returns (see `returnkind!`)
     tupledefs::Vector{Pair{String, String}}                        # those typedefs, name => text
@@ -53,15 +51,14 @@ struct Kind
     cname::String
     fields::Vector{String}
 end
-Program(; precise::Bool=false, width::Integer=100, portable::Bool=false, suffix::Bool=true) =
+Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
-            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), portable, Set{String}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}())
+            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}())
 
-# The mathematical constants, for when the output defines its own macros (`portable`):
-# each is emitted as the double it rounds to, in the shortest form that reads back to
-# it, with the symbol in a comment (`transpile` writes the lines).
-const constants = Dict("PI" => π, "E" => ℯ)
+# The irrationals the current `transpile` call has met, by the macro each is written as:
+# `"LEGIBLEC_PI" => π`. The helper header defines the ones the output uses.
+const irrationals = Dict{String, Any}()
 
 # Per-function state.
 mutable struct Scope
@@ -120,6 +117,7 @@ mutable struct Scope
     kinds::Dict{Int, Kind}              # SSA values holding a tuple of a known layout
     slotkinds::Dict{Int, Kind}          # slots likewise; a spread parameter has an empty cname
     placed::Dict{Int, String}           # a construction whose destination a field's value was computed into, already declared (`placement`)
+    known::Dict{Int, Any}               # SSA values the transpiler knows as constants that Julia didn't: `end` of a sized regular array, a range of such
     outplaced::Dict{Int, Int}           # array slots that live in `out` from the start, slot -> offset (`outplacement!`)
     pointers::Set{String}               # C names that are pointers, not arrays: `sizeof` needs the type spelled out
 end
@@ -143,7 +141,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), 1,
-                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Int}(), Set{String}())
+                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}())
 end
 
 include("flow.jl")
@@ -182,6 +180,12 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
         sc.result = sc.resultname = free("out", sc.names)
     end
     analyze!(sc)
+    # `return a` from every exit — or `a = …` as the last line — with `a` a local of the
+    # author's living in `out` from the start: then the out parameter is `a` itself.
+    s = returnedslot(ci)
+    if sc.resultparam && s !== nothing && get(sc.outplaced, s, -1) == 0 && !haskey(sc.rebound, s) && count(==(sc.names[s]), sc.names) == 1
+        sc.result = sc.resultname = sc.names[s]
+    end
 
     # The signature line's own comment comes before the prologue of copies; a short-form
     # definition's line is its body, so that comment stays with the body.
@@ -234,7 +238,7 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
         end
         push!(lines, "")
     end
-    locals = sort([s for s in keys(sc.outplaced) if !haskey(sc.rebound, s)]; by=s -> sc.outplaced[s])
+    locals = sort([s for s in keys(sc.outplaced) if !haskey(sc.rebound, s) && sc.names[s] != sc.resultname]; by=s -> sc.outplaced[s])
     if !isempty(locals)
         push!(lines, "// $(listing([sc.names[s] for s in locals])) $(length(locals) == 1 ? "is" : "are") built in $(sc.resultname), where the function returns $(length(locals) == 1 ? "it" : "them")")
         for s in locals
@@ -291,6 +295,7 @@ end
 function analyze!(sc::Scope)
     ci = sc.ci
     code = ci.code
+    foldstores!(sc)
     onetype!(sc)
     sc.fors = findfors(ci)
     for F in values(sc.fors)
@@ -547,7 +552,13 @@ function statement!(lines, sc::Scope, i, st)
     ci = sc.ci
     sc.current = i
     st === nothing && return
-    st isa GlobalRef && return                    # constant load; resolved where it's used
+    if st isa GlobalRef                           # a global: resolved where it's used
+        # A global with neither `const` nor a type is `Any` to Julia wherever it is read,
+        # so nothing computed from it has a type. Refused by name, with the two ways to give it one.
+        widen(ci.ssavaluetypes[i]) === Any && !Base.isconst(st.mod, st.name) &&
+            throw(ArgumentError("`$(st.name)` is a global with neither `const` nor a type, so Julia has no type for it or for anything computed from it (line $(sc.stmtline[i])); write `const $(st.name) = …`, or `$(st.name)::$(typeof(getfield(st.mod, st.name))) = …` if it is to change"))
+        return
+    end
     st isa Core.NewvarNode && return
     st isa Expr && st.head in (:meta, :code_coverage_effect) && return
     i in sc.inlined && return                     # rendered inside the expression that consumes it
@@ -657,10 +668,13 @@ function statement!(lines, sc::Scope, i, st)
             target = fieldaccess(sc, st.args[2], st.args[3])
             isarray(F) ? copy!(lines, sc, value(sc, st.args[4]), valuetype(sc, st.args[4]), target, F) :
                          emit!(lines, sc, "$target = $(value(sc, st.args[4]));")
-        elseif f === Base.setindex! && any(k -> literal(sc, k) isa Colon || literal(sc, k) isa AbstractUnitRange, st.args[4:end])
+        elseif f === Base.setindex! && any(k -> literal(sc, k) isa Colon || literal(sc, k) isa AbstractUnitRange || isarray(valuetype(sc, k)), st.args[4:end])
             setslice!(lines, sc, i, st.args[2], st.args[3], st.args[4:end])
         elseif f === Base.setindex!
             emit!(lines, sc, "$(index(sc, st.args[2], st.args[4:end])) = $(value(sc, st.args[3]));")
+        elseif f === Base.vect && literal(sc, Core.SSAValue(i)) isa AbstractVector && onlyindexes(sc, i)
+            # `[1, 3]` written as an index, `A[2:end, [1, 3]]`: compile-time, like a literal range.
+            return
         elseif f in (Base.zeros, Base.ones, Base.fill) || (f in (Base.zero, Base.one) && isarray(T)) || isconstruction(f) || f === Base.materialize
             dest = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, st))
             construct!(lines, sc, i, st, dest; declaration=!(onlyreturned(ci, i) && sc.resultparam))
@@ -678,13 +692,14 @@ function statement!(lines, sc::Scope, i, st)
                 sc.expr[i] = value(sc, st.args[2])
                 sc.shapes[i] = transposed(S; conj=f === Base.adjoint)
             end
-        elseif f in (Base.lastindex, Base.firstindex, Base.length, Base.size) && ci.ssavaluetypes[i] isa Core.Const && ci.ssavaluetypes[i].val isa Integer
-            # A size inference already knows (`end` in an index): the number, no temp.
-            sc.expr[i] = string(ci.ssavaluetypes[i].val)
+        elseif f in (Base.lastindex, Base.firstindex, Base.length, Base.size) && (v = literal(sc, Core.SSAValue(i))) isa Integer
+            # A size the transpiler knows — inference's, for a static array, or its own,
+            # for a regular array it built or was given a size for: the number, no temp.
+            sc.expr[i] = string(v)
         elseif f === Colon() || f === Base.OneTo || f === Base.eachindex || f === Base.axes
-            # A literal range that only indexes (`v[2:3]`) is compile-time; any other
+            # A literal range that only indexes (`v[2:end]`) is compile-time; any other
             # range outside a `for` has no C.
-            ci.ssavaluetypes[i] isa Core.Const && all(st -> iscall(st, Base.getindex) || iscall(st, Base.setindex!), (st for st in ci.code if uses(st, i))) && return
+            literal(sc, Core.SSAValue(i)) isa AbstractRange && onlyindexes(sc, i) && return
             throw(ArgumentError("ranges are only supported as the range of a for loop (statement $i)"))
         elseif isarray(T) && foldable(sc, i, st)
             # `-x` feeding `x * s` or `x / s`: the sign goes onto the scalar, exactly.
@@ -787,14 +802,17 @@ function statement!(lines, sc::Scope, i, st)
         # `%i = x`: a read of a variable. Same rule as above.
         x = sc.names[st.id]
         haskey(sc.slotkinds, st.id) && (sc.kinds[i] = sc.slotkinds[st.id])
+        # The variable's type carries the shape the transpiler knows; the statement's
+        # may not, for a regular array (`Matrix{Float64}`).
+        V = valuetype(sc, st)
         if stable(ci, i, st.id)
             sc.expr[i] = x
         else
             t = temp!(sc, i, contribution(sc, st))
-            emit!(lines, sc, isarray(T) ? "$(declare(valuetype(sc, st), t));" : "$(ctype(T)) $t = $x;")
-            isarray(T) && copy!(lines, sc, x, valuetype(sc, st), t, valuetype(sc, st))
+            emit!(lines, sc, isarray(V) ? "$(declare(V, t));" : "$(ctype(T)) $t = $x;")
+            isarray(V) && copy!(lines, sc, x, V, t, V)
         end
-        isarray(T) && (sc.shapes[i] = valuetype(sc, st))
+        isarray(V) && (sc.shapes[i] = V)
     elseif st isa Core.SSAValue || st isa Number
         sc.expr[i] = value(sc, st)                 # pure copy; no temp needed
         isarray(T) && (sc.shapes[i] = valuetype(sc, st))
@@ -855,12 +873,23 @@ function store!(lines, sc::Scope, i, x, rhs; declaration::Bool=false)
         else
             arraycall!(lines, sc, i, rhs, x; declaration)
         end
-        sc.slotshapes[slot] = sc.shapes[i]
+        slotshape!(sc, slot, sc.shapes[i])
     else
         declaration && emit!(lines, sc, declare(valuetype(sc, rhs), x) * ";")
         copy!(lines, sc, value(sc, rhs), valuetype(sc, rhs), x, valuetype(sc, rhs))
-        sc.slotshapes[slot] = valuetype(sc, rhs)
+        slotshape!(sc, slot, valuetype(sc, rhs))
     end
+end
+
+# A variable is one C array, of the size its first value had. A regular array
+# reassigned at another size — `a = [1.0; 2.0]` then `a = [1.0; 2.0; 3.0]`, one Julia
+# type — is refused by name and line; a static one is two types, refused by `onetype!`.
+function slotshape!(sc::Scope, slot, T)
+    old = get(sc.slotshapes, slot, nothing)
+    if old !== nothing && shape(old) !== nothing && shape(T) !== nothing && collect(shape(old)) != collect(shape(T))
+        throw(ArgumentError("`$(sc.ci.slotnames[slot])` is a $(describe(old)) and then a $(describe(T)) at line $(sc.stmtline[sc.current]); C holds it as one array of one size, so use a name for each"))
+    end
+    sc.slotshapes[slot] = T
 end
 
 # Calls that make a whole array: `zeros`/`ones`/`fill`, `zero`/`one`, `SMatrix{…}(I)`,
@@ -912,17 +941,56 @@ end
 # The compile-time value of `x`, or `nothing` if it has none.
 function literal(sc::Scope, x)
     x isa QuoteNode && return x.value
-    x isa Core.SSAValue && return (t = sc.ci.ssavaluetypes[x.id]; t isa Core.Const ? t.val : nothing)
     x isa GlobalRef && return getfield(x.mod, x.name)
-    return x
+    x isa Core.SSAValue || return x
+    t = sc.ci.ssavaluetypes[x.id]
+    t isa Core.Const && return t.val
+    haskey(sc.known, x.id) && return sc.known[x.id]
+    # What Julia didn't fold but the transpiler can: a size of an array whose shape it
+    # knows (`end` on a regular array it built), and a range with such ends.
+    st = sc.ci.code[x.id]
+    st isa Expr && st.head === :call || return nothing
+    f = callee_or_nothing(sc.ci, st.args[1])
+    v = nothing
+    if f in (Base.lastindex, Base.firstindex, Base.length, Base.size)
+        v = sizeknown(sc, x.id, f, st.args[2:end])
+    elseif f === Colon() && length(st.args) in (3, 4)
+        ends = [literal(sc, a) for a in st.args[2:end]]
+        all(e -> e isa Integer, ends) && (v = length(ends) == 2 ? (ends[1]:ends[2]) : (ends[1]:ends[2]:ends[3]))
+    elseif f === Base.vect && length(st.args) > 1
+        items = [literal(sc, a) for a in st.args[2:end]]   # `[1, 3]` written out, as an index
+        all(e -> e isa Integer, items) && (v = Int[items...])
+    end
+    v === nothing || (sc.known[x.id] = v)
+    return v
+end
+
+# The integer `lastindex(A[, d])`, `firstindex`, `length(A)` or `size(A, d)` yields when
+# the array's size is known — by inference, or by the transpiler for a regular array
+# it built or was given a size for — else nothing.
+function sizeknown(sc::Scope, i, f, args)
+    t = sc.ci.ssavaluetypes[i]
+    t isa Core.Const && t.val isa Integer && return t.val
+    isempty(args) && return nothing
+    T = valuetype(sc, args[1])
+    isarray(T) && shape(T) !== nothing || return nothing
+    s = shape(T)
+    d = length(args) == 2 ? literal(sc, args[2]) : nothing
+    length(args) == 2 && !(d isa Integer && 1 <= d <= length(s)) && return nothing
+    f === Base.firstindex && return 1
+    f === Base.length && return prod(s)
+    f === Base.lastindex && return d === nothing ? prod(s) : s[d]
+    f === Base.size && return d === nothing ? nothing : s[d]
+    return nothing
 end
 
 # `hvcat`, `vcat`, `hcat`, `vect`, their `typed_` forms, and static-array constructors.
 isconstruction(f) = f in (Base.hvcat, Base.vcat, Base.hcat, Base.vect, Base.typed_hvcat, Base.typed_vcat, Base.typed_hcat, Base.hvncat) ||
                     (f isa Type && f <: StaticArrays.StaticArray)
 
-# Block construction and array literals. All-scalar literals are assigned element by
-# element; anything with an array block goes through a `cat` helper.
+# Block construction and array literals. An all-scalar literal is declared with its
+# initializer, or assigned element by element where it can't be; anything with an array
+# block is moved into place block by block.
 function concatenate!(lines, sc::Scope, i, f, args, dest; declaration::Bool=false)
     ci = sc.ci
     tupleof(x) = x isa Core.SSAValue && iscall(ci.code[x.id], Core.tuple) ? ci.code[x.id].args[2:end] :
@@ -932,13 +1000,19 @@ function concatenate!(lines, sc::Scope, i, f, args, dest; declaration::Bool=fals
         elems = length(args) == 1 && tupleof(args[1]) !== nothing ? tupleof(args[1]) : args
         R = widen(ci.ssavaluetypes[i])
         all(a -> !isarray(valuetype(sc, a)), elems) || throw(ArgumentError("a static constructor from arrays is not supported (statement $i)"))
-        declaration && emit!(lines, sc, declare(R, dest) * ";")
         s = shape(R)
-        # Elements arrive column-major; write them row by row, as a person would.
-        order = length(s) == 1 ? eachindex(elems) : sort(eachindex(elems); by=k -> ((k - 1) % s[1], (k - 1) ÷ s[1]))
-        for k in order
-            sub = length(s) == 1 ? "[$(k-1)]" : "[$((k-1) % s[1])][$((k-1) ÷ s[1])]"
-            emit!(lines, sc, "$dest$sub = $(value(sc, elems[k]));")
+        if declaration
+            # Declared here: with its initializer, in one go, as the Julia was written.
+            grid = Array{String}(undef, s...)
+            for k in eachindex(elems); grid[k] = value(sc, elems[k]); end   # column-major, as they arrive
+            initialize!(lines, sc, declare(R, dest), grid)
+        else
+            # Elements arrive column-major; write them row by row, as a person would.
+            order = length(s) == 1 ? eachindex(elems) : sort(eachindex(elems); by=k -> ((k - 1) % s[1], (k - 1) ÷ s[1]))
+            for k in order
+                sub = length(s) == 1 ? "[$(k-1)]" : "[$((k-1) % s[1])][$((k-1) ÷ s[1])]"
+                emit!(lines, sc, "$dest$sub = $(value(sc, elems[k]));")
+            end
         end
         sc.shapes[i] = R
         return
@@ -969,6 +1043,21 @@ function concatenate!(lines, sc::Scope, i, f, args, dest; declaration::Bool=fals
     E = eltype(T)
     R = shape(T) !== nothing ? T : shaped(E, Tuple(ndims(T) == 1 ? size[1:1] : size))
     ndims(R) == 1 && any(!=(1), size[2:end]) && throw(ArgumentError("a vector can't hold $(join(size, "×")) (statement $i)"))
+    if declaration && all(T -> !isarray(T), types)
+        # An all-scalar literal declared here: with its initializer, a line per row, in
+        # one go, as the Julia was written. Elsewhere — into `out`, or a reassignment —
+        # element by element.
+        _, places = layout(tree, types)
+        grid = Array{String}(undef, shape(R)...)
+        for (b, off) in places
+            grid[([off; zeros(Int, ndims(R))][1:ndims(R)] .+ 1)...] = value(sc, blocks[b])
+        end
+        start = length(lines) + 1
+        initialize!(lines, sc, declare(R, dest), grid)
+        step!(lines, sc, "$dest = $(catnotation(sc, tree, blocks, f))"; from=start)
+        sc.shapes[i] = R
+        return
+    end
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     start = length(lines) + 1
     construct!(lines, sc, tree, blocks, dest, R)
@@ -1242,7 +1331,7 @@ function slice!(lines, sc::Scope, i, args, dest; declaration::Bool=false)
     A, idx = args[1], args[2:end]
     T = valuetype(sc, A)
     length(idx) == ndims(T) || throw(ArgumentError("$(length(idx)) indices into a $(ndims(T))-dimensional array (statement $i)"))
-    spans = [span(sc, T, d, k) for (d, k) in enumerate(idx)]
+    spans = Any[span(sc, T, d, k) for (d, k) in enumerate(idx)]
     R = widen(sc.ci.ssavaluetypes[i])
     shape(R) === nothing && (R = shaped(eltype(T), Tuple(s.extent for s in spans if !s.scalar)))
     declaration && emit!(lines, sc, declare(R, dest) * ";")
@@ -1257,18 +1346,31 @@ function indexnotation(sc::Scope, k)
     x = literal(sc, k)
     x isa Colon && return ":"
     x isa AbstractUnitRange && return "$(first(x)):$(last(x))"
+    x isa AbstractVector && return "[" * join(x, ", ") * "]"
     k isa Integer && return string(k)
     return first(expression(sc, k))
 end
 
-# One index of a slice, as the 0-based C offset it starts at and the extent it covers
-# along dimension `d` of `T`: a scalar covers 1, a colon the whole dimension, a literal
-# range its length.
+# One index of a slice along dimension `d` of `T`, as the 0-based C offset it starts at
+# and the extent it covers: a scalar covers 1 (and the dimension is dropped), a colon
+# the whole dimension, a literal range its length. A list of indices is a gather over
+# `extent` positions, with no one offset: `[1, 3]` written out is the list of 0-based
+# offsets, and an integer vector held at run time, `v[idx]`, the name of that C array.
 function span(sc::Scope, T::Type, d, k)
     x = literal(sc, k)
-    x isa Colon && return (offset="0", extent=extent(T, d), scalar=false)
-    x isa AbstractUnitRange && return (offset=string(first(x) - 1), extent=length(x), scalar=false)
-    return (offset=zerobased(sc, k), extent=1, scalar=true)
+    x isa Colon && return (offset="0", extent=extent(T, d), scalar=false, list=nothing)
+    x isa AbstractUnitRange && return (offset=string(first(x) - 1), extent=length(x), scalar=false, list=nothing)
+    if x isa AbstractVector{<:Integer}
+        all(j -> 1 <= j <= extent(T, d), x) || throw(ArgumentError("the index list $x runs outside dimension $d of a $(describe(T)) (line $(sc.stmtline[sc.current]))"))
+        return (offset="", extent=length(x), scalar=false, list=[j - 1 for j in x])
+    end
+    K = valuetype(sc, k)
+    if isarray(K)
+        ndims(K) == 1 && eltype(K) <: Integer && shape(K) !== nothing ||
+            throw(ArgumentError("an index is a scalar, a range, `:`, or a vector of integers of a known length, not a $(shape(K) === nothing ? string(K) : describe(K)) (line $(sc.stmtline[sc.current]))"))
+        return (offset="", extent=extent(K, 1), scalar=false, list=value(sc, k))
+    end
+    return (offset=zerobased(sc, k), extent=1, scalar=true, list=nothing)
 end
 
 # `A[2, :] = v`, `A[:, 3:4] = B`, `v[2:3] = w`: part of a mutable array assigned from a
@@ -1276,7 +1378,7 @@ end
 function setslice!(lines, sc::Scope, i, A, src, idx)
     T, S = valuetype(sc, A), valuetype(sc, src)
     length(idx) == ndims(T) || throw(ArgumentError("$(length(idx)) indices into a $(ndims(T))-dimensional array (statement $i)"))
-    spans = [span(sc, T, d, k) for (d, k) in enumerate(idx)]
+    spans = Any[span(sc, T, d, k) for (d, k) in enumerate(idx)]
     spanned = [d for d in eachindex(spans) if !spans[d].scalar]
     Tuple(spans[d].extent for d in spanned) == Tuple(extents(S)) || throw(ArgumentError("assigning a $(describe(S)) into a $(join((spans[d].extent for d in spanned), "×")) slice (statement $i)"))
     source = value(sc, src)
@@ -1326,12 +1428,11 @@ function returnname!(prog::Program, mi::Core.MethodInstance)
     haskey(prog.returned, mi) && return prog.returned[mi]
     ci, _ = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     name = nothing
-    for st in ci.code
+    for (r, st) in enumerate(ci.code)
         st isa Core.ReturnNode && isdefined(st, :val) || continue
-        v = st.val
-        v isa Core.SSAValue && ci.code[v.id] isa Core.SlotNumber && (v = ci.code[v.id])
-        v isa Core.SlotNumber && v.id > ci.nargs && !startswith(string(ci.slotnames[v.id]), "#") || (name = nothing; break)
-        s = identifier(string(ci.slotnames[v.id]))
+        v = returnslot(ci, r)
+        v !== nothing && v > ci.nargs && !startswith(string(ci.slotnames[v]), "#") || (name = nothing; break)
+        s = identifier(string(ci.slotnames[v]))
         name === nothing ? (name = s) : name == s || (name = nothing; break)
     end
     prog.returned[mi] = name
@@ -1340,9 +1441,25 @@ end
 
 # Is the tuple made at statement `i` used only as an argument to the user's functions?
 function consumedbycalls(sc::Scope, i)
-    users = [st for st in sc.ci.code if uses(st, i)]
+    users = [consumer(st) for st in sc.ci.code if uses(st, i)]
     isempty(users) && return false
     return all(st -> st isa Expr && st.head === :call && userinstance!(sc, callee_or_nothing(sc.ci, st.args[1]), st.args[2:end]) !== nothing, users)
+end
+
+# The expression a statement computes: the right-hand side of a store, else itself.
+consumer(st) = st isa Expr && st.head === :(=) ? st.args[2] : st
+
+# Is SSA value `i` used only as an index — among the indices of `getindex` and
+# `setindex!` calls, never as the array or the value?
+function onlyindexes(sc::Scope, i)
+    for st in sc.ci.code
+        uses(st, i) || continue
+        c = consumer(st)
+        iscall(c, Base.getindex)  && !uses(c.args[2], i) && continue
+        iscall(c, Base.setindex!) && !uses(c.args[2], i) && !uses(c.args[3], i) && continue
+        return false
+    end
+    return true
 end
 
 # The C struct a tuple-returning function returns: named after the function, `step_t`,
@@ -1451,12 +1568,11 @@ end
 # The one variable every `return` of the function returns, or nothing.
 function returnedslot(ci)
     slot = nothing
-    for st in ci.code
+    for (r, st) in enumerate(ci.code)
         st isa Core.ReturnNode && isdefined(st, :val) || continue
-        v = st.val
-        v isa Core.SSAValue && ci.code[v.id] isa Core.SlotNumber && (v = ci.code[v.id])
-        v isa Core.SlotNumber || return nothing
-        slot === nothing ? (slot = v.id) : slot == v.id || return nothing
+        v = returnslot(ci, r)
+        v === nothing && return nothing
+        slot === nothing ? (slot = v) : slot == v || return nothing
     end
     return slot
 end
@@ -1912,30 +2028,133 @@ end
 
 # A global's declaration: with its value, `const double v[3] = {1.0, 2.0, 3.0};`, or
 # without, for the header's `extern`.
-function globaldecl(g::Global; value::Bool=true)
+function globaldecl(g::Global; value::Bool=true, note=nothing, text=nothing)
     T = globaltype(g.value)
-    decl = (g.constant && !(T <: AbstractString) ? "const " : "") * declare(T, g.cname) * (value ? " = " * initializer(g.value) : "") * ";"
-    note = globalcomment(g)
-    return note === nothing ? decl : decl * "  // " * note
+    decl = (g.constant && !(T <: AbstractString) ? "const " : "") * declare(T, g.cname) * (value ? " = " * something(text, initializer(g.value)) : "") * ";"
+    note === nothing && return decl
+    nl = findfirst('\n', decl)                  # a matrix's rows are lines of their own: the note stays on the first
+    return nl === nothing ? decl * "  // " * note : decl[1:nl-1] * "  // " * note * decl[nl:end]
 end
 
-# The trailing comment on a global's definition, `const c = 299_792_458.0  # speed of
-# light, m/s`, carried onto its C declaration. Julia records where a module begins
-# (`Base.moduleloc`) but not where each binding is, so the file is searched from there
-# for the first line that defines the name. `nothing` without a module, a file, or a
-# comment.
-function globalcomment(g::Global)
-    g.mod isa Module && isdefined(Base, :moduleloc) || return nothing
-    loc = Base.moduleloc(g.mod)
-    isempty(string(loc.file)) && return nothing
-    path = Base.find_source_file(string(loc.file))
-    (path === nothing || !isfile(path)) && return nothing
-    lines = readlines(path)
+# The Julia expression a global was assigned, as its C initializer, so that `π` in the
+# Julia is `LEGIBLEC_PI` in the C rather than the double it became — the symbol says so,
+# never a value. Only what a static initializer may hold: number literals, an irrational
+# by its symbol (`π`, `ℯ`, the author's own), a sign, and `+ - * /` of those; an array literal of such, laid
+# out by evaluating the literal with each leaf replaced by its number. A leaf that is
+# anything else — a name, a call — has only its value, written as digits. Every rendered
+# leaf is checked against the value Julia holds; any disagreement, and the whole value
+# is written instead, so a line that isn't the assignment behind the value can do no harm.
+function symbolic(g::Global, text)
+    ex = try Meta.parse(text) catch; return nothing end
+    rhs = assigned(ex, g.name)
+    rhs === nothing && return nothing
+    v = g.value
+    v isa AbstractArray || return leafsymbolic(rhs, g.mod, v)
+    rhs isa Expr && rhs.head in (:vect, :vcat, :hcat, :hvcat, :ncat, :typed_vcat, :typed_hcat, :typed_hvcat, :typed_ncat) || return nothing
+    leaves = Any[]
+    marked = marklayout(rhs, leaves)
+    layout = try Core.eval(g.mod, marked) catch; return nothing end
+    layout isa AbstractArray && size(layout) == size(v) && all(x -> x isa Real && isinteger(x), layout) || return nothing
+    grid = Array{String}(undef, size(v))
+    for k in eachindex(v)
+        s = leafsymbolic(leaves[Int(layout[k])], g.mod, v[k])
+        s === false && return nothing
+        grid[k] = something(s, initializer(v[k]))
+    end
+    return braces(grid)
+end
+
+# The literal with each leaf replaced by its number in `leaves`; the dimension of an
+# `ncat`, the row lengths of an `hvcat` and the type of a `typed_` form stay.
+function marklayout(ex, leaves)
+    ex isa Expr && ex.head in (:vect, :vcat, :hcat, :hvcat, :ncat, :nrow, :row, :typed_vcat, :typed_hcat, :typed_hvcat, :typed_ncat) || (push!(leaves, ex); return length(leaves))
+    keep = ex.head in (:ncat, :nrow, :typed_ncat) ? 1 : ex.head in (:hvcat, :typed_vcat, :typed_hcat) ? 1 : 0
+    ex.head in (:typed_ncat, :typed_hvcat) && (keep = 2)
+    return Expr(ex.head, ex.args[1:keep]..., (marklayout(a, leaves) for a in ex.args[keep+1:end])...)
+end
+
+# One leaf as C, or nothing for a leaf with only a value, or false when the leaf's own
+# value disagrees with the one Julia holds.
+function leafsymbolic(ex, mod, expected)
+    r = crender(ex, mod)
+    r === nothing && return nothing
+    actual = try Core.eval(mod, ex) catch; return false end
+    actual isa Number && expected isa Number || return false
+    ok = try isequal(convert(typeof(expected), actual), expected) catch; false end
+    return ok ? r[1] : false
+end
+
+# A scalar expression a static initializer may hold, as C text with its precedence.
+function crender(ex, mod)
+    ex isa Bool && return (initializer(ex), PRIMARY)
+    ex isa Integer && return (string(ex), PRIMARY)
+    ex isa AbstractFloat && return (initializer(ex), PRIMARY)
+    if ex isa Symbol
+        isdefined(mod, ex) || return nothing
+        v = getfield(mod, ex)
+        v isa AbstractIrrational && return (macroname(v), PRIMARY)
+        return nothing
+    end
+    ex isa Expr && ex.head === :call || return nothing
+    op = ex.args[1]
+    if op === :- && length(ex.args) == 2
+        r = crender(ex.args[2], mod)
+        r === nothing && return nothing
+        return ("-" * (r[2] < UNARY ? "(" * r[1] * ")" : r[1]), UNARY)
+    end
+    op in (:+, :-, :*, :/) && length(ex.args) >= 3 || return nothing
+    prec = op in (:+, :-) ? ADD : MUL
+    parts = String[]
+    for (k, a) in enumerate(ex.args[2:end])
+        r = crender(a, mod)
+        r === nothing && return nothing
+        # The right operand of `-` or `/` needs parentheses at equal precedence too.
+        need = r[2] < prec || (k > 1 && op in (:-, :/) && r[2] == prec)
+        push!(parts, need ? "(" * r[1] * ")" : r[1])
+    end
+    return (join(parts, " $op "), prec)
+end
+
+# The right-hand side assigned to `name` in a parsed line: `x = …`, `const x = …`,
+# `x::T = …`, inside a one-line module or several statements too.
+function assigned(ex, name::Symbol)
+    ex isa Expr || return nothing
+    if ex.head === :(=)
+        lhs = ex.args[1]
+        lhs isa Expr && lhs.head === :(::) && (lhs = lhs.args[1])
+        lhs === name && return ex.args[2]
+    end
+    for a in ex.args
+        r = assigned(a, name)
+        r === nothing || return r
+    end
+    return nothing
+end
+
+# Where a global was assigned, for its comment: the file, the line, the Julia line's text
+# and its trailing `# note`. Julia keeps no location for a binding, so the source is
+# searched: the module's own file from its first line, for a module with one, then the
+# files the program's functions came from, where the last top-level `name = …` is the
+# one whose value the transpiler saw.
+function globalsource(g::Global, files)
+    g.mod isa Module || return nothing
     pat = Regex("(^|;)\\s*(const\\s+)?\\Q$(g.name)\\E\\s*(::[^=]*)?=[^=]")
-    for k in max(loc.line, 1):length(lines)
-        occursin(pat, lines[k]) || continue
-        _, note = split_comment(lines[k])
-        return note === nothing || isempty(strip(note)) ? nothing : strip(note)
+    found(path, k) = (code, note) = split_comment(readlines(path)[k]) |> x -> (file=basename(path), line=k, text=strip(readlines(path)[k]), note=x[2] === nothing || isempty(strip(x[2])) ? nothing : strip(x[2]))
+    if isdefined(Base, :moduleloc)
+        loc = Base.moduleloc(g.mod)
+        path = isempty(string(loc.file)) ? nothing : Base.find_source_file(string(loc.file))
+        if path !== nothing && isfile(path)
+            lines = readlines(path)
+            k = findfirst(k -> occursin(pat, lines[k]), max(loc.line, 1):length(lines))
+            k === nothing || return found(path, k + max(loc.line, 1) - 1)
+        end
+    end
+    for f in unique(files)
+        path = Base.find_source_file(string(f))
+        path !== nothing && isfile(path) || continue
+        lines = readlines(path)
+        k = findlast(l -> occursin(pat, l), lines)
+        k === nothing || return found(path, k)
     end
     return nothing
 end
@@ -1945,12 +2164,26 @@ end
 initializer(x::Bool) = booltype[] === Bool ? (x ? "true" : "false") : (x ? "1" : "0")
 initializer(x::Integer) = string(x)
 initializer(x::AbstractFloat) = isinf(x) ? (x > 0 ? "INFINITY" : "-INFINITY") : isnan(x) ? "NAN" : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(Float64(x))
-initializer(x::Irrational) = repr(Float64(x))
+initializer(x::AbstractIrrational) = macroname(x)   # `const τ = π` keeps the name; a stored double is digits
 initializer(x::Char) = charliteral(x)
 initializer(x::AbstractString) = "\"" * cstring(x) * "\""
 initializer(x::Union{LinearAlgebra.Adjoint{<:Any, <:AbstractVector}, LinearAlgebra.Transpose{<:Any, <:AbstractVector}}) = initializer(parent(x))
-initializer(x::AbstractVector) = "{" * join(initializer.(x), ", ") * "}"
-initializer(x::AbstractArray) = "{" * join((initializer(selectdim(x, 1, i)) for i in 1:size(x, 1)), ", ") * "}"
+initializer(x::AbstractArray) = braces(map(initializer, x))
+
+# The braces of an array initializer from the text of each element: a vector on one
+# line, a matrix one row per line, higher dimensions nested a level of indentation each.
+function braces(x::AbstractArray{String}, depth::Integer=0)
+    ndims(x) == 1 && return "{" * join(x, ", ") * "}"
+    rows = ["    "^(depth + 1) * braces(selectdim(x, 1, i), depth + 1) * "," for i in 1:size(x, 1)]
+    return "{\n" * join(rows, "\n") * "\n" * "    "^depth * "}"
+end
+
+# `double A[2][2] = {…};`: an array declared with its initializer, a line per row.
+function initialize!(lines, sc::Scope, decl, grid::AbstractArray{String})
+    for l in split(decl * " = " * braces(grid) * ";", '\n')
+        emit!(lines, sc, l)
+    end
+end
 initializer(x::Tuple) = "{" * join(initializer.(x), ", ") * "}"
 initializer(x) = "{" * join((initializer(getfield(x, k)) for k in 1:fieldcount(typeof(x))), ", ") * "}"
 
@@ -2362,7 +2595,7 @@ function value(sc::Scope, x)
     x isa Integer         && return string(x)
     x isa AbstractFloat   && return isinf(x) ? (push!(sc.headers, "math.h"); x > 0 ? "INFINITY" : "-INFINITY") :
                                     isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(x)
-    x isa Irrational      && return x === pi ? constant(sc, "PI") : x === ℯ ? constant(sc, "E") : repr(Float64(x))
+    x isa AbstractIrrational && return constant(sc, x)
     x === im              && return "I"                       # <complex.h>'s imaginary unit
     x isa Complex         && return "$(x isa ComplexF32 ? "CMPLXF" : "CMPLX")($(value(sc, real(x))), $(value(sc, imag(x))))"
     if x isa GlobalRef
@@ -2388,13 +2621,29 @@ function charliteral(c::Char)
     return "'" * get(escapes, c, isprint(c) ? string(c) : "\\x" * string(UInt8(c), base=16, pad=2)) * "'"
 end
 
-# `M_PI` from `math.h`, which is POSIX rather than ISO C; or, with `portable`, our own
-# `LEGIBLEC_PI`, defined at the top of the file.
-constant(sc::Scope, name) = sc.prog.portable ? (push!(sc.prog.macros, name); "LEGIBLEC_" * name) : (push!(sc.headers, "math.h"); "M_" * name)
+# An irrational — `π`, `ℯ`, `Base.MathConstants.catalan`, one of the author's own made
+# with `Base.@irrational` — is a macro named after it, `LEGIBLEC_PI`, `LEGIBLEC_CATALAN`,
+# defined in the helper header to 128-bit precision. Under `posix`, π and ℯ are `M_PI`
+# and `M_E` from `math.h` instead. The name is for the symbol the Julia wrote, never
+# for a value: a double that happens to equal one is digits, as it is in the Julia.
+function macroname(x::AbstractIrrational)
+    posix[] && x === π && return "M_PI"
+    posix[] && x === ℯ && return "M_E"
+    name = "LEGIBLEC_" * uppercase(identifier(string(irrationalname(x))))
+    irrationals[name] = x
+    return name
+end
+irrationalname(x::AbstractIrrational) = x isa Irrational ? typeof(x).parameters[1] : nameof(typeof(x))
+constant(sc::Scope, x::AbstractIrrational) = (posix[] && (x === π || x === ℯ) && push!(sc.headers, "math.h"); macroname(x))
 
 # The type of a value: what inference says, except that an array whose size the IR
 # doesn't know is given as the shaped stand-in the transpiler tracks for it.
 function valuetype(sc::Scope, x)
+    if x isa Core.SSAValue && !haskey(sc.shapes, x.id) && sc.ci.code[x.id] isa GlobalRef
+        g = sc.ci.code[x.id]
+        v = getfield(g.mod, g.name)
+        v isa AbstractArray && return globaltype(v)      # a global array's size is its value's
+    end
     x isa Core.SSAValue   && return get(sc.shapes, x.id, widen(sc.ci.ssavaluetypes[x.id]))
     x isa Core.SlotNumber && return get(sc.slotshapes, x.id, widen(sc.ci.slottypes[x.id]))
     x isa GlobalRef       && return globaltype(getfield(x.mod, x.name))

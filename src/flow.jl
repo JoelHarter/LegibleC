@@ -486,9 +486,21 @@ end
 # `return` computes into `out` from a variable now living in it — an operand aliasing a
 # `restrict` output. Any of those, and nothing is placed: the copies stay.
 function outplacement!(sc::Scope)
-    sc.resultparam && shape(sc.rettype) !== nothing || return
+    sc.resultparam || return
     ci = sc.ci
     code = ci.code
+    if shape(sc.rettype) === nothing
+        # A regular array whose size Julia doesn't know: the sizes are learned as the
+        # body is walked, so nothing can be laid out in `out` by size. What can is the
+        # one case that needs no size: every `return` returning the same local
+        # variable, whose size is `out`'s by definition.
+        s = returnedslot(ci)
+        s !== nothing && s > ci.nargs && !(s in sc.hidden) && isarray(slottype(sc, s)) || return
+        sc.outplaced[s] = 0
+        push!(sc.declared, s)
+        push!(sc.pointers, sc.names[s])
+        return
+    end
     rows, trailing... = shape(sc.rettype)
     # A variable that can be rows of `out`: a local or working copy with the full trailing extents.
     fits(s) = s !== nothing && s > ci.nargs && !(s in sc.hidden) && isarray(slottype(sc, s)) &&
@@ -536,8 +548,52 @@ function outplacement!(sc::Scope)
     end
 end
 
-# The slot an IR value is, if it is one: the slot itself, or an SSA value that just reads it.
-slotof(sc::Scope, x) = x isa Core.SlotNumber ? x.id : x isa Core.SSAValue && sc.ci.code[x.id] isa Core.SlotNumber ? sc.ci.code[x.id].id : nothing
+# The slot an IR value is, if it is one: the slot itself, an SSA value that just reads
+# it, or the value of a store into it, `%i = (a = …)`, as long as the slot isn't
+# reassigned before the value is used.
+function slotof(sc::Scope, x)
+    x isa Core.SlotNumber && return x.id
+    x isa Core.SSAValue || return nothing
+    st = sc.ci.code[x.id]
+    st isa Core.SlotNumber && return st.id
+    st isa Expr && st.head === :(=) && stable(sc.ci, x.id, st.args[1].id) && return st.args[1].id
+    return nothing
+end
+
+# The variable the `return` at statement `r` returns, when it is one: `return a`, or
+# `a = …` as the last expression, whose value Julia returns as the value stored
+# rather than as a read of `a` (see `foldstores!`).
+function returnslot(ci, r)
+    st = ci.code[r]
+    st isa Core.ReturnNode && isdefined(st, :val) || return nothing
+    v = st.val
+    v isa Core.SlotNumber && return v.id
+    v isa Core.SSAValue || return nothing
+    def = ci.code[v.id]
+    def isa Core.SlotNumber && return def.id
+    def isa Expr && def.head === :(=) && stable(ci, v.id, def.args[1].id) && return def.args[1].id
+    return nothing
+end
+
+# `a = A[2, :]` as a function's last expression: Julia returns the value stored, so the
+# call's value has two users, the store and the `return`, and would be computed into a
+# temp and copied to `a`. The call is moved into the store and the store's own SSA
+# value made a read of it — `%i = (a = A[2, :])`, `%j = %i` — and the value is
+# computed straight into `a`, which the `return` then names. Any call whose next
+# statement stores it and whose other users are all returns.
+function foldstores!(sc::Scope)
+    code = sc.ci.code
+    for (i, st) in enumerate(code)
+        st isa Expr && st.head === :call && i < length(code) || continue
+        t = sc.ci.ssavaluetypes[i]
+        t isa Core.Const && (t.val isa Char || t.val isa AbstractString) && continue   # a literal, written where it is used
+        next = code[i+1]
+        next isa Expr && next.head === :(=) && next.args[2] == Core.SSAValue(i) || continue
+        all(u == i + 1 || code[u] isa Core.ReturnNode for u in eachindex(code) if uses(code[u], i)) || continue
+        code[i] = Expr(:(=), next.args[1], st)
+        code[i+1] = Core.SSAValue(i)
+    end
+end
 
 # Is the returned value a variable that lives in all of `out` already?
 outplacedwhole(sc::Scope, v) = (s = slotof(sc, v); s !== nothing && get(sc.outplaced, s, -1) == 0 && extent(slottype(sc, s), 1) == shape(sc.rettype)[1])

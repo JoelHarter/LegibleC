@@ -14,7 +14,7 @@ transpile(f, g, (h, Float64, 3, Float64, 2, 3); outfile="name", outpath=dir)
 A target is a function with one concrete method, a `MethodInstance`, or a
 tuple of a function and argument types — where a type followed by integers is
 an array of that element type and size. Options: `outfile`, `outpath`,
-`templimit`, `source` (on), `precise`, `portable`, `width`
+`templimit`, `source` (on), `precise`, `posix`, `width`
 (100), `spelling` (your own C names for characters, `../naming.md`). An
 `out/` folder comes out: the functions in `<outfile>.c`, the helpers in
 `helper.h`/`.c` — see `start.md`.
@@ -28,7 +28,7 @@ an array of that element type and size. Options: `outfile`, `outpath`,
 | the same function at several signatures | yes; each gets the types appended to its name (`poly_I64_I64`) |
 | default arguments, keyword arguments | untested (the IR should already show the filled-in call) |
 | returning a scalar | `return x;` |
-| returning an array | through a trailing `out` parameter |
+| returning an array | through a trailing parameter: the returned variable itself when every exit returns the same one, else `out` |
 | `return nothing`, a `Nothing` result | `void` |
 | tuples, multiple return values | yes, as a generated struct (`../struct.md`) |
 | calling another user function | yes; brought in on demand if not listed, recursion included (`../call.md`) |

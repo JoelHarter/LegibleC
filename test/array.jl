@@ -165,16 +165,65 @@ function turned(x::V3, M::M3)                      # a product into itself keeps
     x = M * x
     return [x; x .* 2]
 end
+function bottom()                                  # `end` on a regular array the transpiler sized itself: folded, as for a static one
+    m = [4; 5.0; 4;; 8; 9; 8;; 1; 2; 0]
+    return m[2:end, 1:2]
+end
+function tail(v::SVector{5,Float64})
+    w = [v[1]; v[2]; 3.0; 4.0]
+    return w[2:end]
+end
 function stacked(A::SMatrix{2,3,Float64,6}, r::SVector{3,Float64})   # a matrix's rows in out, a row vector copied beside them
     A = A .* 2
     return [A; r']
 end
+function sliced()                                   # `a = …` as the last line, of a regular array: computed into the parameter, which is `a`
+    m = [4; 5.0; 4;; 8; 9; 8;; 1; 2; 0]
+    a = m[2, :]
+end
+function either(v::SVector{3,Float64}, c::Bool)     # `return a` and `a = …` as the last line agree: the parameter is `a`
+    if c
+        a = v * 2
+        return a
+    end
+    a = v * 3
+end
+function resized()                                  # one size per variable, as one type
+    a = [1.0; 2.0]
+    a = [1.0; 2.0; 3.0]
+    return a
+end
+# Index lists, a gather: `[1, 3]` written out is one copy per listed index, in one nest
+# where they share loops; a list held at run time is a loop reading `idx[i] - 1`.
+function selected()
+    m = [4; 5.0; 4;; 8; 9; 8;; 1; 2; 0]
+    a = m[2:end, [1, 3]]
+end
+reorder(v::SVector{3,Float64}) = v[[3, 1, 2]]
+chosen(v::SVector{5,Float64}, idx::SVector{3,Int64}) = v[idx]
+function placed(A::MMatrix{2,4,Float64,8}, B::SMatrix{2,2,Float64,4}); A[:, [1, 3]] = B; return A; end
+function spread!(v::MVector{5,Float64}, w::SVector{2,Float64}, idx::SVector{2,Int64}); v[idx] = w; return v; end
+outside(v::SVector{3,Float64}) = v[[1, 4]]
+check("gather", [Case(selected), Case(reorder, SVector(1.0, 2.0, 3.0)), Case(chosen, SVector(1.0, 2.0, 3.0, 4.0, 5.0), SVector(5, 1, 3)),
+                 Case(placed, MMatrix{2,4}(1.0:8...), SMatrix{2,2}(10.0, 20.0, 30.0, 40.0)),
+                 Case(spread!, MVector(1.0, 2.0, 3.0, 4.0, 5.0), SVector(9.0, 8.0), SVector(4, 2))])
+@testset "gather" begin
+    src = csource("gather", selected, reorder, chosen, placed, spread!)
+    @test occursin("for (int i = 0; i < 2; i++) {\n        a[i][0] = m[1 + i][0];\n        a[i][1] = m[1 + i][2];\n    }", src) && !occursin("int64_t temp", src)   # the list is never built
+    @test occursin("out[0] = v[2];\n    out[1] = v[0];\n    out[2] = v[1];", src)
+    @test occursin("out[i] = v[idx[i] - 1];", src)
+    @test occursin("A[i][0] = B[i][0];\n        A[i][2] = B[i][1];", src)
+    @test occursin("v[idx[i] - 1] = w[i];", src)
+    @test_throws ArgumentError csource("outside", outside)   # a listed index beyond the dimension, refused at transpile time
+end
+
 check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 0.1), Case(whole, SVector(1.0, 2.0, 3.0), 2.0), Case(grown, SVector(1.0, 2.0, 3.0)),
                     Case(swapped, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), true), Case(swapped, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), false),
                     Case(scaled, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), true), Case(scaled, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), false),
-                    Case(turned, SVector(1.0, 2.0, 3.0), SMatrix{3,3}(1.0:9...)), Case(stacked, SMatrix{2,3}(1.0:6...), SVector(7.0, 8.0, 9.0))])
+                    Case(turned, SVector(1.0, 2.0, 3.0), SMatrix{3,3}(1.0:9...)), Case(stacked, SMatrix{2,3}(1.0:6...), SVector(7.0, 8.0, 9.0)),
+                    Case(bottom), Case(tail, SVector(1.0, 2.0, 3.0, 4.0, 5.0)), Case(sliced), Case(either, SVector(1.0, 2.0, 3.0), true), Case(either, SVector(1.0, 2.0, 3.0), false)])
 @testset "outplaced" begin
-    src = csource("outplaced", state, whole, grown, swapped, scaled, turned, stacked)
+    src = csource("outplaced", state, whole, grown, swapped, scaled, turned, stacked, sliced, either)
     fn(name) = (i = findfirst("void $name(", src)[1]; src[i:findnext("\n}", src, i)[end]])
     @test occursin("// copy x and v into out, where the function works on them and returns them\n    memcpy(out, x, sizeof(double[3]));\n    double *x_ = out;\n    memcpy(&out[3], v, sizeof(double[3]));\n    double *v_ = &out[3];", src)
     @test occursin("add_3(x_, temp2_dt_v, x_);  // x_ += temp2_dt_v", fn("state")) && !occursin("memcpy(out, x_", fn("state")) && !occursin("memcpy(&out[3], v_", fn("state"))
@@ -183,5 +232,9 @@ check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 
     @test occursin("double x_[3];\n    memcpy(x_, x, sizeof x_);", src)          # swapped and scaled: the copy stays
     @test occursin("mul_3x3_3(M, x_, temp1_M_x);", src) && occursin("memcpy(x_, temp1_M_x, sizeof temp1_M_x);", src)   # turned: through a temp, into place
     @test occursin("memcpy(out, A, sizeof(double[2][3]));\n    double (*A_)[3] = out;", src) && occursin("mulP_2x3F64_sI64(A_, 2, A_);", src) && occursin("memcpy(out[2], r, sizeof(double[3]));", src)   # stacked
+    @test occursin("void sliced(double a[restrict 3])", src) && occursin("a = m[2, :]\n    memcpy(a, m[1], sizeof(double[3]));\n}", src)   # one copy, into the parameter
+    @test occursin("double m[3][3] = {\n        {4, 8, 1},\n        {5.0, 9, 2},\n        {4, 8, 0},\n    };", src)   # a literal is declared with its initializer, a row per line
+    @test occursin("void either(const double v[3], bool c, double a[restrict 3])", src) && occursin("mul_3_s(v, 2.0, a);\n\n        // @", src) && occursin("mul_3_s(v, 3.0, a);\n}", src) && !occursin("double *a = out", src)
+    @test_throws ArgumentError csource("resized", resized)
 end
 end

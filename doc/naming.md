@@ -220,11 +220,17 @@ Anything more specific than `result` should be written as a named variable in
 the Julia, and will come through as such.
 
 When the result is an *array* it can't be returned; it comes out through a
-trailing parameter, and an output parameter in C is called `out` — `out_` if
-the Julia already uses `out`. That is the same name every generated helper
-uses for its output, so `add_2x2(A, B, out)` and `void add(…, double
-out[2][2])` read alike. `out` was deliberately not used for a returned
-scalar, where it would suggest a parameter that isn't there.
+trailing parameter. When every exit of the function returns the same
+variable of the author's — `return a`, or `a = …` as the last line, which
+returns the same thing — that parameter *is* the variable: `void f(…,
+double a[restrict 3])`, and `a` is built there from the start, with no
+copy at the end. Otherwise the parameter is called `out`, as an output
+parameter in C is — `out_` if the Julia already uses `out` — which is
+also the name every generated helper uses for its output, so `add_2x2(A,
+B, out)` and `void add(…, double out[2][2])` read alike. Functions whose
+exits return different things, or an expression, keep `out`. `out` was
+deliberately not used for a returned scalar, where it would suggest a
+parameter that isn't there.
 
 A temp that gets stored into a variable is referred to by that variable from
 then on (provided the variable isn't reassigned), so `d = (a + b) * c / 2` as
