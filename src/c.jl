@@ -37,6 +37,7 @@ mutable struct Program
     claims::Vector{Any}
     fixed::Dict{Any, String}
     avoid::Set{String}
+    written::Set{Any}                                              # globals some function writes into, as (module, name): not `const` in C
 end
 
 # A global variable in the output: its C name, the Julia binding it came from (module and
@@ -61,7 +62,7 @@ Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
             suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}(),
-            Any[], Dict{Any, String}(), Set{String}())
+            Any[], Dict{Any, String}(), Set{String}(), Set{Any}())
 
 # The irrationals the current `transpile` call has met, by the macro each is written as:
 # `"LEGIBLEC_PI" => π`. The helper header defines the ones the output uses.
@@ -426,16 +427,26 @@ function analyze!(sc::Scope)
         ex = st isa Expr && st.head === :(=) ? st.args[2] : st
         ex isa Expr && ex.head === :call || continue
         f = callee_or_nothing(ci, ex.args[1])
-        f in (Base.setindex!, Base.fill!, Base.materialize!) && ex.args[2] isa Core.SlotNumber && push!(sc.mutated, ex.args[2].id)
+        # What is written into: a variable, read directly or through a statement of its own
+        # (as one assigned more than once is); or a global, whose `const` in Julia fixes
+        # the binding and not the contents, so that in C it can't be `const` at all.
+        globalof(a) = (a isa Core.SSAValue && (a = code[a.id]); a isa GlobalRef && getfield(a.mod, a.name) isa AbstractArray ? (a.mod, a.name) : nothing)
+        if f in (Base.setindex!, Base.fill!, Base.materialize!)
+            s = ex.args[2] isa Core.SlotNumber ? ex.args[2].id : slotof(sc, ex.args[2])
+            s === nothing || push!(sc.mutated, s)
+            g = globalof(ex.args[2])
+            g === nothing || push!(sc.prog.written, g)
+        end
         # A mutable array handed to a user function that writes somewhere: it may be
         # written there, so it is not `const` here either.
         f isa Function && !(nameof(Base.moduleroot(parentmodule(f))) in known) || continue
         slots = [a.id for a in ex.args[2:end] if a isa Core.SlotNumber && ci.slottypes[a.id] isa Type &&
                  ismutabletype(ci.slottypes[a.id]) && isarray(widen(ci.slottypes[a.id]))]
-        isempty(slots) && continue
+        globals = filter(!isnothing, [globalof(a) for a in ex.args[2:end]])
+        isempty(slots) && isempty(globals) && continue
         r = userinstance!(sc, f, ex.args[2:end])
         r === nothing && continue
-        isdisjoint(effects!(sc.prog, r[1]), (:write, :foreign, :unknown)) || push!(sc.mutated, slots...)
+        isdisjoint(effects!(sc.prog, r[1]), (:write, :foreign, :unknown)) || (push!(sc.mutated, slots...); union!(sc.prog.written, globals))
     end
     assigned = Dict{Int, Vector{Int}}()
     for (i, st) in enumerate(code)
@@ -831,9 +842,11 @@ function statement!(lines, sc::Scope, i, st)
         # `%i = (x = rhs)`: the SSA value is the value assigned. Refer to it as `x`
         # where that's safe; otherwise keep a temp copy.
         slot, rhs = st.args
-        if slot.id in sc.hidden
+        if slot.id in sc.hidden && !any(F -> F.var == slot.id, values(sc.fors))
             # A slot Julia left unnamed that really holds a value — the result of a
             # `c ? x : y` used as a value — is a local like any other, named as a temp.
+            # Not a loop's own variable, which is hidden only because its loop declares
+            # it: assigned in the body, it is assigned under its own name (`forloop!`).
             delete!(sc.hidden, slot.id)
             sc.names[slot.id] = temp!(sc, nothing, String[])
         end
@@ -963,6 +976,15 @@ function store!(lines, sc::Scope, i, x, rhs; declaration::Bool=false)
         end
         slotshape!(sc, slot, sc.shapes[i])
     else
+        # `m = v` on a mutable array makes `m` another name for the same array in Julia, and
+        # a copy here: harmless while neither is written, and a wrong answer once one is
+        # (writes through `m` never reached `v`, or the caller). Refused until the C can
+        # hold one array under two names.
+        other = slotof(sc, rhs)
+        T = sc.ci.slottypes[slot]
+        if other !== nothing && other != slot && T isa Type && ismutabletype(widen(T)) && (slot in sc.mutated || other in sc.mutated)
+            throw(ArgumentError("`$(sc.ci.slotnames[slot]) = $(sc.ci.slotnames[other])` gives one mutable array a second name in Julia, so a write through either changes both; in C `$(sc.ci.slotnames[slot])` would be a copy, and the write would be lost (line $(sc.stmtline[sc.current])). Write through `$(sc.ci.slotnames[other])` itself, or say `copy($(sc.ci.slotnames[other]))` if a copy is what is meant"))
+        end
         declaration && emit!(lines, sc, declare(valuetype(sc, rhs), x) * ";")
         copy!(lines, sc, value(sc, rhs), valuetype(sc, rhs), x, valuetype(sc, rhs))
         slotshape!(sc, slot, valuetype(sc, rhs))

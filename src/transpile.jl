@@ -203,6 +203,11 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
         again || break
         attempt == 4 && throw(ArgumentError("the file-scope names of this program could not be settled; please report it"))
     end
+    # A global that some function writes into is not `const` in C, whatever the Julia's
+    # `const` says: that fixes the binding, and an `MVector`'s contents are still free.
+    for (k, g) in enumerate(prog.globals)
+        g.constant && (g.mod, g.name) in prog.written && (prog.globals[k] = Global(g.cname, g.mod, g.name, g.value, false))
+    end
     # The helpers' names are known only now. A function that shares one is an error, since
     # its name is the C interface. (A local keeps clear of the file-scope names its own
     # function mentions — `ω` beside a global `omega` it reads — while it is named: `names!`.)

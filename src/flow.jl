@@ -111,7 +111,10 @@ function findwhiles(ci, fors)
         test = findfirst(i -> code[i] isa Core.GotoIfNot, t:j)
         test === nothing && throw(ArgumentError("a loop without a condition at statement $t"))
         test += t - 1
-        whiles[t] = While(t, test, j, code[test].dest)
+        # The exit is what follows the jump back: where the last of the condition's tests
+        # goes when it fails. Not the first test's own target, which for `while a || b` is
+        # the second test.
+        whiles[t] = While(t, test, j, j + 1)
     end
     return whiles
 end
@@ -166,9 +169,14 @@ end
 # A jump that isn't part of an `if`: `break` or `continue` of the innermost loop it
 # belongs to.
 function jump!(lines, sc::Scope, label)
-    for (brk, cont) in reverse(sc.loops)
+    if !isempty(sc.loops)
+        brk, cont = sc.loops[end]
         label == brk && return emit!(lines, sc, "break;")
         label == cont && return emit!(lines, sc, "continue;")
+        # C's `break` leaves one loop. Julia's leaves the whole nest of a `for i in 1:n, j in
+        # 1:m`, which came out as a `break` of the inner loop alone: a wrong answer.
+        any(label == b for (b, _) in sc.loops[1:end-1]) &&
+            throw(ArgumentError("a `break` inside `for i in …, j in …` leaves every loop of the nest in Julia, and C's `break` leaves one (line $(sc.stmtline[sc.current])); write the loops one inside the other and leave with a flag, or put the nest in a function of its own and `return`"))
     end
     throw(ArgumentError("unstructured jump to statement $label"))
 end
@@ -442,30 +450,56 @@ function forloop!(lines, sc::Scope, F::For)
         emit!(lines, sc, "$T $t = $hi;")
         hi = t
     end
+    code = sc.ci.code
+    within(s) = any(i -> !(i in F.machinery) && assigns(code[i], s), F.bodylo:F.bodyhi)
     if F.array !== nothing
         # `for x in v`: a 0-based index the Julia never named, then the element.
+        array = value(sc, F.array)
+        s = slotof(sc, F.array)
+        if s !== nothing && within(s)
+            # The body gives `v` a new value. Julia goes on through the array it started
+            # with; the C, reading `v[i]` each pass, would read the new one. So a copy.
+            A = valuetype(sc, F.array)
+            array = temp!(sc, nothing, contribution(sc, F.array))
+            emit!(lines, sc, declare(A, array) * ";")
+            copy!(lines, sc, value(sc, F.array), A, array, A)
+        end
         k = indices(1; taken=union(sc.names, sc.outer))[1]
         push!(sc.names, k)
         emit!(lines, sc, "for (int64_t $k = 0; $k < $hi; $k++) {")
         push!(sc.loops, (F.exit, F.next))
         sc.depth += 1
-        emit!(lines, sc, "$T $var = $(value(sc, F.array))[$k];")
+        emit!(lines, sc, "$T $var = $array[$k];")
         sc.depth -= 1
-        sc.pending = "$var = $(value(sc, F.array))[$k]"
+        sc.pending = "$var = $array[$k]"
         nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
         pop!(sc.loops)
         emit!(lines, sc, "}")
         return F.exit
     end
+    # The body assigns the loop's own variable. In Julia that lasts for the pass, and the
+    # next pass gets the next value of the range all the same; a C `for` would go on from
+    # the new value. So the counting is done by an index of ours, as for `for x in v`, and
+    # the variable is the body's, set from it at the top of each pass.
+    count = var
+    if within(F.var)
+        count = indices(1; taken=union(sc.names, sc.outer))[1]
+        push!(sc.names, count)
+    end
     if F.step === nothing
-        emit!(lines, sc, "for ($T $var = $lo; $var <= $hi; $var++) {")
+        emit!(lines, sc, "for ($T $count = $lo; $count <= $hi; $count++) {")
     else
         F.step isa Integer || throw(ArgumentError("a range step must be a literal (statement $(F.start))"))
         cmp = F.step > 0 ? "<=" : ">="
-        emit!(lines, sc, "for ($T $var = $lo; $var $cmp $hi; $var += $(F.step)) {")
+        emit!(lines, sc, "for ($T $count = $lo; $count $cmp $hi; $count += $(F.step)) {")
     end
     sc.pending = "$var = $lo; $var <= $hi"
     push!(sc.loops, (F.exit, F.next))
+    if count != var
+        sc.depth += 1
+        emit!(lines, sc, "$T $var = $count;")
+        sc.depth -= 1
+    end
     nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
     pop!(sc.loops)
     emit!(lines, sc, "}")
@@ -484,13 +518,19 @@ function whileloop!(lines, sc::Scope, W::While)
     annotate!(lines, sc, sc.stmtline[W.header])
     # The condition can go in the `while (…)` only if everything in the header folds
     # into it; otherwise test it at the top of the body.
-    inline = all(i -> i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef ||
-                      code[i] isa Core.SlotNumber || code[i] isa Core.SSAValue, W.header:W.test-1)
+    # `while a && b`, `while a || b`: the same merged tests an `if` opens with.
+    conds, op, target, bodylo = tests(sc, W.test)
+    target == W.exit || throw(ArgumentError("a `while` whose condition doesn't lead out of it (line $(sc.stmtline[W.header]))"))
+    compound = length(conds) > 1
+    inline = all(i -> i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef || code[i] isa Core.SlotNumber ||
+                      code[i] isa Core.SSAValue || code[i] isa Core.GotoIfNot || code[i] isa Core.GotoNode, W.header:bodylo-1)
+    compound && !inline && throw(ArgumentError("a `while a && b` whose condition needs work of its own, array work say, before it can be tested (line $(sc.stmtline[W.header])); test the first part in the `while` and the rest in the body, with `break`"))
     if inline
-        cond = code[W.test].cond === true ? "true" : condition(sc, [(code[W.test].cond, false)], "&&")
+        cond = code[W.test].cond !== true ? condition(sc, conds, op) :
+               compound && op == "&&" ? condition(sc, conds[2:end], op) : "true"     # `while true`
         emit!(lines, sc, "while ($cond) {")
         push!(sc.loops, (W.exit, W.backedge))
-        nested!(lines, sc, W.test + 1, W.backedge - 1; loop=true)
+        nested!(lines, sc, bodylo, W.backedge - 1; loop=true)
     else
         emit!(lines, sc, "while (true) {")
         push!(sc.loops, (W.exit, W.backedge))
@@ -513,24 +553,31 @@ function whileloop!(lines, sc::Scope, W::While)
     return W.backedge + 1
 end
 
-# An `if`, starting at the GotoIfNot at `i`, within a block that ends at `hi`.
-# Returns the index of the first statement after the whole construct.
-function ifelse!(lines, sc::Scope, i::Int, hi::Int; chained::Bool=false)
+# The tests an `if` or a `while` opens with, merged into one condition. `a && b` is
+# further tests that fail to the same place; `a || b` is a test that fails into another
+# test, with a jump straight to the body in between. Returns the pieces, as (IR value,
+# negated), the operator, where a failed test goes, and the first statement after them.
+function tests(sc::Scope, i::Int)
     code = sc.ci.code
-    annotate!(lines, sc, sc.stmtline[i])
-    conds = Tuple{Any, Bool}[]           # (IR value, negated) — the pieces of the condition
+    conds = Tuple{Any, Bool}[(code[i].cond, false)]
     op = "&&"
-    target = code[i].dest                # where a failed test goes: the else (or the end)
-    push!(conds, (code[i].cond, false))
+    target = code[i].dest
     j = i + 1
-    # Merge `&&`: further tests that fail to the same place. Merge `||`: a test that
-    # fails into another test, with a jump straight to the body in between.
+    # A variable that is assigned more than once is read through a statement of its own, which
+    # writes nothing. Between two tests it belongs to the second: looked past, to find it.
+    function nexttest(k)
+        k = nextlive(sc, k)
+        while k <= length(code) && code[k] isa Core.SlotNumber && stable(sc.ci, k, code[k].id)
+            k = nextlive(sc, k + 1)
+        end
+        return k <= length(code) && code[k] isa Core.GotoIfNot ? k : 0
+    end
     while true
         j = nextlive(sc, j)
-        if code[j] isa Core.GotoIfNot && code[j].dest == target && op == "&&"
-            push!(conds, (code[j].cond, false)); j += 1
+        if op == "&&" && (k = nexttest(j); k != 0 && code[k].dest == target)
+            push!(conds, (code[k].cond, false)); j = k + 1
         elseif code[j] isa Core.GotoNode && code[j].label > j && nextlive(sc, j + 1) == nextlive(sc, target) &&
-               (t2 = nextlive(sc, target); code[t2] isa Core.GotoIfNot && nextlive(sc, t2 + 1) == nextlive(sc, code[j].label)) &&
+               (t2 = nexttest(target); t2 != 0 && nextlive(sc, t2 + 1) == nextlive(sc, code[j].label)) &&
                (op == "||" || length(conds) == 1)
             op = "||"
             push!(conds, (code[t2].cond, false))
@@ -540,6 +587,15 @@ function ifelse!(lines, sc::Scope, i::Int, hi::Int; chained::Bool=false)
             break
         end
     end
+    return conds, op, target, j
+end
+
+# An `if`, starting at the GotoIfNot at `i`, within a block that ends at `hi`.
+# Returns the index of the first statement after the whole construct.
+function ifelse!(lines, sc::Scope, i::Int, hi::Int; chained::Bool=false)
+    code = sc.ci.code
+    annotate!(lines, sc, sc.stmtline[i])
+    conds, op, target, j = tests(sc, i)
     thenlo = j
     # The then-block runs to the else target. If it ends by jumping past that, there's
     # an else-block up to the jump's destination.
@@ -552,10 +608,17 @@ function ifelse!(lines, sc::Scope, i::Int, hi::Int; chained::Bool=false)
         elselo, elsehi = target, code[last].label - 1
         after = code[last].label
         push!(sc.skipped, last)
-    elseif last !== nothing && code[last] isa Core.GotoNode && any(code[last].label == cont for (_, cont) in sc.loops) &&
-           nextlive(sc, code[last].label) == nextlive(sc, target)
+    elseif last !== nothing && code[last] isa Core.GotoNode && code[last].label == target
+        # `c && (x = 1)` in the middle of a body ends its branch with a jump to the very place
+        # the branch was going. Exactly that place: "the same next live statement" is not
+        # the same thing, since it sees straight through a loop's own machinery.
+        push!(sc.skipped, last)
+    elseif last !== nothing && code[last] isa Core.GotoNode && !isempty(sc.loops) && code[last].label == sc.loops[end][2] &&
+           code[last].label != sc.loops[end][1] && nextlive(sc, code[last].label) == nextlive(sc, target)
         # A jump to the loop's next iteration from the end of the body — how `x && (n += 1)`
-        # lowers as the last statement of a loop — is where the body was going anyway.
+        # lowers as the last statement of a loop — is where the body was going anyway. Of
+        # the innermost loop only: an inner loop that ends an outer loop's body has its exit
+        # at the outer one's next-pass point, and a jump there is its `break`, not nothing.
         push!(sc.skipped, last)
     end
     cond = condition(sc, conds, op)
@@ -605,8 +668,12 @@ end
 # a condition, not dead, not a constant load).
 function nextlive(sc::Scope, i)
     code = sc.ci.code
-    while i <= length(code) && (i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef || code[i] isa Core.NewvarNode ||
-                                widen(sc.ci.ssavaluetypes[i]) === Union{} && !(code[i] isa Core.ReturnNode))
+    # A loop begins at statements that are themselves consumed (its range, its first
+    # `iterate`), and is live all the same: walked past, a `for` that opens an `if`'s
+    # branch was never seen, and its body ran once.
+    while i <= length(code) && !haskey(sc.fors, i) && !haskey(sc.whiles, i) &&
+          (i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef || code[i] isa Core.NewvarNode ||
+           widen(sc.ci.ssavaluetypes[i]) === Union{} && !(code[i] isa Core.ReturnNode))
         i += 1
     end
     return i

@@ -188,6 +188,20 @@ function either(v::SVector{3,Float64}, c::Bool)     # `return a` and `a = …` a
     end
     a = v * 3
 end
+function aliased(v::MVector{3,Float64})             # a second name for one mutable array, then a write through it: no C for that yet
+    m = v
+    m[2] = 77.0
+    return v[2]
+end
+function copied(v::MVector{3,Float64})              # a copy, said so, is a copy in both
+    m = copy(v)
+    m[2] = 77.0
+    return v[2] + m[2]
+end
+function renamed(v::MVector{3,Float64})             # a second name nobody writes through is harmless
+    m = v
+    return m[1] + v[2]
+end
 function resized()                                  # one size per variable, as one type
     a = [1.0; 2.0]
     a = [1.0; 2.0; 3.0]
@@ -221,7 +235,8 @@ check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 
                     Case(swapped, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), true), Case(swapped, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), false),
                     Case(scaled, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), true), Case(scaled, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), false),
                     Case(turned, SVector(1.0, 2.0, 3.0), SMatrix{3,3}(1.0:9...)), Case(stacked, SMatrix{2,3}(1.0:6...), SVector(7.0, 8.0, 9.0)),
-                    Case(bottom), Case(tail, SVector(1.0, 2.0, 3.0, 4.0, 5.0)), Case(sliced), Case(either, SVector(1.0, 2.0, 3.0), true), Case(either, SVector(1.0, 2.0, 3.0), false)])
+                    Case(bottom), Case(tail, SVector(1.0, 2.0, 3.0, 4.0, 5.0)), Case(sliced), Case(either, SVector(1.0, 2.0, 3.0), true), Case(either, SVector(1.0, 2.0, 3.0), false),
+                    Case(copied, MVector(1.0, 2.0, 3.0)), Case(renamed, MVector(1.0, 2.0, 3.0))])
 @testset "outplaced" begin
     src = csource("outplaced", state, whole, grown, swapped, scaled, turned, stacked, sliced, either)
     fn(name) = (i = findfirst("void $name(", src)[1]; src[i:findnext("\n}", src, i)[end]])
@@ -236,5 +251,6 @@ check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 
     @test occursin("double m[3][3] = {\n        {4, 8, 1},\n        {5.0, 9, 2},\n        {4, 8, 0},\n    };", src)   # a literal is declared with its initializer, a row per line
     @test occursin("void either(const double v[3], bool c, double a[restrict 3])", src) && occursin("mul_3_s(v, 2.0, a);\n\n        // @", src) && occursin("mul_3_s(v, 3.0, a);\n}", src) && !occursin("double *a = out", src)
     @test_throws ArgumentError csource("resized", resized)
+    @test_throws ArgumentError csource("aliased", aliased)                # Julia 77, and the C would have said 2
 end
 end

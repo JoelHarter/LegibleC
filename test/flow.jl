@@ -39,13 +39,113 @@ cases = [Case(smaller, 1.0, 2.0), Case(smaller, 3.0, 2.0), Case(sign_, -3.0), Ca
 each(v::SVector{3,Float64}) = (s = 0.0; for x in v; s += x * x; end; s)
 eachbreak(v::SVector{4,Float64}) = (s = 0.0; for x in v; x > 2.0 && break; s += x; end; s)
 halve(x::SVector{3,Float64}) = (n = 0; while sum(x .* x) > 1.0; x = x / 2.0; n += 1; end; n)
+# A loop that opens an `if`'s branch; a `break` that ends an inner loop which itself ends an
+# outer loop's body; and the `break` of a multi-range `for`, which C has no word for.
+function opened(m::Int64)
+    if m > 1
+        for j in 1:3
+            m *= 2
+        end
+    elseif m < 0
+        while m < 0
+            m += 5
+        end
+    end
+    return m
+end
+function innerbreak(n::Int64)
+    s = 0
+    for i in 1:n
+        for j in 1:n
+            s += i + j
+            j >= i && break
+        end
+    end
+    return s
+end
+function nestbreak(n::Int64)
+    s = 0
+    for i in 1:n, j in 1:n
+        s += i * j
+        s > 10 && break
+    end
+    return s
+end
+# A loop's own variable assigned in its body lasts for the pass; the next pass gets the next
+# value of the range all the same. And `for x in v` goes on through the array it began with
+# when the body gives `v` a new value.
+function bumped(n::Int64)
+    s = 0
+    for k in 1:n
+        for j in 1:2
+            k += j
+        end
+        s += k
+    end
+    return s
+end
+function bumpedif(n::Int64)
+    s = 0
+    for k in 1:n
+        if k == 2
+            k = 10
+        end
+        s += k
+    end
+    return s
+end
+function bumpedeach(v::SVector{3,Float64})
+    s = 0.0
+    for x in v
+        x > 1.5 && (x = 100.0)
+        s += x
+    end
+    return s
+end
+function rebinding(v::SVector{3,Float64})
+    s = 0.0
+    for x in v
+        v = v .* 2.0
+        s += x
+    end
+    return s + v[1]
+end
+# `while a && b`, `while a || b`.
+function whileand(n::Int64, m::Int64)
+    s = 0
+    while n > 0 && m > 0
+        s += n; n -= 1; m -= 2
+    end
+    return s
+end
+function whileor(n::Int64, m::Int64)
+    s = 0
+    while n > 0 || m > 0
+        s += 1; n -= 1; m -= 2
+    end
+    return s
+end
+function whilethree(n::Int64, m::Int64)
+    s = 0
+    while n > 0 && m > 0 && s < 7
+        s += n; n -= 1; m -= 1
+    end
+    return s
+end
 # Julia builds a range once, so a bound the body changes is read before the loop: 21, not 6.
 shrinking(n::Int64) = (s = 0; for k in 1:n; n -= 1; s += k; end; s)
 function drained(v::MVector{3,Int64}); s = 0; for k in 1:v[1]; v[1] -= 1; s += k; end; return s; end
 steady(n::Int64) = (s = 0; for k in 1:n; s += k; end; s)                 # a bound nothing changes stays in the header
 append!(cases, [Case(each, v3), Case(eachbreak, SVector(1.0, 2.0, 3.0, 4.0)), Case(halve, SVector(4.0, 0.0, 0.0)), Case(halve, SVector(0.5, 0.0, 0.0)),
-                Case(shrinking, 6), Case(drained, MVector(3, 0, 0)), Case(steady, 6)])
+                Case(shrinking, 6), Case(drained, MVector(3, 0, 0)), Case(steady, 6),
+                Case(opened, 5), Case(opened, -7), Case(opened, 1), Case(innerbreak, 4), Case(innerbreak, 1),
+                Case(bumped, 3), Case(bumpedif, 3), Case(bumpedeach, v3), Case(rebinding, v3),
+                Case(whileand, 5, 4), Case(whileand, 2, 9), Case(whileor, 5, 4), Case(whileor, 0, 0), Case(whilethree, 9, 9)])
 @testset "flow text" begin
+    @test_throws ArgumentError csource("nestbreak", nestbreak)                                # refused, where it used to leave one loop: 63 for Julia's 11
+    loops = csource("flowloops", bumped, whileand, whileor)
+    @test occursin("for (int64_t i = 1; i <= n; i++) {\n        int64_t k = i;", loops)                 # the counting is ours, the variable the body's
+    @test occursin("while (n > 0 && m > 0) {", loops) && occursin("while (n > 0 || m > 0) {", loops)
     src = csource("flowtext", each, halve, shrinking, drained, steady)
     @test occursin("int64_t temp1_n = n;\n    for (int64_t k = 1; k <= temp1_n; k++) {", src)                  # the bound, read once
     @test occursin("= v[0];\n    for (int64_t k = 1; k <= temp1_v; k++) {", src) && occursin("for (int64_t k = 1; k <= n; k++) {", src)
@@ -55,5 +155,6 @@ end
 append!(cases, [Case(looped, v3, 3), Case(looped, v3, 0), Case(branched, 3.0, 1.0), Case(branched, 1.0, 3.0), Case(rebound, v3, v3, 0.5)])
 check("flow", cases; targets=[smaller, sign_, larger, quadrant, bothpos, guard, triangle, oddsum, squares, stepped, skipper,
                               total, (totalvec, Float64, 4), trace, gridsum, double1, basis, outer, sizes, looped, branched, rebound,
-                              each, eachbreak, halve, shrinking, drained, steady])
+                              each, eachbreak, halve, shrinking, drained, steady, opened, innerbreak,
+                              bumped, bumpedif, bumpedeach, rebinding, whileand, whileor, whilethree])
 end

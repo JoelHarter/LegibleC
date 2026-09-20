@@ -19,6 +19,11 @@ const origin = Point(0.0, 0.0)
 const τ = 2π                       # a full turn: the initializer is the expression, with π as the macro
 const frame = [1.0 0.0; 0.0 π]
 
+const tally = MVector(0, 0, 0)      # `const` fixes the binding, not the contents: a function that writes it needs it writable in C
+function counted(k::Int64)
+    tally[2] += k
+    return tally[2] + 1
+end
 const SHIELD_H = 2.0                # spelled like the include guard of a file named `shield`
 shielded(x::Float64) = x * SHIELD_H
 fall(t::Float64) = 0.5 * g * t^2
@@ -47,6 +52,8 @@ check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(sc
     # A global's initializer is its Julia expression where a static initializer can hold it:
     # `π` is the macro, defined in the helper header, which the header then includes.
     # An include guard is a macro, and would erase a name spelled like it: the guard gives way.
+    wr = csource("written", counted)
+    @test occursin("\nint64_t tally[3] = {0, 0, 0};", wr) && occursin("extern int64_t tally[3];", wr) && !occursin("const int64_t tally", wr)
     sh = csource("shield", shielded)
     @test occursin("#ifndef SHIELD_H_\n#define SHIELD_H_\n", sh) && occursin("static const double SHIELD_H = 2.0;", sh) && occursin("#endif  // SHIELD_H_", sh)
     sym = csource("symbolic", turn)
