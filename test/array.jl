@@ -225,13 +225,13 @@ check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 
 @testset "outplaced" begin
     src = csource("outplaced", state, whole, grown, swapped, scaled, turned, stacked, sliced, either)
     fn(name) = (i = findfirst("void $name(", src)[1]; src[i:findnext("\n}", src, i)[end]])
-    @test occursin("// copy x and v into out, where the function works on them and returns them\n    memcpy(out, x, sizeof(double[3]));\n    double *x_ = out;\n    memcpy(&out[3], v, sizeof(double[3]));\n    double *v_ = &out[3];", src)
-    @test occursin("add_3(x_, temp2_dt_v, x_);  // x_ += temp2_dt_v", fn("state")) && !occursin("memcpy(out, x_", fn("state")) && !occursin("memcpy(&out[3], v_", fn("state"))
-    @test occursin("// copy x into out, where the function works on it and returns it\n    memcpy(out, x, sizeof(double[3]));\n    double *x_ = out;", src) && occursin("mul_3_s(x_, s, x_);", src)
+    @test occursin("// copy x and v into out, where the function works on them and returns them\n    memcpy(out, x, sizeof(double[3]));\n    double *x_local = out;\n    memcpy(&out[3], v, sizeof(double[3]));\n    double *v_local = &out[3];", src)
+    @test occursin("add_3(x_local, temp2_dt_v, x_local);  // x_local += temp2_dt_v", fn("state")) && !occursin("memcpy(out, x_local", fn("state")) && !occursin("memcpy(&out[3], v_local", fn("state"))
+    @test occursin("// copy x into out, where the function works on it and returns it\n    memcpy(out, x, sizeof(double[3]));\n    double *x_local = out;", src) && occursin("mul_3_s(x_local, s, x_local);", src)
     @test occursin("// b and c are built in out, where the function returns them\n    double *b = out;\n    double *c = &out[3];", src) && occursin("mulP_3F64_sI64(a, 2, b);", src) && occursin("addP_3_s(b, 1.0, c);", src)
-    @test occursin("double x_[3];\n    memcpy(x_, x, sizeof x_);", src)          # swapped and scaled: the copy stays
-    @test occursin("mul_3x3_3(M, x_, temp1_M_x);", src) && occursin("memcpy(x_, temp1_M_x, sizeof temp1_M_x);", src)   # turned: through a temp, into place
-    @test occursin("memcpy(out, A, sizeof(double[2][3]));\n    double (*A_)[3] = out;", src) && occursin("mulP_2x3F64_sI64(A_, 2, A_);", src) && occursin("memcpy(out[2], r, sizeof(double[3]));", src)   # stacked
+    @test occursin("double x_local[3];\n    memcpy(x_local, x, sizeof x_local);", src)          # swapped and scaled: the copy stays
+    @test occursin("mul_3x3_3(M, x_local, temp1_M_x);", src) && occursin("memcpy(x_local, temp1_M_x, sizeof temp1_M_x);", src)   # turned: through a temp, into place
+    @test occursin("memcpy(out, A, sizeof(double[2][3]));\n    double (*A_local)[3] = out;", src) && occursin("mulP_2x3F64_sI64(A_local, 2, A_local);", src) && occursin("memcpy(out[2], r, sizeof(double[3]));", src)   # stacked
     @test occursin("void sliced(double a[restrict 3])", src) && occursin("a = m[2, :]\n    memcpy(a, m[1], sizeof(double[3]));\n}", src)   # one copy, into the parameter
     @test occursin("double m[3][3] = {\n        {4, 8, 1},\n        {5.0, 9, 2},\n        {4, 8, 0},\n    };", src)   # a literal is declared with its initializer, a row per line
     @test occursin("void either(const double v[3], bool c, double a[restrict 3])", src) && occursin("mul_3_s(v, 2.0, a);\n\n        // @", src) && occursin("mul_3_s(v, 3.0, a);\n}", src) && !occursin("double *a = out", src)

@@ -179,6 +179,9 @@ end
 function enter!(sc::Scope, lo, hi, loop::Bool)
     push!(sc.blocks, Block(lo, hi, sc.path[end], sc.depth + 1, loop))
     push!(sc.path, length(sc.blocks))
+    # A loop's header is written outside its braces but belongs to it: the loop variable
+    # is in scope there, so `for i in 1:i` must not come out as `i <= i`.
+    isempty(sc.pending) || (sc.headline[length(sc.blocks)] = sc.pending; sc.pending = "")
 end
 
 # The block each variable is declared in, from a walk that found the blocks: the innermost
@@ -209,7 +212,81 @@ function homes(sc::Scope)
         end
         home[s] = b
     end
+    # A loop's own variable is declared in its header: it lives in the loop's body.
+    for F in values(sc.fors)
+        b = findfirst(B -> B.loop && B.lo == F.bodylo && B.hi == F.bodyhi, blocks)
+        b === nothing || (home[F.var] = b)
+    end
     return home
+end
+
+"""
+    names!(sc, first)
+
+The C name of every variable of the function, from the first walk `first`: the author's
+own name wherever that is safe, and a changed one only where C would otherwise get it
+wrong. Two things sharing a name are harmful when they are declared in the same block;
+when one is declared inside the other's block *and that inner block mentions the outer
+one*, so the mention would land on the wrong thing; or when the name is C's own. Siblings
+and cousins may share a name, and so may a variable and an outer thing its block never
+mentions, which is how a shadow the Julia wrote is kept as written.
+
+When two do collide, the one that keeps the name is the one declared further out; then a
+parameter before a local before a working copy; then the one whose Julia name is already
+its C name; then the first. The other takes `_local` when it is the local version of the
+very name it yields to (`let x = x + 1`, the working copy of a parameter), `_` otherwise.
+"""
+function names!(sc::Scope, first::Scope)
+    ci, blocks = sc.ci, first.blocks
+    chain(b) = (c = Int[]; while b != 0; push!(c, b); b = blocks[b].parent; end; c)
+    # The words each block mentions, comments and strings aside, its own header included;
+    # then those of everything inside it.
+    words(s) = Set(m.match for m in eachmatch(r"[A-Za-z_]\w*", replace(s, r"/\*.*?\*/"s => "", r"//[^\n]*" => "", r"\"(\\.|[^\"\\])*\"" => "")))
+    own = [Set{SubString{String}}() for _ in blocks]
+    for (b, line) in first.emitted; union!(own[b], words(line)); end
+    for (b, line) in first.headline; union!(own[b], words(line)); end
+    inside = deepcopy(own)
+    for b in length(blocks):-1:2; union!(inside[blocks[b].parent], inside[b]); end
+    # The file-scope names this function mentions: all it has to keep clear of, since the
+    # rest of the program is out of its sight. Known by now, its own walk having met them.
+    sc.outer = Set(String(w) for w in inside[1] if w in filescope(sc.prog))
+    # One variable per name of the first walk: slots Julia made for one variable share it.
+    groups = Dict{String, Vector{Int}}()
+    for s in 2:length(ci.slotnames)
+        isempty(string(ci.slotnames[s])) || push!(get!(groups, first.names[s], Int[]), s)
+    end
+    vars = map(collect(groups)) do (marked, slots)
+        julia = string(ci.slotnames[minimum(slots)])
+        param = any(<=(ci.nargs), slots)
+        copy = any(s -> haskey(first.rebound, s), slots)
+        top = param || copy || any(s -> haskey(first.outplaced, s), slots)
+        held = [first.home[s] for s in slots if haskey(first.home, s)]
+        home = top || isempty(held) ? 1 : reduce((a, b) -> Base.first(x for x in chain(a) if x in chain(b)), held)
+        (; marked, slots, julia, ident=identifier(julia), home, rank=param ? 0 : copy ? 2 : 1)
+    end
+    sort!(vars; by=v -> (blocks[v.home].depth, v.rank, v.ident == v.julia ? 0 : 1, minimum(v.slots)))
+    named = Tuple{String, Any}[]
+    globalnamed(n) = (k = findfirst(g -> g.cname == n, sc.prog.globals); k === nothing ? "" : string(sc.prog.globals[k].name))
+    # What `v` would collide with under the name `n`: a Julia name (perhaps none), or nothing.
+    function clash(v, n)
+        n in reserved && return ""
+        n in sc.outer && n in inside[v.home] && return globalnamed(n)
+        for (m, u) in named
+            m == n || continue
+            u.home == v.home && return u.julia
+            u.home in chain(v.home) && u.marked in inside[v.home] && return u.julia
+            v.home in chain(u.home) && v.marked in inside[u.home] && return u.julia
+        end
+        return nothing
+    end
+    for v in vars
+        n = v.ident
+        c = clash(v, n)
+        c === nothing || (n *= c == v.julia ? "_local" : "_")
+        while clash(v, n) !== nothing; n *= "_"; end
+        push!(named, (n, v))
+        for s in v.slots; sc.names[s] = n; end
+    end
 end
 
 # The variables a statement reads, and the ones it assigns.
@@ -290,13 +367,14 @@ function forloop!(lines, sc::Scope, F::For)
     end
     if F.array !== nothing
         # `for x in v`: a 0-based index the Julia never named, then the element.
-        k = indices(1; taken=sc.names)[1]
+        k = indices(1; taken=union(sc.names, sc.outer))[1]
         push!(sc.names, k)
         emit!(lines, sc, "for (int64_t $k = 0; $k < $hi; $k++) {")
         push!(sc.loops, (F.exit, F.next))
         sc.depth += 1
         emit!(lines, sc, "$T $var = $(value(sc, F.array))[$k];")
         sc.depth -= 1
+        sc.pending = "$var = $(value(sc, F.array))[$k]"
         nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
         pop!(sc.loops)
         emit!(lines, sc, "}")
@@ -309,6 +387,7 @@ function forloop!(lines, sc::Scope, F::For)
         cmp = F.step > 0 ? "<=" : ">="
         emit!(lines, sc, "for ($T $var = $lo; $var $cmp $hi; $var += $(F.step)) {")
     end
+    sc.pending = "$var = $lo; $var <= $hi"
     push!(sc.loops, (F.exit, F.next))
     nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
     pop!(sc.loops)

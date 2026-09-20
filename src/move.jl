@@ -25,7 +25,7 @@ end
 # With `conj`, each element is conjugated on the way: an adjoint's storage made plain.
 function movement(sc::Scope, E::Type, dst, dsub, src, ssub, extents; conj::Bool=false)
     looped = [a for a in eachindex(extents) if extents[a] > 1]
-    vars = Dict(zip(looped, indices(length(looped); taken=sc.names)))
+    vars = Dict(zip(looped, indices(length(looped); taken=union(sc.names, sc.outer))))
     sub(off, a) = a == 0 ? off : occursin("#", off) ? replace(off, "#" => get(vars, a, "0")) :
                   !haskey(vars, a) ? off : off == "0" ? vars[a] : "$off + $(vars[a])"
     at(name, subs) = name * join("[$(sub(o, a))]" for (o, a) in subs)
@@ -78,7 +78,7 @@ function identity!(lines, sc::Scope, dst, D::Type; diagonal=nothing)
     zero!(lines, sc, dst, D)
     one = diagonal !== nothing ? diagonal : eltype(D) <: AbstractFloat ? (eltype(D) === Float32 ? "1.0f" : "1.0") : "1"
     d = minimum(shape(D))
-    i = indices(1; taken=sc.names)[1]
+    i = indices(1; taken=union(sc.names, sc.outer))[1]
     for line in nest(live([(i, d)]), ["$dst[$(d > 1 ? i : "0")][$(d > 1 ? i : "0")] = $one;"])
         emit!(lines, sc, line)
     end

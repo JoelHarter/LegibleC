@@ -136,6 +136,12 @@ mutable struct Scope
     blocks::Vector{Block}
     path::Vector{Int}
     home::Dict{Int, Int}
+    # What the first walk wrote, line by line with the block it went into, and the header
+    # of each loop; and the file-scope names the function mentions (`names!`).
+    emitted::Vector{Tuple{Int, String}}
+    headline::Dict{Int, String}
+    pending::String
+    outer::Set{String}
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool, blocked)
@@ -158,7 +164,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}())
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}())
 end
 
 include("flow.jl")
@@ -181,10 +187,11 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     # The function is walked twice. The first walk is only to learn its C blocks, which
     # the `if`s reveal as they are emitted, and from them where each variable is declared
     # (`homes`); the second writes the C. Emission is repeatable, so the blocks agree.
-    first = ready(name, mi, sig, prog, rettype, templimit, source, blocked)
+    first = ready(name, mi, sig, prog, rettype, templimit, source, blocked, nothing)
     walk!(String[], first)
-    sc = ready(name, mi, sig, prog, rettype, templimit, source, blocked)
-    sc.home = homes(first)
+    first.home = homes(first)
+    sc = ready(name, mi, sig, prog, rettype, templimit, source, blocked, first)
+    sc.home = first.home
     ci = sc.ci
 
     # The signature line's own comment comes before the prologue of copies; a short-form
@@ -206,9 +213,20 @@ function walk!(body, sc::Scope)
 end
 
 # A function's state, ready to be walked: its types and names settled, its loops found.
-function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templimit, source, blocked)
+function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templimit, source, blocked, first)
     ci, _ = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     sc = Scope(ci, mi, sig, templimit, prog, source, blocked)
+    if first === nothing
+        # The first walk names every variable unmistakably, `v5__omega`, so that its text
+        # shows, block by block, which variables and which outer names are mentioned.
+        for i in 2:length(sc.names)
+            isempty(string(ci.slotnames[i])) || (sc.names[i] = "v$(i)__" * sc.names[i])
+        end
+    else
+        names!(sc, first)
+    end
+    sc.result = sc.resultname = free("result", union(sc.names, sc.outer))
+    sc.blocked = Set(parse(Int, m[1]) for m in (match(r"^temp(\d+)(_.*)?$", s) for s in sc.names) if m !== nothing)
     sc.resultparam = isarray(rettype)
     sc.rettype = rettype
     istuple(sc.rettype) && (sc.kind = returnkind!(prog, mi, name))
@@ -224,7 +242,7 @@ function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templ
     if sc.resultparam
         # An array comes out through a parameter, and an output parameter is `out` —
         # `result` is kept for a returned scalar (see naming.md).
-        sc.result = sc.resultname = free("out", sc.names)
+        sc.result = sc.resultname = free("out", union(sc.names, sc.outer))
     end
     analyze!(sc)
     # `return a` from every exit — or `a = …` as the last line — with `a` a local of the
@@ -444,7 +462,10 @@ end
 callee_or_nothing(ci, x) = try callee(ci, x) catch; nothing end
 
 # Append a line at the current nesting depth.
-emit!(lines, sc::Scope, s::AbstractString) = push!(lines, "    "^sc.depth * s)
+function emit!(lines, sc::Scope, s::AbstractString)
+    isempty(sc.path) || push!(sc.emitted, (sc.path[end], s))
+    push!(lines, "    "^sc.depth * s)
+end
 
 # Emit `prefix * expr * ";"`, wrapped when it would run past the program's width: the
 # expression is split at the operators binding least tightly (outside parentheses and
@@ -1655,7 +1676,9 @@ function contribution(sc::Scope, x)
     x isa Core.SSAValue || x isa Core.SlotNumber || return String[]
     x isa Core.SSAValue && !(x.id in sc.inlined) && !haskey(sc.expr, x.id) && return String[]   # a constant load
     x isa Core.SSAValue && x.id in sc.inlined && return unique(reduce(vcat, (contribution(sc, a) for a in sc.ci.code[x.id].args[2:end]); init=String[]))
-    name = replace(value(sc, x), r"^temp\d+_?" => "", "->" => "_", "." => "_")   # a field read contributes its path: p.x -> p_x
+    # A field read contributes its path, p.x -> p_x. The `_local` of a variable that gave
+    # way is ours, not the author's: a temp computed from `x_local` is named after `x`.
+    name = replace(value(sc, x), r"^temp\d+_?" => "", r"_local_*$" => "", "->" => "_", "." => "_")
     return filter(!isempty, split(name, "_"))
 end
 

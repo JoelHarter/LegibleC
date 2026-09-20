@@ -237,20 +237,11 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
         names[k] = h
         functions[k] = exportedfunction(prog.helpers[h], julia, sig, returntype(mi))
     end
-    # The program's file-scope names — helpers, functions, globals, structs, macros — are
-    # all known only now. A function that shares a helper's name is an error, since its
-    # name is the C interface. A local that shares any file-scope spelling — `ω` spelled
-    # `omega` beside a global `omega`, which Julia keeps apart and C would let the local
-    # shadow, silently — is renamed with `_` by generating its function again with those
-    # names blocked.
+    # The helpers' names are known only now. A function that shares one is an error, since
+    # its name is the C interface. (A local keeps clear of the file-scope names its own
+    # function mentions — `ω` beside a global `omega` it reads — while it is named: `names!`.)
     for n in names
         haskey(prog.helpers, n) && !(n in prog.exported) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
-    end
-    taken = filescope(prog)
-    for (k, (n, (mi, sig))) in enumerate(zip(names, instances))
-        haskey(synthetics, mi) && continue
-        any(v -> v in taken, functions[k][4]) || continue
-        functions[k] = generate(n, mi, sig; blocked=taken)
     end
     dir = joinpath(outpath, "out")
     mkpath(dir)

@@ -156,8 +156,16 @@ function leaving(n::Int64)                           # a `break` and a `return` 
     end
     return s
 end
+const i = 3.0
+weighted(v::SVector{3,Float64}) = (s = 0.0; for x in v; s += x * i; end; s)   # the index we invent gives way to the global `i` the loop reads
+function pairup(x::Float64)                          # a struct's fields are spelled from the Julia names, not from a local that gave way
+    let x = x + 1.0
+        y = 2x
+        return x, y
+    end
+end
 
-cases = [Case(whilecarried, 5), Case(outercarried, 4), Case(skipping, 5), Case(eitherway, 5), Case(nestedlocal, 3), Case(leaving, 10),
+cases = [Case(weighted, SVector(1.0, 2.0, 3.0)), Case(whilecarried, 5), Case(outercarried, 4), Case(skipping, 5), Case(eitherway, 5), Case(nestedlocal, 3), Case(leaving, 10),
          Case(after, 3), Case(param, 1.5), Case(selfinit, 1.0), Case(selfloop, 4), Case(carried, 4), Case(siblings, 3), Case(lets, 1.0),
          Case(area, 2.0), Case(kappa, 5), Case(branchonly, true, 2.0, 3.0), Case(branchonly, false, 2.0, 3.0)]
 check("scope", cases)
@@ -172,16 +180,19 @@ check("scope", cases)
     @test occursin(r"double prev;\n(    // [^\n]*\n)*    for \(int64_t k", src)                 # carried around the loop: outside it
     @test occursin(r"if \(c\) \{\n        // [^\n]*\n        double t = a \* b;", src)                          # used in one branch only: in it
     # Which names are kept.
-    @test_broken occursin("return s * g;", fn("after")) && !occursin("g_", fn("after"))
-    @test_broken occursin("double param(double g)", src)
-    @test_broken occursin("double x_local = x + 1.0;", src)
-    @test_broken occursin("for (int64_t i_local = 1; i_local <= i; i_local++) {", src)
-    @test_broken !occursin("k_", fn("siblings")) && !occursin("w_", fn("siblings"))
+    @test occursin("return s * g;", fn("after")) && !occursin("g_", fn("after"))
+    @test occursin("double param(double g)", src)
+    @test occursin("double x_local = x + 1.0;", src)
+    @test occursin("for (int64_t i_local = 1; i_local <= i; i_local++) {", src)
+    @test !occursin("k_", fn("siblings")) && !occursin("w_", fn("siblings"))
     @test_broken occursin("    {\n        double a = 10.0;\n        double b = 2.0;", src) && !occursin("a_", fn("lets")) && !occursin("b_", fn("lets"))
-    @test_broken occursin("double area = 3.0 * r * r;", src)
+    @test occursin("double area = 3.0 * r * r;", src)
     loops = csource("scopeloops", whilecarried, outercarried, skipping, nestedlocal)
     @test occursin(r"double last;\n(    [^\n]*\n)*?    while \(", loops) && occursin(r"double seen;\n(    [^\n]*\n)*?    for \(int64_t i", loops) && occursin(r"double held;\n(    [^\n]*\n)*?    for \(", loops)
     @test occursin(r"for \(int64_t i = 1; i <= n; i\+\+\) \{\n        // [^\n]*\n        double row\[2\] = \{\(double\)i, 1.0\};", loops) && occursin(r"for \(int64_t j = 1; j <= n; j\+\+\) \{\n            // [^\n]*\n            double cell = ", loops)
+    inv = csource("scopeinvented", weighted, pairup)
+    @test occursin("for (int64_t i_ = 0; i_ < 3; i_++) {\n        double x = v[i_];", inv) && occursin("s += x * i;", inv)
+    @test occursin("    double x;\n    double y;\n} pairup_t;", inv) && occursin("return (pairup_t){x_local, y};", inv)
     @test occursin("kappa_ = n - 1;", src) && occursin("kappa(kappa_)", src)               # it names the function it would hide
 end
 end
