@@ -5,7 +5,7 @@ using Test
 include("check.jl")
 
 @testset "LegibleC" begin
-    for file in ("scalar", "flow", "array", "linear", "reduce", "call", "struct", "name", "comment", "print", "inline", "text", "global", "file", "option", "operator", "complex")
+    for file in ("scalar", "flow", "array", "linear", "reduce", "call", "struct", "name", "comment", "print", "inline", "text", "global", "file", "option", "operator", "complex", "scope")
         include("$file.jl")
     end
 end
