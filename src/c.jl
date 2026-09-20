@@ -60,6 +60,17 @@ Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true) =
 # `"LEGIBLEC_PI" => π`. The helper header defines the ones the output uses.
 const irrationals = Dict{String, Any}()
 
+# One C block of a function: the function's own body, a loop's body, a branch of an `if`.
+# `lo:hi` are the statements emitted inside its braces. What is declared in a loop's body
+# is made anew on every pass.
+struct Block
+    lo::Int
+    hi::Int
+    parent::Int     # 0 for the function's own
+    depth::Int
+    loop::Bool
+end
+
 # Per-function state.
 mutable struct Scope
     ci::Core.CodeInfo
@@ -102,7 +113,7 @@ mutable struct Scope
     # slot. The copy is made at the top of the function, under a comment saying why.
     rebound::Dict{Int, Int}
     declared::Set{Int}                  # slots already declared, at their first assignment
-    blockstart::Int                     # where the current top-level statement or construct began
+    starts::Vector{Int}                 # per depth: the line where the statement or construct now being emitted there began
     # Lines to insert once the walk is done, (at, priority, text or () -> text): hoisted
     # declarations and the comments that go above a multi-line step. Deferred so that
     # nothing shifts under the line numbers recorded along the way.
@@ -120,6 +131,11 @@ mutable struct Scope
     known::Dict{Int, Any}               # SSA values the transpiler knows as constants that Julia didn't: `end` of a sized regular array, a range of such
     outplaced::Dict{Int, Int}           # array slots that live in `out` from the start, slot -> offset (`outplacement!`)
     pointers::Set{String}               # C names that are pointers, not arrays: `sizeof` needs the type spelled out
+    # The C blocks, in the order they are opened (the function's body is 1), the ones open
+    # now, and the block each variable is declared in (`homes`), known from a first walk.
+    blocks::Vector{Block}
+    path::Vector{Int}
+    home::Dict{Int, Int}
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool, blocked)
@@ -140,8 +156,9 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
     return Scope(ci, names, result, result, false, limit, blocked, 0, Dict{Int, String}(), prog.helpers, prog.headers,
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
-                 Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), 1,
-                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}())
+                 Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
+                 Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
+                 Block[], Int[], Dict{Int, Int}())
 end
 
 include("flow.jl")
@@ -161,6 +178,36 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     ci, rettype = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     rettype === Union{} && throw(ArgumentError("$(mi.def.name) never returns normally according to inference: something in it always throws"))
     rettype = returntype(mi)                # one C type: numbers settled, anything else refused by line
+    # The function is walked twice. The first walk is only to learn its C blocks, which
+    # the `if`s reveal as they are emitted, and from them where each variable is declared
+    # (`homes`); the second writes the C. Emission is repeatable, so the blocks agree.
+    first = ready(name, mi, sig, prog, rettype, templimit, source, blocked)
+    walk!(String[], first)
+    sc = ready(name, mi, sig, prog, rettype, templimit, source, blocked)
+    sc.home = homes(first)
+    ci = sc.ci
+
+    # The signature line's own comment comes before the prologue of copies; a short-form
+    # definition's line is its body, so that comment stays with the body.
+    head = String[]
+    sc.src !== nothing && !sc.src.short && annotate!(head, sc, sc.src.first)
+    body = String[]
+    walk!(body, sc)
+    return finish(name, mi, sc, head, body)
+end
+
+# Emit the whole body, as the function's own block.
+function walk!(body, sc::Scope)
+    n = length(sc.ci.code)
+    push!(sc.blocks, Block(1, n, 0, 0, false))
+    push!(sc.path, 1)
+    block!(body, sc, 1, n)
+    pop!(sc.path)
+end
+
+# A function's state, ready to be walked: its types and names settled, its loops found.
+function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templimit, source, blocked)
+    ci, _ = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     sc = Scope(ci, mi, sig, templimit, prog, source, blocked)
     sc.resultparam = isarray(rettype)
     sc.rettype = rettype
@@ -186,13 +233,14 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     if sc.resultparam && s !== nothing && get(sc.outplaced, s, -1) == 0 && !haskey(sc.rebound, s) && count(==(sc.names[s]), sc.names) == 1
         sc.result = sc.resultname = sc.names[s]
     end
+    return sc
+end
 
-    # The signature line's own comment comes before the prologue of copies; a short-form
-    # definition's line is its body, so that comment stays with the body.
-    head = String[]
-    sc.src !== nothing && !sc.src.short && annotate!(head, sc, sc.src.first)
-    body = String[]
-    block!(body, sc, 1, length(ci.code))
+# The walked body, made into the function: comments, declarations, the prologue of copies,
+# the signature and its documentation.
+function finish(name, mi::Core.MethodInstance, sc::Scope, head, body)
+    ci = sc.ci
+    prog = sc.prog
     if sc.src !== nothing && sc.src.last > sc.cursor   # whatever follows the last statement
         separate!(body, sc)
         annotate!(body, sc, sc.src.last)
@@ -756,9 +804,12 @@ function statement!(lines, sc::Scope, i, st)
         x = sc.names[slot.id]
         # A variable is declared at its first assignment. Inside an `if` or a loop that
         # would scope it to the block, so there it is declared just before the construct.
+        # A variable is declared in its home block (`homes`): here, when this is that block;
+        # otherwise just above the construct, in that block, that this statement is inside.
         fresh = !(slot.id in sc.declared) && !(slot.id in sc.hidden)
         fresh && push!(sc.declared, slot.id)
-        here = fresh && sc.depth == 0
+        home = get(sc.home, slot.id, 1)
+        here = fresh && sc.path[end] == home
         if isarray(T)
             store!(lines, sc, i, x, rhs; declaration=here)
         elseif rhs isa Expr && rhs.head === :call && callee_or_nothing(ci, rhs.args[1]) === Core.tuple && sc.kind !== nothing &&
@@ -785,7 +836,8 @@ function statement!(lines, sc::Scope, i, st)
         end
         if fresh && !here
             s = slot.id
-            push!(sc.inserts, (sc.blockstart, 0, () -> slotdecl(sc, s) * ";"))
+            d = sc.blocks[home].depth
+            push!(sc.inserts, (sc.starts[d+1], 0, () -> "    "^d * slotdecl(sc, s) * ";"))
         end
         if stable(ci, i, slot.id)
             sc.expr[i] = x

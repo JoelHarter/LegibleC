@@ -128,10 +128,11 @@ function block!(lines, sc::Scope, lo::Int, hi::Int)
     while i <= hi
         # A new Julia line: a blank line first, then — at the top level — this is where
         # a hoisted declaration goes, ahead of the line's source comment.
-        if sc.stmtline[i] > sc.cursor
-            separate!(lines, sc)
-            sc.depth == 0 && (sc.blockstart = length(lines) + 1)
-        end
+        sc.stmtline[i] > sc.cursor && separate!(lines, sc)
+        # Where this statement or construct begins, at this depth: a declaration hoisted
+        # out of it goes here, ahead of its source comment.
+        length(sc.starts) > sc.depth || resize!(sc.starts, sc.depth + 1)
+        sc.starts[sc.depth+1] = length(lines) + 1
         if haskey(sc.fors, i)
             i = forloop!(lines, sc, sc.fors[i])
         elseif haskey(sc.whiles, i)
@@ -164,12 +165,83 @@ end
 
 # Emit the body of a construct one level deeper, with `result` available afresh
 # inside the block.
-function nested!(lines, sc::Scope, lo, hi)
+function nested!(lines, sc::Scope, lo, hi; loop::Bool=false)
     saved = sc.result
+    enter!(sc, lo, hi, loop)
     sc.depth += 1
     block!(lines, sc, lo, hi)
     sc.depth -= 1
+    pop!(sc.path)
     sc.result = saved
+end
+
+# Open the C block holding statements `lo:hi`, one level deeper than the current depth.
+function enter!(sc::Scope, lo, hi, loop::Bool)
+    push!(sc.blocks, Block(lo, hi, sc.path[end], sc.depth + 1, loop))
+    push!(sc.path, length(sc.blocks))
+end
+
+# The block each variable is declared in, from a walk that found the blocks: the innermost
+# one holding every statement that reads or assigns the variable, moved out of any loop
+# that carries its value from one pass to the next, where it would be made anew instead.
+# Narrower than that and a use falls outside it; wider, and it could capture a later use
+# of something else of the same name. Julia's own scope isn't asked for, and couldn't be:
+# the compiler marks where a variable is made anew (`NewvarNode`) only when it might be
+# read unassigned, and puts the mark for one assigned in a branch at the function's top.
+function homes(sc::Scope)
+    ci, blocks = sc.ci, sc.blocks
+    blockof(i) = (b = 1; for (k, B) in enumerate(blocks); B.lo <= i <= B.hi && B.depth >= blocks[b].depth && (b = k); end; b)
+    chain(b) = (c = Int[]; while b != 0; push!(c, b); b = blocks[b].parent; end; c)
+    common(a, b) = first(x for x in chain(a) if x in chain(b))
+    refs = Dict{Int, Vector{Int}}()
+    for (i, st) in enumerate(ci.code), s in union(slotreads(st), slotwrites(st))
+        push!(get!(refs, s, Int[]), i)
+    end
+    home = Dict{Int, Int}()
+    for (s, at) in refs
+        s > ci.nargs && !(s in sc.hidden) || continue
+        b = reduce(common, blockof.(at))
+        while true
+            l = b
+            while l != 0 && !blocks[l].loop; l = blocks[l].parent; end
+            l != 0 && carried(sc, s, l) || break
+            b = blocks[l].parent
+        end
+        home[s] = b
+    end
+    return home
+end
+
+# The variables a statement reads, and the ones it assigns.
+slotreads(x) = x isa Core.SlotNumber ? [x.id] :
+               x isa Expr && x.head === :(=) ? slotreads(x.args[2]) :
+               x isa Expr ? reduce(vcat, (slotreads(a) for a in x.args); init=Int[]) :
+               x isa Core.ReturnNode && isdefined(x, :val) ? slotreads(x.val) :
+               x isa Core.GotoIfNot ? slotreads(x.cond) : Int[]
+slotwrites(x) = x isa Expr && x.head === :(=) && x.args[1] isa Core.SlotNumber ? [x.args[1].id] : Int[]
+
+# Does the loop whose body is block `l` carry variable `s` from one pass to the next: can a
+# pass read it before that pass has assigned it? Read off the statements in order; an
+# assignment inside a block nested in the body isn't counted on afterwards, since the
+# block may not have run, which errs toward saying yes.
+function carried(sc::Scope, s, l)
+    code, blocks = sc.ci.code, sc.blocks
+    function scan(b, assigned)
+        inner = Dict(blocks[k].lo => k for k in eachindex(blocks) if blocks[k].parent == b)
+        i = blocks[b].lo
+        while i <= blocks[b].hi
+            if haskey(inner, i) && blocks[inner[i]].hi >= i
+                scan(inner[i], assigned) && return true
+                i = blocks[inner[i]].hi + 1
+                continue
+            end
+            !assigned && s in slotreads(code[i]) && return true
+            code[i] isa Expr && code[i].head === :(=) && s in slotwrites(code[i]) && (assigned = true)
+            i += 1
+        end
+        return false
+    end
+    return scan(l, false)
 end
 
 # Can the body of the loop change what its end bound reads? A variable the bound reads that
@@ -225,7 +297,7 @@ function forloop!(lines, sc::Scope, F::For)
         sc.depth += 1
         emit!(lines, sc, "$T $var = $(value(sc, F.array))[$k];")
         sc.depth -= 1
-        nested!(lines, sc, F.bodylo, F.bodyhi)
+        nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
         pop!(sc.loops)
         emit!(lines, sc, "}")
         return F.exit
@@ -238,7 +310,7 @@ function forloop!(lines, sc::Scope, F::For)
         emit!(lines, sc, "for ($T $var = $lo; $var $cmp $hi; $var += $(F.step)) {")
     end
     push!(sc.loops, (F.exit, F.next))
-    nested!(lines, sc, F.bodylo, F.bodyhi)
+    nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
     pop!(sc.loops)
     emit!(lines, sc, "}")
     return F.exit
@@ -262,10 +334,11 @@ function whileloop!(lines, sc::Scope, W::While)
         cond = code[W.test].cond === true ? "true" : condition(sc, [(code[W.test].cond, false)], "&&")
         emit!(lines, sc, "while ($cond) {")
         push!(sc.loops, (W.exit, W.backedge))
-        nested!(lines, sc, W.test + 1, W.backedge - 1)
+        nested!(lines, sc, W.test + 1, W.backedge - 1; loop=true)
     else
         emit!(lines, sc, "while (true) {")
         push!(sc.loops, (W.exit, W.backedge))
+        enter!(sc, W.header, W.backedge - 1, true)      # the condition's statements are inside the braces too
         sc.depth += 1
         # The header's statements, emitted as a block — with this loop taken out of the
         # table meanwhile, or `block!` would start the loop again at its header.
@@ -277,6 +350,7 @@ function whileloop!(lines, sc::Scope, W::While)
         emit!(lines, sc, "}")
         sc.depth -= 1
         nested!(lines, sc, W.test + 1, W.backedge - 1)
+        pop!(sc.path)
     end
     pop!(sc.loops)
     emit!(lines, sc, "}")
@@ -486,7 +560,7 @@ function placement(sc::Scope, i)
         any(touches(sc, code[m], name) for m in i:u-1) && return nothing
         any(touches(sc, a, name) for a in args if !(a isa Core.SSAValue && a.id == i)) && return nothing
         declared = slot in sc.declared
-        declared || sc.depth == 0 || return nothing     # declared here, or hoisted by the assignment: not both
+        declared || sc.path[end] == get(sc.home, slot, 1) || return nothing     # declared here, or hoisted by the assignment: not both
         declared || push!(sc.declared, slot)
         return (u, sc.names[slot], declared ? nothing : declare(T, sc.names[slot]), fieldcnames(T)[k])
     elseif f === Core.tuple && sc.kind !== nothing && onlyreturned(ci, u)

@@ -84,7 +84,81 @@ function branchonly(c::Bool, a::Float64, b::Float64) # `t` lives in one branch; 
     return y
 end
 
-cases = [Case(after, 3), Case(param, 1.5), Case(selfinit, 1.0), Case(selfloop, 4), Case(carried, 4), Case(siblings, 3), Case(lets, 1.0),
+# Carrying, on every shape of loop: the value of one pass read by the next.
+function whilecarried(n::Int64)                      # a `while`, the value read at the top of the next pass
+    local last
+    k = 0; s = 0.0
+    while k < n
+        k += 1
+        if k > 1
+            s += last
+        end
+        last = 2.0 * k
+    end
+    return s
+end
+function outercarried(n::Int64)                      # assigned in the inner loop, read by the outer loop's next pass
+    local seen
+    s = 0.0
+    for i in 1:n
+        if i > 1
+            s += seen
+        end
+        for j in 1:i
+            seen = Float64(i * j)
+        end
+    end
+    return s
+end
+function skipping(n::Int64)                          # a `continue` ahead of the assignment
+    local held
+    s = 0.0
+    for k in 1:n
+        if k == 1
+            held = 10.0
+            continue
+        end
+        s += held
+        held = Float64(k)
+    end
+    return s
+end
+function eitherway(n::Int64)                         # assigned on both branches, then read: never carried, wherever it is declared
+    s = 0.0
+    for k in 1:n
+        if k % 2 == 1
+            w = 1.0
+        else
+            w = 2.0
+        end
+        s += w * k
+    end
+    return s
+end
+function nestedlocal(n::Int64)                       # each loop's own variable, and an array that is a loop's own
+    s = 0.0
+    for i in 1:n
+        row = SVector(Float64(i), 1.0)
+        for j in 1:n
+            cell = row[1] * j + row[2]
+            s += cell
+        end
+    end
+    return s
+end
+function leaving(n::Int64)                           # a `break` and a `return` from inside the loop
+    s = 0.0
+    for k in 1:n
+        step = 0.5 * k
+        step > 3.0 && break
+        s += step
+        s > 100.0 && return -1.0
+    end
+    return s
+end
+
+cases = [Case(whilecarried, 5), Case(outercarried, 4), Case(skipping, 5), Case(eitherway, 5), Case(nestedlocal, 3), Case(leaving, 10),
+         Case(after, 3), Case(param, 1.5), Case(selfinit, 1.0), Case(selfloop, 4), Case(carried, 4), Case(siblings, 3), Case(lets, 1.0),
          Case(area, 2.0), Case(kappa, 5), Case(branchonly, true, 2.0, 3.0), Case(branchonly, false, 2.0, 3.0)]
 check("scope", cases)
 
@@ -94,9 +168,9 @@ check("scope", cases)
     @test src == csource("scopetext", targets...)                                           # emission is repeatable
     fn(name) = (i = findlast("\n$name(", src); i === nothing && (i = findlast(" $name(", src)); src[i[1]:findnext("\n}", src, i[1])[end]])
     # Where things are declared.
-    @test_broken occursin("for (int64_t k = 1; k <= n; k++) {\n        // @scope.jl:14: g = Float64(k)\n        double g = (double)k;", src)   # a loop's variable, in its loop
+    @test occursin(r"for \(int64_t k = 1; k <= n; k\+\+\) \{\n        // [^\n]*\n        double g_? = \(double\)k;", src)   # a loop's variable, in its loop
     @test occursin(r"double prev;\n(    // [^\n]*\n)*    for \(int64_t k", src)                 # carried around the loop: outside it
-    @test_broken occursin("if (c) {\n        // @scope.jl:79: t = a * b\n        double t = a * b;", src)                # used in one branch only: in it
+    @test occursin(r"if \(c\) \{\n        // [^\n]*\n        double t = a \* b;", src)                          # used in one branch only: in it
     # Which names are kept.
     @test_broken occursin("return s * g;", fn("after")) && !occursin("g_", fn("after"))
     @test_broken occursin("double param(double g)", src)
@@ -105,6 +179,9 @@ check("scope", cases)
     @test_broken !occursin("k_", fn("siblings")) && !occursin("w_", fn("siblings"))
     @test_broken occursin("    {\n        double a = 10.0;\n        double b = 2.0;", src) && !occursin("a_", fn("lets")) && !occursin("b_", fn("lets"))
     @test_broken occursin("double area = 3.0 * r * r;", src)
+    loops = csource("scopeloops", whilecarried, outercarried, skipping, nestedlocal)
+    @test occursin(r"double last;\n(    [^\n]*\n)*?    while \(", loops) && occursin(r"double seen;\n(    [^\n]*\n)*?    for \(int64_t i", loops) && occursin(r"double held;\n(    [^\n]*\n)*?    for \(", loops)
+    @test occursin(r"for \(int64_t i = 1; i <= n; i\+\+\) \{\n        // [^\n]*\n        double row\[2\] = \{\(double\)i, 1.0\};", loops) && occursin(r"for \(int64_t j = 1; j <= n; j\+\+\) \{\n            // [^\n]*\n            double cell = ", loops)
     @test occursin("kappa_ = n - 1;", src) && occursin("kappa(kappa_)", src)               # it names the function it would hide
 end
 end
