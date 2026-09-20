@@ -8,4 +8,7 @@ include("check.jl")
     for file in ("scalar", "flow", "array", "linear", "reduce", "call", "struct", "name", "comment", "print", "inline", "text", "global", "file", "option", "operator", "complex", "scope")
         include("$file.jl")
     end
+    # Every helper any test produced has a name the reservation knows (`ishelpername`).
+    isempty(LegibleC.unrecognized) || println("helpers not recognized by ishelpername: ", sort!(collect(LegibleC.unrecognized)))
+    @test isempty(LegibleC.unrecognized)
 end

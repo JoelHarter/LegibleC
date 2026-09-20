@@ -31,6 +31,12 @@ mutable struct Program
     tupledefs::Vector{Pair{String, String}}                        # those typedefs, name => text
     globals::Vector{Any}                                           # the program's global variables, in order (see `global!`)
     exported::Set{String}                                          # helpers asked for by name, written as functions of the user's
+    # Every file-scope name the author's own things asked for, and got (`claim!`); and, on a
+    # build done again because the first gave a name to the wrong one (`audit`), the names
+    # settled beforehand and the names to keep clear of.
+    claims::Vector{Any}
+    fixed::Dict{Any, String}
+    avoid::Set{String}
 end
 
 # A global variable in the output: its C name, the Julia binding it came from (module and
@@ -54,11 +60,13 @@ end
 Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
-            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}())
+            suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}(),
+            Any[], Dict{Any, String}(), Set{String}())
 
 # The irrationals the current `transpile` call has met, by the macro each is written as:
 # `"LEGIBLEC_PI" => π`. The helper header defines the ones the output uses.
 const irrationals = Dict{String, Any}()
+const macroavoid = Set{String}()        # names of the author's that a macro must keep clear of
 
 # One C block of a function: the function's own body, a loop's body, a branch of an `if`.
 # `lo:hi` are the statements emitted inside its braces. What is declared in a loop's body
@@ -145,8 +153,8 @@ mutable struct Scope
     lets::Dict{Int, Vector{NTuple{3, Int}}}   # the source's `let` blocks: first statement -> (first, last, the `let` line), outermost first
 end
 
-function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool, blocked)
-    names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])]; blocked)]
+function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
+    names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])])]
     hidden = Set{Int}(i for (i, s) in enumerate(ci.slotnames) if i > 1 && isempty(string(s)))
     result = "result"
     while result in names
@@ -181,17 +189,17 @@ stand-in carrying the size the IR doesn't know. Any array helpers it needs are a
 to `helpers`, and any standard headers to `headers`.
 """
 function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Program;
-                   templimit::Integer=40, source::Bool=true, blocked=())
+                   templimit::Integer=40, source::Bool=true)
     ci, rettype = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     rettype === Union{} && throw(ArgumentError("$(mi.def.name) never returns normally according to inference: something in it always throws"))
     rettype = returntype(mi)                # one C type: numbers settled, anything else refused by line
     # The function is walked twice. The first walk is only to learn its C blocks, which
     # the `if`s reveal as they are emitted, and from them where each variable is declared
     # (`homes`); the second writes the C. Emission is repeatable, so the blocks agree.
-    first = ready(name, mi, sig, prog, rettype, templimit, source, blocked, nothing)
+    first = ready(name, mi, sig, prog, rettype, templimit, source, nothing)
     walk!(String[], first)
     first.home = homes(first)
-    sc = ready(name, mi, sig, prog, rettype, templimit, source, blocked, first)
+    sc = ready(name, mi, sig, prog, rettype, templimit, source, first)
     sc.home = first.home
     ci = sc.ci
 
@@ -214,9 +222,9 @@ function walk!(body, sc::Scope)
 end
 
 # A function's state, ready to be walked: its types and names settled, its loops found.
-function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templimit, source, blocked, first)
+function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templimit, source, first)
     ci, _ = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
-    sc = Scope(ci, mi, sig, templimit, prog, source, blocked)
+    sc = Scope(ci, mi, sig, templimit, prog, source)
     if first === nothing
         # The first walk names every variable unmistakably, `v5__omega`, so that its text
         # shows, block by block, which variables and which outer names are mentioned.
@@ -2085,6 +2093,37 @@ builtin(x::GlobalRef, v) = v isa Function || v isa Type || v isa Module || v isa
 # its size, as a sized argument does.
 globaltype(v) = v isa AbstractArray && shape(normalize(typeof(v))) === nothing ? shaped(eltype(v), size(v)) : normalize(typeof(v))
 
+"""
+    claim!(prog, key, preferred, julia, [second]) -> name
+
+The file-scope C name for one of the author's own things — a function, a global — asked
+for in one place, so that every kind keeps clear of every other: the names already
+claimed, struct and tuple typedefs, helpers, foreign wrappers, the macros, C's own words,
+and anything shaped like a helper's name (`ishelpername`). `second` is a function's name
+with its types, tried before `_`. What was asked for and what was given is kept, for
+`audit` to see whether the order things were met in gave a name to the wrong one.
+"""
+function claim!(prog::Program, key, preferred, julia, second=nothing)
+    # A macro of ours is not in the way: it ranks below the author's names and is the one to
+    # give way, which `audit` arranges.
+    free_(n) = !(n in reserved) && (!(n in filescope(prog)) || haskey(irrationals, n)) && !(n in prog.avoid) &&
+               !(n in Base.values(prog.fixed)) && !ishelpername(n)
+    name = if haskey(prog.fixed, key)
+        prog.fixed[key]
+    elseif free_(preferred)
+        preferred
+    elseif second !== nothing && free_(second)
+        second
+    else
+        n = preferred * "_"
+        while !free_(n); n *= "_"; end
+        n
+    end
+    push!(prog.names, name)
+    push!(prog.claims, (; key, preferred, julia=String(julia), name))
+    return name
+end
+
 # A global variable of the program, registered once per binding (or per name, for a
 # value with no binding): `g` in `const g = 9.81` is `const double g = 9.81;`. Named
 # like anything else, with `_` on a collision.
@@ -2096,8 +2135,7 @@ function global!(prog::Program, mod::Union{Module, Nothing}, name::Symbol, value
     (isstruct(T) && ismutabletype(T)) && throw(ArgumentError("the global $name is a mutable struct; the C caller owns those"))
     structdef!(prog, T)
     isconst = constant !== nothing ? constant : mod !== nothing ? Base.isconst(mod, name) : true
-    cname = free(mod === nothing ? identifier(string(name)) : qualified(string(name), mod), union(prog.names, reserved))
-    push!(prog.names, cname)
+    cname = claim!(prog, (mod, name), mod === nothing ? identifier(string(name)) : qualified(string(name), mod), string(name))
     g = Global(cname, mod, name, value, isconst)
     push!(prog.globals, g)
     return g
@@ -2493,9 +2531,8 @@ function register!(prog::Program, f, spec)
     nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
     haskey(prog.calls, mi) && return (mi, sig, prog.calls[mi])
     base = qualified(operatorname(mi.def.name, sig), mi.def.module)
-    taken = union(prog.names, keys(prog.helpers), reserved)
-    name = base in taken ? free(join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_"), taken) : free(base, reserved)
-    push!(prog.names, name)
+    typed = join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_")
+    name = claim!(prog, mi, base, string(mi.def.name), typed)
     prog.calls[mi] = name
     push!(prog.pending, (mi, sig, name))
     return (mi, sig, name)
@@ -2707,7 +2744,9 @@ function macroname(x::AbstractIrrational)
     posix[] && x === π && return "M_PI"
     posix[] && x === ℯ && return "M_E"
     name = "LEGIBLEC_" * uppercase(identifier(string(irrationalname(x))))
-    while haskey(irrationals, name) && irrationals[name] !== x   # `φ` and `ϕ` both spell `PHI`: the second is `PHI_`
+    # `φ` and `ϕ` both spell `PHI`: the second is `PHI_`. And a macro gives way to a name of
+    # the author's, which outranks it (`macroavoid`, known on a build done again).
+    while haskey(irrationals, name) && irrationals[name] !== x || name in macroavoid
         name *= "_"
     end
     irrationals[name] = x

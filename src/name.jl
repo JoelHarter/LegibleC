@@ -131,11 +131,12 @@ end
 
 C identifiers for a list of names that share a scope. Each is converted with
 [`identifier`](@ref), then given a trailing `_` (repeatedly if needed) until it
-matches neither a reserved word (`reserved.jl`), nor a name in `blocked` (the
-generated helpers, on a second pass), nor any name earlier in the list.
+matches neither a reserved word (`reserved.jl`) nor any name earlier in the list. This is
+the plain spelling of a list; a function's variables are then named by scope (`names!`),
+and file-scope names by `claim!`.
 """
-function identifiers(names; blocked=())
-    taken = union(reserved, blocked)
+function identifiers(names)
+    taken = Set(reserved)
     out = String[]
     for n in names
         s = identifier(n)

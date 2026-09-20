@@ -27,6 +27,39 @@ function helper!(helpers::Dict{String, String}, op::Symbol, types, R::Type)
 end
 
 """
+    ishelpername(name) -> Bool
+
+Could `name` be a helper's? The family is every size and type of every operation, so it
+is recognized by shape, not listed: an operation stem, then descriptors joined by `_` —
+`mul_3x3_3x3`, `add_2x2F32`, `solve_4x4_4`, `mulP_3F64_sI64`, `cross_F32`. Such a name is
+the transpiler's vocabulary, as `sqrt` is libc's, whether or not this program happens to
+emit it: a function of the author's under one is renamed, so that its name never depends
+on what else the program computes, and a reader never meets an impostor. Without the
+pointwise `P` the stem has to be a real operation, so `step_2` and `rk_4` stay the
+author's. `writehelpers` checks every real helper against this, so it can't fall behind.
+"""
+function ishelpername(name::AbstractString)
+    typ = "(?:" * join((a for (_, _, a) in scalars), "|") * "|S)"
+    occursin(Regex("^(?:" * join(fixedhelpers, "|") * ")$typ*\$"), name) && return true      # `powi`, `moduloF32`
+    desc = "(?:C?[TH]?\\d+(?:x\\d+)*$typ*|C?s$typ*|$typ+)"
+    m = match(Regex("^([A-Za-z][A-Za-z0-9]*?)(P?)((?:_$desc)+)\$"), name)
+    m === nothing && return false
+    return m[2] == "P" || replace(m[1], r"\d+$" => "") in helperstems || m[1] in helperstems
+end
+
+# The operations that have helpers, as their names begin — what the suite, the demos and
+# the library generator actually produce, no more: a stem listed on a guess would rename
+# an author's function for nothing (`zero_3` and `identity_2x2` are not helpers; zeroing
+# and the identity are written inline). Pointwise helpers need no entry, the `P` says it.
+# The tests insist every helper they meet is recognized, so a new one can't be forgotten.
+const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det", "inv", "invLLT", "pinv", "solve", "rsolve", "solveLLT",
+                         "lu", "llt", "pivot", "tr", "norm", "sum", "prod", "minimum", "maximum", "extrema", "diff", "cumsum", "cumprod",
+                         "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
+const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
+# The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
+const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray"])
+
+"""
     helpername(op, types; pointwise=false) -> String
 
 The C name of the helper for `op` on `types`. The name says exactly what the

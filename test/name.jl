@@ -50,6 +50,8 @@ outer(v::SVector{3,Float64}, w::SVector{3,Float64}) = v .* w'
 nine(a::SVector{3,Float64}, b::SVector{3,Float64}, c::SVector{3,Float64}, d::SVector{3,Float64}, e::SVector{3,Float64},
      f::SVector{3,Float64}, g::SVector{3,Float64}, h::SVector{3,Float64}, i::SVector{3,Float64}) = [a b c d e f g h i]
 add_3(u::SVector{3,Float64}, v::SVector{3,Float64}) = u + v
+rk_4(h::Float64) = h / 6.0
+mul_3x3_3x3(x::Float64) = 2x
 scaled32(s::Float32, A::SMatrix{2,2,Float64,4}) = s * A
 crossed(u::SVector{3,Float64}, v::SVector{3,Float64}) = cross(u, v)
 crossed32(u::SVector{3,Float32}, v::SVector{3,Float32}) = cross(u, v)
@@ -127,7 +129,13 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test occursin("static inline void mulP_3_T3(", src)
     @test occursin("for (int i_ = 0; i_ < 3; i_++)", src)                                           # the ninth input is `i`
     @test occursin("/// 3-vector * transposed 3-vector broadcast multiplication", src)
-    @test_throws ArgumentError csource("clash", add_3)
+    # A function of the author's named like a helper is renamed, whether or not this program
+    # emits that helper: its name can't depend on what else is computed, and `add_3` is the
+    # transpiler's word, as `sqrt` is libc's. A name that only looks similar stays.
+    clash = csource("clash", add_3, rk_4)
+    @test occursin("void add_3_(const double u[3], const double v[3], double out[restrict 3])", clash) && occursin("add_3(u, v, out);", clash)
+    @test occursin("double rk_4(double h)", clash)
+    @test occursin("double mul_3x3_3x3_(double x)", csource("impostor", mul_3x3_3x3))               # and with no such helper in sight
     # Small helpers are `static inline`, in helper.h; solvers and factorizations are
     # ordinary functions in helper.c, with prototypes in the header.
     big = csource("big", solve4, inv3)

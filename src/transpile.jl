@@ -188,11 +188,64 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
     # static and a mutable array of the same size, say — are one C function.
     unique!(inst -> (inst[1].def, csignature(inst[2])), instances)
 
-    names = cnames(instances)
-    for (k, (mi, _)) in enumerate(instances); haskey(synthetics, mi) && (names[k] = startswith(string(mi.def.name), "#") ? "anonymous$k" : string(mi.def.name)); end
+    # The generation, as a function of what an earlier attempt settled: first come, first
+    # served is how names are claimed while C is being written, and `audit` says afterwards
+    # whether that gave a name to the wrong one. If so it is all done again, with those
+    # names settled beforehand. Almost always once is enough.
+    listed = copy(instances)
+    local prog, names, functions
+    fixed, avoid, nomacro = Dict{Any, String}(), Set{String}(), Set{String}()
+    for attempt in 1:4
+        instances = copy(listed)
+        empty!(irrationals)
+        prog, names, functions = build!(instances, synthetics, types, values, fixed, avoid, nomacro; precise, width, suffix, templimit, source)
+        again = audit(prog, fixed, avoid, nomacro)
+        again || break
+        attempt == 4 && throw(ArgumentError("the file-scope names of this program could not be settled; please report it"))
+    end
+    # The helpers' names are known only now. A function that shares one is an error, since
+    # its name is the C interface. (A local keeps clear of the file-scope names its own
+    # function mentions — `ω` beside a global `omega` it reads — while it is named: `names!`.)
+    for n in names
+        haskey(prog.helpers, n) && !(n in prog.exported) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
+    end
+    dir = joinpath(outpath, "out")
+    mkpath(dir)
+    where, order = placement(prog, base, separate, names, helper)
+    files = unique(String(mi.def.file) for (mi, _) in instances)   # where a global's line may be
+    # The whole program's text, for the macros it uses.
+    everything = String[]
+    for f in functions; push!(everything, f[2], f[3]); end
+    for g in prog.globals; append!(everything, globallines(g, files, source, "")); end
+    append!(everything, Base.values(prog.helpers))
+    for (_, def) in prog.structs; push!(everything, def); end
+    for (_, def) in prog.tupledefs; push!(everything, def); end
+    everything = join(everything, "\n")
+    writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper, everything)
+    return writefiles(dir, prog, base, where, order, names, functions, helper, files, source, everything)
+end
+
+
+# One attempt at the whole program: the listed functions, whatever they call, and the
+# operator targets that turn out to be a helper. `fixed` and `avoid` come from `audit`.
+function build!(instances, synthetics, types, values, fixed, avoid, nomacro; precise, width, suffix, templimit, source)
     prog = Program(; precise, width, suffix)
-    union!(prog.names, names)
-    for (n, (mi, _)) in zip(names, instances); prog.calls[mi] = n; end
+    merge!(prog.fixed, fixed)
+    union!(prog.avoid, avoid)
+    empty!(macroavoid); union!(macroavoid, nomacro)
+    # The listed functions are named first, together, so that one function at several
+    # signatures gets its types appended; then each is claimed like any file-scope name.
+    wanted = cnames(instances; settled=false)
+    names = similar(wanted)
+    for (k, (mi, _)) in enumerate(instances)
+        if haskey(synthetics, mi)
+            names[k] = startswith(string(mi.def.name), "#") ? "anonymous$k" : string(mi.def.name)
+            push!(prog.names, names[k])
+        else
+            names[k] = claim!(prog, mi, wanted[k], string(mi.def.name))
+        end
+        prog.calls[mi] = names[k]
+    end
     for T in types
         structdef!(prog, T)
         # The struct's docstring, as a Doxygen block above its typedef.
@@ -202,7 +255,7 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
         prog.structs[k] = T => "/**\n" * join(" * " .* split(doc, "\n"), "\n") * "\n */\n" * prog.structs[k].second
     end
     for (mod, name, value, constant) in values; global!(prog, mod, name, value; constant); end
-    generate(n, mi, sig; blocked=()) = cfunction(n, mi, sig, prog; templimit, source=source && !haskey(synthetics, mi), blocked)
+    generate(n, mi, sig) = cfunction(n, mi, sig, prog; templimit, source=source && !haskey(synthetics, mi))
     functions = [generate(n, mi, sig) for (n, (mi, sig)) in zip(names, instances)]
     # A call to a function that wasn't asked for brings it in, and it may call others.
     while !isempty(prog.pending)
@@ -237,26 +290,43 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
         names[k] = h
         functions[k] = exportedfunction(prog.helpers[h], julia, sig, returntype(mi))
     end
-    # The helpers' names are known only now. A function that shares one is an error, since
-    # its name is the C interface. (A local keeps clear of the file-scope names its own
-    # function mentions — `ω` beside a global `omega` it reads — while it is named: `names!`.)
-    for n in names
-        haskey(prog.helpers, n) && !(n in prog.exported) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
+    return prog, names, functions
+end
+
+# Did claiming names in the order things were met give one to the wrong thing? Two of the
+# author's things with different Julia names that ask for the same C name: the one whose
+# Julia name already is that name keeps it, whichever was met first; if that isn't how it
+# came out, it is settled so (`fixed`) and the program built again. When neither or both
+# can say so — `φ` and `ϕ`, both `phi` — there is no rule to choose by, and a silent `_` on
+# one of two interface names is not a choice to make for the author: refused, by name.
+# And a name of the author's that a typedef or a macro, met later, also came out as: those
+# have no other spelling, so the author's is kept clear of it (`avoid`) and built again;
+# except a macro of ours, which ranks below the author's names and is the one kept clear
+# (`nomacro`).
+function audit(prog::Program, fixed, avoid, nomacro)
+    again = false
+    for want in unique(c.preferred for c in prog.claims)
+        group = [c for c in prog.claims if c.preferred == want]
+        length(unique(c.julia for c in group)) > 1 || continue        # one function at several signatures: told apart by type
+        exact = [c for c in group if c.julia == want]
+        if length(exact) == 1
+            exact[1].name == want && continue
+            fixed[exact[1].key] = want
+            again = true
+        else
+            listing = join(("`$(c.julia)`" for c in group), " and ")
+            throw(ArgumentError("$listing both come out as `$want` in C, and neither is spelled that way in the Julia, so there is no saying which should keep it; rename one, or give one a spelling of its own with the `spelling` option"))
+        end
     end
-    dir = joinpath(outpath, "out")
-    mkpath(dir)
-    where, order = placement(prog, base, separate, names, helper)
-    files = unique(String(mi.def.file) for (mi, _) in instances)   # where a global's line may be
-    # The whole program's text, for the macros it uses.
-    everything = String[]
-    for f in functions; push!(everything, f[2], f[3]); end
-    for g in prog.globals; append!(everything, globallines(g, files, source, "")); end
-    append!(everything, Base.values(prog.helpers))
-    for (_, def) in prog.structs; push!(everything, def); end
-    for (_, def) in prog.tupledefs; push!(everything, def); end
-    everything = join(everything, "\n")
-    writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper, everything)
-    return writefiles(dir, prog, base, where, order, names, functions, helper, files, source, everything)
+    others = union(Set(structname(T) for (T, _) in prog.structs), Set(first.(prog.tupledefs)), keys(prog.foreign),
+                   setdiff(keys(prog.helpers), prog.exported))
+    for c in prog.claims
+        c.name in others && !(c.name in avoid) && (push!(avoid, c.name); again = true)
+    end
+    for m in keys(irrationals)
+        m in prog.names && !(m in nomacro) && (push!(nomacro, m); again = true)      # here it is the macro that gives way
+    end
+    return again
 end
 
 # Every name at file scope in the output: functions and globals, helpers, foreign
@@ -392,6 +462,13 @@ end
 # names the header that has it, which is then included.
 function writehelpers(dir, prog::Program, external, helper, everything)
     order = filter(!in(prog.exported), helperorder(prog.helpers))
+    # Helper names are reserved by their shape (`ishelpername`). One the shape doesn't know
+    # is still kept clear of here, being emitted (`claim!`, `audit`); what it loses is only
+    # that an author's function of that name is renamed in programs that don't emit it
+    # too. Noted, for the test suite to insist the set stays empty.
+    for n in keys(prog.helpers)
+        ishelpername(n) || push!(unrecognized, n)
+    end
     used = defines(everything)
     isempty(order) && isempty(used) && return
     text = join((prog.helpers[n] for n in order), "\n")
@@ -606,14 +683,19 @@ end
 
 # C names for the instances: each Julia name made C-valid, instances that share a name
 # told apart by `mangled`, and the results kept clear of reserved words.
-function cnames(instances)
+function cnames(instances; settled::Bool=true)
     base = [qualified(operatorname(mi.def.name, sig), mi.def.module) for (mi, sig) in instances]
     names = similar(base)
-    for b in unique(base)
-        group = findall(==(b), base)
-        names[group] = mangled(b, [sig for (_, sig) in instances[group]])
+    # One Julia function at several signatures gets its types appended. Grouped by the
+    # function, not by the spelling: `ω` and `omega` are two functions, not two signatures.
+    which = [(b, mi.def.module, mi.def.name) for (b, (mi, _)) in zip(base, instances)]
+    for w in unique(which)
+        group = findall(==(w), which)
+        names[group] = mangled(w[1], [sig for (_, sig) in instances[group]])
     end
-    return identifiers(names)
+    # Unsettled: spelled as C, but not yet kept apart from each other or from C's own
+    # words. That is `claim!`'s to do, which also remembers what each one asked for.
+    return settled ? identifiers(names) : identifier.(names)
 end
 
 argtypes(mi::Core.MethodInstance) = Type[normalize(T) for T in mi.specTypes.parameters[2:end]]

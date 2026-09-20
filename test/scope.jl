@@ -184,8 +184,16 @@ function letkept(x::Float64)                         # the body assigns a variab
     y = x + 1.0
     return y
 end
+# File scope. Two functions that both come out as `omega`: the one spelled that way in the
+# Julia keeps it, whichever is listed first; two that neither is (`φ`, `ϕ`) are refused.
+ω(x::Float64) = 2.0 * x
+omega(x::Float64) = 3.0 * x
+φ(x::Float64) = x + 1.0
+ϕ(x::Float64) = x + 2.0
+const LEGIBLEC_PI = 3.0                              # the author's own name, which the macro for π gives way to
+ownpi(x::Float64) = x * π + LEGIBLEC_PI
 
-cases = [Case(nestedlets, 1.5), Case(oneline, 3.0), Case(letkept, 2.0), Case(weighted, SVector(1.0, 2.0, 3.0)), Case(whilecarried, 5), Case(outercarried, 4), Case(skipping, 5), Case(eitherway, 5), Case(nestedlocal, 3), Case(leaving, 10),
+cases = [Case(ownpi, 2.0), Case(nestedlets, 1.5), Case(oneline, 3.0), Case(letkept, 2.0), Case(weighted, SVector(1.0, 2.0, 3.0)), Case(whilecarried, 5), Case(outercarried, 4), Case(skipping, 5), Case(eitherway, 5), Case(nestedlocal, 3), Case(leaving, 10),
          Case(after, 3), Case(param, 1.5), Case(selfinit, 1.0), Case(selfloop, 4), Case(carried, 4), Case(siblings, 3), Case(lets, 1.0),
          Case(area, 2.0), Case(kappa, 5), Case(branchonly, true, 2.0, 3.0), Case(branchonly, false, 2.0, 3.0)]
 check("scope", cases)
@@ -210,6 +218,13 @@ check("scope", cases)
     loops = csource("scopeloops", whilecarried, outercarried, skipping, nestedlocal)
     @test occursin(r"double last;\n(    [^\n]*\n)*?    while \(", loops) && occursin(r"double seen;\n(    [^\n]*\n)*?    for \(int64_t i", loops) && occursin(r"double held;\n(    [^\n]*\n)*?    for \(", loops)
     @test occursin(r"for \(int64_t i = 1; i <= n; i\+\+\) \{\n        // [^\n]*\n        double row\[2\] = \{\(double\)i, 1.0\};", loops) && occursin(r"for \(int64_t j = 1; j <= n; j\+\+\) \{\n            // [^\n]*\n            double cell = ", loops)
+    for order in ((ω, omega), (omega, ω))
+        both = csource("scopeorder", order...)
+        @test occursin(r"double omega\(double x\) \{\n(    //[^\n]*\n)*    return 3\.0 \* x;", both) && occursin(r"double omega_\(double x\) \{\n(    //[^\n]*\n)*    return 2\.0 \* x;", both)
+    end
+    @test_throws ArgumentError csource("scopetie", φ, ϕ)
+    own = csource("scopeownpi", ownpi)
+    @test occursin("static const double LEGIBLEC_PI = 3.0;", own) && occursin("#define LEGIBLEC_PI_ 3.14159", own) && occursin("return x * LEGIBLEC_PI_ + LEGIBLEC_PI;", own)
     ls = csource("scopelets", nestedlets, oneline, selfinit)
     @test occursin("        {\n            double t = x * k;", ls) && occursin("            {\n                double u = t + 1.0;", ls)   # nested as written
     @test occursin("    {\n        double x_local = x + 1.0;", ls)                                  # the declaration point, inside its block
