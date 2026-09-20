@@ -142,6 +142,7 @@ mutable struct Scope
     headline::Dict{Int, String}
     pending::String
     outer::Set{String}
+    lets::Dict{Int, Vector{NTuple{3, Int}}}   # the source's `let` blocks: first statement -> (first, last, the `let` line), outermost first
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool, blocked)
@@ -164,7 +165,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}())
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}())
 end
 
 include("flow.jl")
@@ -245,6 +246,7 @@ function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templ
         sc.result = sc.resultname = free("out", union(sc.names, sc.outer))
     end
     analyze!(sc)
+    sc.lets = findlets(sc)
     # `return a` from every exit — or `a = …` as the last line — with `a` a local of the
     # author's living in `out` from the start: then the out parameter is `a` itself.
     s = returnedslot(ci)

@@ -164,8 +164,28 @@ function pairup(x::Float64)                          # a struct's fields are spe
         return x, y
     end
 end
+function nestedlets(x::Float64)                      # a `let` inside a `let`, inside a loop
+    s = 0.0
+    for k in 1:3
+        let t = x * k
+            let u = t + 1.0
+                s += u
+            end
+            s += t
+        end
+    end
+    return s
+end
+oneline(x::Float64) = (let a = 2.0; x = x * a; end; x)   # a `let` that shares its line: no braces, and still right
+function letkept(x::Float64)                         # the body assigns a variable of the function's: declared outside the braces
+    let scale = 2.0
+        y = x * scale
+    end
+    y = x + 1.0
+    return y
+end
 
-cases = [Case(weighted, SVector(1.0, 2.0, 3.0)), Case(whilecarried, 5), Case(outercarried, 4), Case(skipping, 5), Case(eitherway, 5), Case(nestedlocal, 3), Case(leaving, 10),
+cases = [Case(nestedlets, 1.5), Case(oneline, 3.0), Case(letkept, 2.0), Case(weighted, SVector(1.0, 2.0, 3.0)), Case(whilecarried, 5), Case(outercarried, 4), Case(skipping, 5), Case(eitherway, 5), Case(nestedlocal, 3), Case(leaving, 10),
          Case(after, 3), Case(param, 1.5), Case(selfinit, 1.0), Case(selfloop, 4), Case(carried, 4), Case(siblings, 3), Case(lets, 1.0),
          Case(area, 2.0), Case(kappa, 5), Case(branchonly, true, 2.0, 3.0), Case(branchonly, false, 2.0, 3.0)]
 check("scope", cases)
@@ -185,11 +205,15 @@ check("scope", cases)
     @test occursin("double x_local = x + 1.0;", src)
     @test occursin("for (int64_t i_local = 1; i_local <= i; i_local++) {", src)
     @test !occursin("k_", fn("siblings")) && !occursin("w_", fn("siblings"))
-    @test_broken occursin("    {\n        double a = 10.0;\n        double b = 2.0;", src) && !occursin("a_", fn("lets")) && !occursin("b_", fn("lets"))
+    @test occursin("    {\n        double a = 10.0;\n        double b = 2.0;", src) && !occursin("a_", fn("lets")) && !occursin("b_", fn("lets"))
     @test occursin("double area = 3.0 * r * r;", src)
     loops = csource("scopeloops", whilecarried, outercarried, skipping, nestedlocal)
     @test occursin(r"double last;\n(    [^\n]*\n)*?    while \(", loops) && occursin(r"double seen;\n(    [^\n]*\n)*?    for \(int64_t i", loops) && occursin(r"double held;\n(    [^\n]*\n)*?    for \(", loops)
     @test occursin(r"for \(int64_t i = 1; i <= n; i\+\+\) \{\n        // [^\n]*\n        double row\[2\] = \{\(double\)i, 1.0\};", loops) && occursin(r"for \(int64_t j = 1; j <= n; j\+\+\) \{\n            // [^\n]*\n            double cell = ", loops)
+    ls = csource("scopelets", nestedlets, oneline, selfinit)
+    @test occursin("        {\n            double t = x * k;", ls) && occursin("            {\n                double u = t + 1.0;", ls)   # nested as written
+    @test occursin("    {\n        double x_local = x + 1.0;", ls)                                  # the declaration point, inside its block
+    @test occursin("double oneline(double x) {", ls) && !occursin(r"oneline\(double x\) \{\n[^}]*\n    \{", ls)
     inv = csource("scopeinvented", weighted, pairup)
     @test occursin("for (int64_t i_ = 0; i_ < 3; i_++) {\n        double x = v[i_];", inv) && occursin("s += x * i;", inv)
     @test occursin("    double x;\n    double y;\n} pairup_t;", inv) && occursin("return (pairup_t){x_local, y};", inv)

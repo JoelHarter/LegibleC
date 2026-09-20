@@ -133,7 +133,17 @@ function block!(lines, sc::Scope, lo::Int, hi::Int)
         # out of it goes here, ahead of its source comment.
         length(sc.starts) > sc.depth || resize!(sc.starts, sc.depth + 1)
         sc.starts[sc.depth+1] = length(lines) + 1
-        if haskey(sc.fors, i)
+        if !isempty(get(sc.lets, i, ())) && sc.lets[i][1][2] <= hi
+            # A `let` of the source: a bare block, which is what a Julia scope is in C. What
+            # is declared in it, and under what name, is decided as for any block.
+            lo_, hi_, line = popfirst!(sc.lets[i])
+            annotate!(lines, sc, line)
+            emit!(lines, sc, "{")
+            nested!(lines, sc, lo_, hi_)
+            emit!(lines, sc, "}")
+            pushfirst!(sc.lets[i], (lo_, hi_, line))
+            i = hi_ + 1
+        elseif haskey(sc.fors, i)
             i = forloop!(lines, sc, sc.fors[i])
         elseif haskey(sc.whiles, i)
             i = whileloop!(lines, sc, sc.whiles[i])
@@ -287,6 +297,48 @@ function names!(sc::Scope, first::Scope)
         push!(named, (n, v))
         for s in v.slots; sc.names[s] = n; end
     end
+end
+
+# The `let` blocks the source wrote, as the statements each holds. Julia's typed statements
+# carry no trace of a `let`, so the source is the only thing that knows one was written;
+# and it only *proposes* braces, by line. What goes inside them is exact by construction,
+# since statements are emitted in order between the braces, and every declaration is then
+# placed by `homes` against the blocks as they really are: a wrong guess here can cost a
+# badly placed brace and nothing else. A `let` that shares a line with other code, or is a
+# value (`y = let … end`), or is all on one line, proposes nothing, and comes out flat.
+function findlets(sc::Scope)
+    lets = Dict{Int, Vector{NTuple{3, Int}}}()
+    src = sc.src
+    src === nothing && return lets
+    text = join(src.lines, "\n")
+    start(l) = sum(ncodeunits(src.lines[k]) + 1 for k in 1:l-1; init=0) + 1
+    found = Int[]
+    function walk(ex, line)
+        ex isa Expr || return
+        for a in ex.args
+            a isa LineNumberNode && (line = a.line + src.first - 1; continue)    # a parse begun mid-text counts lines from there
+            a isa Expr && a.head === :let && line != 0 && push!(found, line)
+            walk(a, line)
+        end
+    end
+    fn = try Meta.parse(text, start(src.first))[1] catch; return lets end
+    walk(fn, src.first)
+    for l in unique(found)
+        src.first < l <= src.last && occursin(r"^\s*let\b", src.lines[l]) || continue
+        at = start(l) + ncodeunits(match(r"^\s*", src.lines[l]).match)
+        ex, next = try Meta.parse(text, at) catch; continue end
+        ex isa Expr && ex.head === :let || continue
+        stop = something(findprev(!isspace, text, prevind(text, next)), at)
+        last = count(==('\n'), SubString(text, 1, stop)) + 1
+        last > l && occursin(r"^\s*end\s*(#.*)?$", src.lines[last]) || continue
+        inside = [i for i in eachindex(sc.stmtline) if l <= sc.stmtline[i] <= last]
+        isempty(inside) && continue
+        lo, hi = extrema(inside)
+        all(i -> l <= sc.stmtline[i] <= last, lo:hi) || continue
+        push!(get!(lets, lo, NTuple{3, Int}[]), (lo, hi, l))
+    end
+    foreach(v -> sort!(v; by=t -> t[1] - t[2]), values(lets))     # the widest first: it is the outermost
+    return lets
 end
 
 # The variables a statement reads, and the ones it assigns.
