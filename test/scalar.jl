@@ -29,7 +29,17 @@ fmod32(a::Float32, b::Float32) = mod(a, b)
 zeroone(x::Float64, n::Int64) = zero(x) + one(x) * x + one(n) + zero(Float64)
 pie(x::Float64) = x * pi + ℯ
 Base.@irrational twopi 6.283185307179586 2 * big(π)          # the author's own irrational: a macro like any other
+struct Root2 <: AbstractIrrational end                       # the same by the public interface, no Base macro
+const root2 = Root2()
+Base.BigFloat(::Root2; precision=precision(BigFloat)) = sqrt(BigFloat(2; precision))
+Base.Float64(::Root2) = 1.4142135623730951
+Base.Float32(::Root2) = 1.4142135f0
+Base.:(==)(::Root2, ::Root2) = true
+Base.hash(::Root2, h::UInt) = hash(:root2, h)
+rooted(x::Float64) = x * root2
 irrationals(x::Float64) = x * Base.MathConstants.catalan + Base.MathConstants.γ - twopi
+Base.@irrational ϕ 1.5 big"1.5"                              # spells `PHI`, as Base's φ does: the second one met is `PHI_`
+phis(x::Float64) = x * Base.MathConstants.φ + ϕ
 function sincos_(x::Float64)
     s, c = sincos(x)
     return s * c
@@ -55,7 +65,7 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
                  Case(single, 7.0f0, Int32(2)), Case(smooth, 1.7), Case(intmath, 7, 3), Case(intmath, -7, 3),
                  Case(convert_, 3, 2.6), Case(strictly, 1.0, 2.0), Case(strictly, 2.0, 1.0), Case(either, true, false),
                  Case(ldiv, 4.0, 1.0), Case(cube, 2.0), Case(powers, 1.3), Case(intpow, 3), Case(pow32, 1.5f0), Case(math32, 1.7f0), Case(fmod_, 7.5, 2.0), Case(fmod_, -7.5, 2.0), Case(fmod_, 7.5, -2.0), Case(fmod_, 4.0, -2.0),
-                 Case(fmod32, -7.5f0, 2.0f0), Case(zeroone, 2.5, 3), Case(pie, 2.0), Case(irrationals, 2.0), Case(sincos_, 0.7), Case(sincos32, 0.7f0), Case(picked, 0.7), Case(bits, 12, 10),
+                 Case(fmod32, -7.5f0, 2.0f0), Case(zeroone, 2.5, 3), Case(pie, 2.0), Case(irrationals, 2.0), Case(phis, 2.0), Case(rooted, 2.0), Case(sincos_, 0.7), Case(sincos32, 0.7f0), Case(picked, 0.7), Case(bits, 12, 10),
                  Case(special, 1.0), Case(special32, 1.0f0), Case(classify, NaN), Case(classify, -Inf), Case(classify, -2.5), Case(classify, 3.0),
                  Case(limits), Case(biggest, 7.0)])
 @testset "scalar text" begin
@@ -66,6 +76,10 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
     # Every irrational is a macro named after it, to 128-bit precision, in the helper header.
     @test occursin(r"#define LEGIBLEC_E 2\.718281828459045\d+  // ℯ to 128-bit precision\n#define LEGIBLEC_GAMMA 0\.577215664901532\d+  // γ to 128-bit precision\n#define LEGIBLEC_PI 3\.141592653589793\d+  // π to 128-bit precision\n#define LEGIBLEC_TWOPI 6\.283185307179586\d+  // twopi to 128-bit precision\n", src)
     @test occursin("#define LEGIBLEC_CATALAN 0.915965594177219", src) && occursin("return x * LEGIBLEC_CATALAN + LEGIBLEC_GAMMA - LEGIBLEC_TWOPI;", src)
+    root = csource("rooted", rooted)
+    @test occursin("return x * LEGIBLEC_ROOT2;", root) && occursin("#define LEGIBLEC_ROOT2 1.41421356237309504880168872420969798  // Root2 to 128-bit precision", root) && !occursin("typedef", root)
+    phi = csource("phis", phis)
+    @test occursin("return x * LEGIBLEC_PHI + LEGIBLEC_PHI_;", phi) && occursin("#define LEGIBLEC_PHI 1.61803398874989484820458683436563816  // φ to 128-bit precision\n#define LEGIBLEC_PHI_ 1.5  // ϕ to 128-bit precision", phi)
     # `posix`: the POSIX names, not ISO C; a file that uses one defines it if <math.h> didn't (glibc under -std=c11).
     posix = csource("posix", pie; posix=true)
     @test occursin("return x * M_PI + M_E;", posix) && occursin("#include <math.h>", posix)

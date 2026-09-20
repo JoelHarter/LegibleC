@@ -11,6 +11,13 @@ computed — the same problem, the same method, the same kind of answer.
 Bit-for-bit agreement is not the goal. Nothing below is worth anything without
 this.
 
+A consequence, not a rule of its own: the Julia has to be in working order
+before the transpiler goes to work on it. Where Julia would throw — a
+variable read on a path that never assigned it, an index past the end —
+the author is stopped in Julia and the code never reaches C, so the C's
+behaviour there is nobody's concern. What matters is where Julia runs and
+the C would quietly do something else.
+
 ### 1. Speed
 
 The C runs **as fast as C can run**. That is the standard every choice is

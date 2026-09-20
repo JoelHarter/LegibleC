@@ -2,7 +2,7 @@
 # helper names, collisions.
 module Name
 using Test, StaticArrays, LinearAlgebra
-import Main: csource
+import Main: csource, check, Case
 
 square(a::Float64) = a * a + 1.0
 bare(a::Float64) = (2 * 3) + a
@@ -104,7 +104,7 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test_throws ArgumentError csource("bad", physics; spelling=Dict('×' => "times"))      # not a Julia name character
     @test_throws ArgumentError csource("bad", physics; spelling=Dict('ħ' => "h bar"))      # not C text
     @test_throws ArgumentError csource("bad", physics; spelling=Dict("ħ" => "hbar"))       # not a character
-    @test occursin("double keyword(double exp_, double long_)", src) && occursin("omega_", src)
+    @test occursin("double keyword(double exp_, double long__)", src) && occursin("omega_", src)   # `long_` is the function `long`'s: the parameter yields
     @test occursin("double long_(double a)", src)
     @test occursin("return x;", src)
     @test occursin("return a + c * c;", src)
@@ -132,5 +132,31 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test occursin("\nvoid pivot_4x4(", big) && occursin("\nvoid lu_4x4(", big) && occursin("\nvoid solve_4x4_4(", big) && !occursin("static void", big)
     @test occursin("void solve_4x4_4(const double A[4][4], const double b[4], double out[restrict 4]);", big)
     @test occursin("static inline void inv_3x3(", big) && occursin("static inline double det_3x3(", big)
+end
+
+# A local may not share a spelling with any file-scope name: Julia keeps `κ` and `kappa`
+# apart, C would let the local shadow the global silently, or fail to compile when it
+# shadows a function or a struct. Such a local is `kappa_`.
+const kappa = 3.0
+function localglobal(x::Float64)
+    κ = x + 1.0
+    return κ * kappa
+end
+kappa2(x::Float64) = 2x
+function localfunction(x::Float64)
+    κ2 = x + 1.0
+    return κ2 + kappa2(x)
+end
+struct Kappa; v::Float64; end
+function localstruct(o::Kappa, x::Float64)
+    Κ = x + o.v
+    return Kappa(Κ).v * 2.0
+end
+check("shadow", [Case(localglobal, 1.0), Case(localfunction, 1.0), Case(localstruct, Kappa(1.0), 2.0)])
+@testset "shadow" begin
+    src = csource("shadow", localglobal, localfunction, localstruct)
+    @test occursin("double kappa_ = x + 1.0;", src) && occursin("return kappa_ * kappa;", src)
+    @test occursin("double kappa2_ = x + 1.0;", src) && occursin("return kappa2_ + kappa2(x);", src)
+    @test occursin("double Kappa_ = x + o.v;", src) && occursin("(Kappa){Kappa_}", src)
 end
 end

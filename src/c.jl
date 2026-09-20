@@ -2002,7 +2002,7 @@ owner(x::GlobalRef) = Base.binding_module(x.mod, x.name)
 
 # Is this global Julia's own — a function, a type, a module, `pi`, `Inf` — rather than a
 # value of the user's?
-builtin(x::GlobalRef, v) = v isa Function || v isa Type || v isa Module || v isa Irrational || nameof(Base.moduleroot(owner(x))) in known
+builtin(x::GlobalRef, v) = v isa Function || v isa Type || v isa Module || v isa AbstractIrrational || nameof(Base.moduleroot(owner(x))) in known
 
 # The type of a global's value as the transpiler sees types: a regular array carries
 # its size, as a sized argument does.
@@ -2630,6 +2630,9 @@ function macroname(x::AbstractIrrational)
     posix[] && x === π && return "M_PI"
     posix[] && x === ℯ && return "M_E"
     name = "LEGIBLEC_" * uppercase(identifier(string(irrationalname(x))))
+    while haskey(irrationals, name) && irrationals[name] !== x   # `φ` and `ϕ` both spell `PHI`: the second is `PHI_`
+        name *= "_"
+    end
     irrationals[name] = x
     return name
 end

@@ -237,15 +237,20 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
         names[k] = h
         functions[k] = exportedfunction(prog.helpers[h], julia, sig, returntype(mi))
     end
-    # The helpers' names are known only now. A function that shares one is an error,
-    # since its name is the C interface; a variable that shares one is renamed with `_`
-    # by generating that function again with the helper names blocked.
+    # The program's file-scope names — helpers, functions, globals, structs, macros — are
+    # all known only now. A function that shares a helper's name is an error, since its
+    # name is the C interface. A local that shares any file-scope spelling — `ω` spelled
+    # `omega` beside a global `omega`, which Julia keeps apart and C would let the local
+    # shadow, silently — is renamed with `_` by generating its function again with those
+    # names blocked.
     for n in names
         haskey(prog.helpers, n) && !(n in prog.exported) && throw(ArgumentError("the function `$n` has the same name as the helper `$n` the output needs; rename it"))
     end
+    taken = filescope(prog)
     for (k, (n, (mi, sig))) in enumerate(zip(names, instances))
-        any(v -> haskey(prog.helpers, v), functions[k][4]) || continue
-        functions[k] = generate(n, mi, sig; blocked=keys(prog.helpers))
+        haskey(synthetics, mi) && continue
+        any(v -> v in taken, functions[k][4]) || continue
+        functions[k] = generate(n, mi, sig; blocked=taken)
     end
     dir = joinpath(outpath, "out")
     mkpath(dir)
@@ -260,6 +265,11 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
     writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper, everything)
     return writefiles(dir, prog, base, where, order, names, functions, helper, files, source)
 end
+
+# Every name at file scope in the output: functions and globals, helpers, foreign
+# wrappers, struct and tuple typedefs, and the macros for irrationals.
+filescope(prog::Program) = union(prog.names, keys(prog.helpers), keys(prog.foreign), Set(structname(T) for (T, _) in prog.structs),
+                                 Set(first.(prog.tupledefs)), keys(irrationals))
 
 # A global with its value: its Julia line above it, as a statement's is, when the source
 # is being copied — its trailing `# note` riding along, otherwise after the declaration
