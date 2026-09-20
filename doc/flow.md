@@ -27,6 +27,10 @@ never a `goto`.
 | `for x in v` over a vector's elements | the same idiom on the array itself | `for (int64_t i = 0; i < 3; i++) { double x = v[i]; …` — a 0-based index Julia never named; over a matrix, not supported (Julia's order is column-major) |
 | `for i in 1:2, j in 1:3` | nested loops; the inner loop re-binds `i` | nested `for`s, one `i` |
 | `for k in 1:n` where the body changes `n` | Julia builds the range once | the bound in a temp before the loop — see [block.md](block.md) |
+| `for k in 1:n` where the body assigns `k` | lasts for the pass; the next pass gets the range's next value | `for (int64_t i = 1; i <= n; i++) { int64_t k = i; …` — the counting is an index of ours, as for `for x in v` |
+| `for x in v` where the body gives `v` a new value | Julia goes on through the array it began with | the loop reads a copy made before it |
+| `while a && b`, `while a \|\| b` | the same merged tests an `if` opens with | `while (a && b)` |
+| `break` inside `for i in 1:n, j in 1:m` | leaves the whole nest | refused: C's `break` leaves one loop |
 | `let a = …` … `end` | no trace in the lowered code; found in the source | a bare block, `{ … }` — see [block.md](block.md) |
 | `break`, `continue` | jumps to the loop's exit or its next-iteration point | `break;`, `continue;` |
 | `return x` anywhere | a `ReturnNode` | `return x;` (`return;` in a void function) |
@@ -52,3 +56,28 @@ closures, `do` blocks, `@goto`.
 
 Implementation: `findfors`, `findwhiles`, `markinlined!`, `block!` in
 `src/flow.jl`.
+
+## What the recovery gets wrong when it guesses
+
+The structure is recovered *while* the C is being written: `block!` meets a jump
+and `ifelse!` works out, there and then, what construct it opens. That is compact,
+and it is where the mistakes have been. An adversarial hunt over loops
+(2026-09-20) found seven wrong answers here and none in the code that was new
+that week, and four of them had one cause: a helper that answers "what is the
+next statement that matters" (`nextlive`) by skipping what is consumed elsewhere,
+used where the question was really "where does control go". It walked past the
+start of a loop that opened a branch, so the body ran once; and it saw a jump out
+of an inner loop and a fall into its next pass as the same place, since a loop's
+own machinery is all skipped, so a `break` was dropped as redundant.
+
+Two rules came out of it. A loop's start is live, whatever its statements are.
+And two jumps go to the same place only when they go to *exactly* the same
+statement; "the same next live statement" is for finding what to write next,
+never for deciding where control goes.
+
+The better shape, not built yet, is to recover the whole structure first, as a
+tree that can be checked (every jump accounted for, every region entered at its
+top), and write the C from the tree. The blocks that declarations and names are
+decided against ([block.md](block.md)) would then come from that tree rather than
+from a first walk.
+

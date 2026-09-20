@@ -1867,3 +1867,33 @@ mentioned. The second walk writes the C. That a function mentions only what
 its own first walk has already met is what let the old pass, which generated
 functions again with every file-scope name blocked, be deleted.
 
+**Checked afterwards, two ways** (same day). *By attack*: agents were set to
+break the new machinery, each from one angle, each writing Julia probes and
+running them through the transpiler and the C compiler. Run all at once they
+exhausted the machine and only the one on loop bounds finished; its ninety-five
+probes found nothing wrong with the bound capture, and seven wrong answers in
+the older control-flow recovery, which are fixed (`flow.md`, *What the recovery
+gets wrong when it guesses*). From now on anything that runs Julia runs one at a
+time. *By review*: was this the right way to build it? The design rests on two
+assumptions, that every line of C goes through `emit!`, so the first walk sees
+every mention, and that all of a function's lines go into one list, so a
+declaration's recorded place is its real place. Both hold (the only lines that
+bypass `emit!` are the function's opening copies, which mention only what lives
+at the top). Two gaps were found by reading for them: a variable the walk never
+declares is declared at the top, so the top is where it lives for its name too;
+and a `let`'s range, proposed by line numbers, is now accepted only if it is a
+whole piece of the control flow, since a range that cut through an `if` would
+confuse the recovery itself, not just misplace a brace.
+
+The alternative considered was to work out what each block mentions from the
+compiler's statements instead of from emitted text. It would avoid the second
+walk, and it would be a second model of what the emitter writes, to be kept in
+step with it for ever: helper names exist only once emitted, an inlined
+expression is written where it is used and not where it is computed, a struct's
+name appears in a declaration here and a cast there. Reading the text the
+emitter actually produced has nothing to keep in step. The cost is writing each
+function twice, which is small beside Julia's own inference. What the first walk
+should stop being needed for is *finding the blocks*; that belongs to a
+structure recovered before emission, and `homes` and `names!` take their blocks
+from whoever supplies them.
+
