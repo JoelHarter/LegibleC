@@ -238,19 +238,19 @@ the parameter stays `const`:
 
 ```c
     // copy x and v to prevent modification within this function
-    double x_[3];
-    memcpy(x_, x, sizeof x_);
-    double v_[3];
-    memcpy(v_, v, sizeof v_);
+    double x_local[3];
+    memcpy(x_local, x, sizeof x_local);
+    double v_local[3];
+    memcpy(v_local, v, sizeof v_local);
 
     // orbit.jl:9: r = norm(x)
 ```
 
 This is what Julia itself does (the reassigned name is a fresh slot,
 initialized from the argument), and it is one rule with no cases: the body
-reads and writes `x_` throughout, whether the reassignment is in a loop, a
-branch, or straight-line code. The copy's name is the parameter's under the
-usual collision rule (`naming.md`), `x_`.
+reads and writes `x_local` throughout, whether the reassignment is in a loop, a
+branch, or straight-line code. The copy yields the name to the parameter, and
+being the local version of that very name it is `x_local` (`naming.md`).
 
 ## Everything, in one table
 

@@ -26,6 +26,8 @@ never a `goto`.
 | `for i in eachindex(v)`, `1:length(v)`, `axes(A, d)` | same; the bound comes from the array's size | `for (int64_t i = 1; i <= 3; i++)` |
 | `for x in v` over a vector's elements | the same idiom on the array itself | `for (int64_t i = 0; i < 3; i++) { double x = v[i]; …` — a 0-based index Julia never named; over a matrix, not supported (Julia's order is column-major) |
 | `for i in 1:2, j in 1:3` | nested loops; the inner loop re-binds `i` | nested `for`s, one `i` |
+| `for k in 1:n` where the body changes `n` | Julia builds the range once | the bound in a temp before the loop — see [block.md](block.md) |
+| `let a = …` … `end` | no trace in the lowered code; found in the source | a bare block, `{ … }` — see [block.md](block.md) |
 | `break`, `continue` | jumps to the loop's exit or its next-iteration point | `break;`, `continue;` |
 | `return x` anywhere | a `ReturnNode` | `return x;` (`return;` in a void function) |
 

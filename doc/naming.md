@@ -53,13 +53,14 @@ the alternative.
 
 **Collisions.** After conversion, a name that is reserved, or that matches any
 other name already in the same scope, gets `_` appended, repeatedly, until
-it's unique: a variable `long` becomes `long_`; with both `omega` and `ω` in
-scope, whichever comes second becomes `omega_`. Function names are checked the
-same way, after the mangling below. Nothing is ever refused for its name.
+it's unique: a variable `long` becomes `long_`. When two names meet — both
+`omega` and `ω` in scope — which one keeps the name, and whether either has to
+change at all, is [below](#when-two-names-meet). Function names are checked
+the same way, after the mangling below.
 
 An array parameter that Julia reassigns keeps its name for the parameter;
-the working copy is the same name under this rule, `x_` (`math/array.md`,
-*Assignment and aliasing*). A scalar parameter is simply reassigned.
+the working copy is `x_local` (`math/array.md`, *Assignment and aliasing*). A
+scalar parameter is simply reassigned.
 
 A name that starts with `_` has its leading underscores moved to the end
 (`_x` → `x_`, `__Foo` → `Foo__`), because C reserves every such name at file
@@ -123,7 +124,10 @@ A hand-maintained list in `src/reserved.jl`: the C keywords, `main`, and
 the names of every standard header the output might include *or that C
 written around the output commonly does* — `stdint`, `stdlib`, `string`,
 `stdio`, `math` in all three widths, `time`, `ctype`, `limits`, `float`,
-`errno`, `assert`. A name on the list gets `_`: a Julia `exp`, `time`, or
+`errno`, `assert`; and the POSIX names with external linkage (`read`,
+`write`, `pipe`, `select`, `signal`…), which the output never includes but
+which a function of the author's would *replace* for the whole program if it
+came out under one. A name on the list gets `_`: a Julia `exp`, `time`, or
 `index` comes out as `exp_`, `time_`, `index_`.
 
 Header names are reserved **always**, even in a file that doesn't include
@@ -139,6 +143,130 @@ that header. Two reasons:
 
 When a new header joins the set the output can emit, add its names.
 Implementation: `identifier` and `identifiers` in `src/name.jl`.
+
+## When two names meet
+
+Julia keeps apart things that C would let collide, and C's way of resolving a
+collision inside a function is to let the inner name hide the outer one,
+silently. So the question is never "are these two names equal" but "would C
+resolve any mention differently from Julia". The aim, in this order: never a
+wrong answer from a name; then keep the author's name, since their naming is
+part of their craft.
+
+### When a shared name is harmful
+
+Two different things with one C identifier are a problem in exactly three
+cases, which follow from C's own rules (its name spaces, its scopes, and
+macros outside both):
+
+1. **The same block.** Two locals at one level, a parameter and a local of the
+   function's outer block, two functions or globals at file scope, two members
+   of one struct. C refuses to compile.
+2. **Nested, and the inner block mentions the outer thing.** The mention lands
+   on the inner one. If the inner block never mentions the outer thing,
+   nothing can go wrong.
+3. **A macro or a word of C's own.** A macro rewrites every later use of its
+   name, whatever that names, members included.
+
+Everything else is harmless: siblings, cousins, and a shadow of something the
+block never mentions. A parameter `A` beside a global `A` the function doesn't
+use is legal C (it draws `-Wshadow`, which the Julia's own shadow earned). A
+local `area` in a function `area` that doesn't call itself is legal and draws
+nothing.
+
+Such a pair can come from four places: **Julia names more finely than C**
+(modules, methods, type parameters, a `let x = x + 1` whose first value reads
+the outer `x`); **our spelling is not one-to-one** (`ω` and `omega`, `φ` and
+`ϕ`, `bump!` and `bump`), the dangerous one, since Julia never hid one from the
+other and the inner block can mention the outer anywhere; **names the
+transpiler invents** (`out`, `result`, the index `i`, temps, working copies,
+helpers, macros, include guards); and **C's own vocabulary**, libc's symbols
+included even where no header is included, since a function that came out as
+`write` would replace libc's for the whole program.
+
+### So names are kept
+
+- **Siblings share.** Two loops each have their `k` and `w`.
+- **A shadow the Julia wrote is kept as written.** A parameter `g` beside a
+  global `g`; a loop's own `g` with the global read after the loop; a `let a`
+  beside an outer `a` its body never mentions. This is safe exactly because
+  each variable is declared in the block that holds its uses
+  ([block.md](block.md)): the C scope is never wider than the Julia's.
+- **A function keeps clear only of what it mentions.** A local spelled like a
+  global, function or struct yields only if the block it lives in names that
+  thing. A parameter `long_` beside an unrelated function `long_` stays.
+
+### And when one must yield
+
+The one that keeps the name is, in order: the one declared **further out**;
+then a **parameter** before a **local** before a **working copy**; then the
+one whose Julia name **already is** the C name (`omega` keeps it, `ω` yields,
+whichever came first), which gives way only to that exact literal name and
+never to something respelled into it; then the first.
+
+The one that yields takes **`_local`** when it is the local version of the
+very name it yields to, which says why it differs:
+
+| Julia | C |
+|---|---|
+| `let x = x + 1.0` | `double x_local = x + 1.0;` |
+| `for i in 1:i` | `for (int64_t i_local = 1; i_local <= i; i_local++)` |
+| an array parameter `x` the function reassigns | its working copy, `x_local` |
+
+and a plain **`_`** where there is no such story: `long_`, `omega_` beside
+`omega`, `out_` beside the author's `out`. A temp computed from `x_local` is
+still named after `x`: the suffix is ours, not the author's.
+
+Names the transpiler invents rank below all of these, and keep clear of every
+name in the function and every file-scope name the function mentions: an
+index `i` beside a global `i` the loop reads is `i_`.
+
+### How it is known
+
+The function is walked twice ([block.md](block.md)). On the first walk every
+variable is given a name that can't be mistaken for anything, `v5__omega`, so
+the text that walk produces shows, block by block, which variables and which
+outer names are mentioned, exactly as C will see them: comments and strings
+aside, an inlined expression counted where it is written, a loop's header
+counted as part of its loop (which is what makes `for i in 1:i` yield).
+`names!` then names every variable, outermost first, and the second walk
+writes the C.
+
+### File scope
+
+A function or a global gets its C name in one place, `claim!`, which keeps it
+clear of every other kind: names already claimed, struct and tuple typedefs,
+helpers, foreign wrappers, C's own words.
+
+Names are claimed as things are met while the C is being written, which is
+first come, first served, and would make a name depend on the order targets
+were listed. So `audit` looks afterwards at what each thing asked for and
+got. Of two things with different Julia names asking for one C name, the one
+spelled that way in the Julia keeps it; if that isn't how it came out, it is
+settled so and **the program is built again**. When neither is spelled that
+way (`φ` and `ϕ`, both `phi`), there is no rule to choose by, and a silent `_`
+on one of two interface names is not a choice to make for the author: it is
+refused, naming both. A macro of ours gives way to a name of the author's:
+beside a global `LEGIBLEC_PI`, π is `LEGIBLEC_PI_`. An include guard, being a
+macro, is checked against every word of the program.
+
+**Helper names are reserved by their shape.** A function of the author's
+called `add_3` or `mul_3x3_3x3` is renamed, `add_3_`, whether or not the
+program emits that helper. Its name can't depend on what else the program
+computes (it used to be accepted until the day the helper was needed, and
+then refused), and `mul_3x3_3x3` is the transpiler's word with a fixed
+meaning, as `sqrt` is libc's, so a reader never meets an impostor. The family
+is every size and type of every operation, so `ishelpername` recognizes it by
+shape, from the stems real helpers use and the pointwise `P`; `step_2` and
+`rk_4` stay the author's. The tests insist that every helper they meet is
+recognized, so a new operation can't be forgotten.
+
+A generated helper's own internals (`a`, `b`, `out`, `i`) are checked against
+nothing at file scope. A helper is closed text that mentions only its own
+parameters, other helpers and the standard library, all names the transpiler
+chose; and its header is included first, so the compiler never even sees a
+shadow. The day a helper can call a function of the author's (broadcasting
+one), that one name has to be checked against the helper's vocabulary.
 
 ## Temporaries
 
@@ -246,6 +374,10 @@ under which it's safe, and what's deliberately left undone, are in
 
 ## Implementation
 
-`temp!` in `src/c.jl` applies the temp rules and `contribution` decides what a
-value passes along; `Scope` holds the per-function state (counter, blocked
-numbers, and what each SSA value is called in C).
+`identifier` in `src/name.jl` spells one name. `names!` in `src/flow.jl` names
+a function's variables by scope; `claim!` in `src/c.jl` and `audit` in
+`src/transpile.jl` settle the file-scope names; `ishelpername` in
+`src/helper.jl` is the shape of a helper's name. `temp!` in `src/c.jl` applies
+the temp rules and `contribution` decides what a value passes along; `Scope`
+holds the per-function state (counter, blocked numbers, and what each SSA
+value is called in C).

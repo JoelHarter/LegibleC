@@ -9,7 +9,9 @@ every value has a concrete type, every array a fixed size, every call a
 resolved target, and the code is a flat list of simple statements in SSA
 form. The transpiler asks Julia for that — the *unoptimized* typed IR, so
 local names survive and arithmetic is still `+` rather than an intrinsic —
-and walks it once, statement by statement, writing C.
+and walks it statement by statement, writing C — twice per function: a first
+walk to find its blocks and what each mentions, a second to write the C with
+every declaration and name in place ([block.md](block.md)).
 
 Nothing is guessed. A type the transpiler doesn't know, a call it has no
 rule for, a shape that doesn't line up: each is an `ArgumentError` at
@@ -55,10 +57,10 @@ transpile time, never C that compiles and does the wrong thing.
 | `LegibleC.jl` | the package's module: dependencies, the export, the two includes below |
 | `transpile.jl` | the `transpile` API, target resolution, the `Program` that spans one output file, the file writer |
 | `c.jl` | the IR walk: `Scope`, `analyze!`, `statement!`, values and temps, constructions, broadcasts, array calls, solves, slices, user calls, `ccall`, structs and tuples |
-| `flow.jl` | recognising `if`/`while`/`for`/`&&`/`||`/`?:` in the lowered jumps, and rendering conditions inline |
+| `flow.jl` | recognising `if`/`while`/`for`/`&&`/`||`/`?:` in the lowered jumps, and rendering conditions inline; the C blocks, where each variable is declared (`homes`), what it is called (`names!`), and the source's `let`s |
 | `helper.jl` | the helper generators: the axis model (`access`, `contraction`), elementwise and pointwise loops, block placement, `det`, `pivot`/`lu`/`solve`/`inv`, Cholesky, `pinv`, reductions, slices; helper names and parameter names |
 | `prose.jl` | the English comment on each helper |
-| `name.jl` | Julia identifiers to C identifiers; function-name mangling |
+| `name.jl` | Julia identifiers to C identifiers, one name at a time; function-name mangling |
 | `reserved.jl` | the names the output must never take |
 | `type.jl` | scalar types, the shaped stand-in for regular arrays, the transposed tag, the axis model's `axis`/`extent`, structs and tuples, C declarations |
 | `source.jl` | reading the Julia file for comments, docstrings, and code lines |

@@ -90,6 +90,7 @@ both languages, read-only.
 | `for i in 1:2, j in 1:3` | yes |
 | `for x in v` over a vector's elements | yes |
 | `break`, `continue`, `return` anywhere | yes |
+| `let a = …, b = …` … `end` | yes, as a bare `{ … }` block; on one line, or used as a value, its variables come out flat |
 | `for x in A` over a matrix, a non-literal step, a range in a variable, `enumerate`, `zip` | not yet |
 | `try`/`catch`, comprehensions, closures, `do` blocks | not yet |
 
