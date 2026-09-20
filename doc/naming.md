@@ -268,6 +268,17 @@ chose; and its header is included first, so the compiler never even sees a
 shadow. The day a helper can call a function of the author's (broadcasting
 one), that one name has to be checked against the helper's vocabulary.
 
+### What is out of sight
+
+Two things can't be settled from inside one `transpile` call. **Link time**: a
+function meeting another library's symbol of the same name, or two separately
+generated outputs linked together, our own out-of-line helpers included
+(`solve_4x4_4` twice); Julia's modules kept them apart and C has one external
+name space. **The platform**: a compiler's predefined macros, or a header the
+author's own C includes before ours. A strict `-std=c11` removes most of the
+first. C's vocabulary can't be listed to the end, so the reserved list is a
+fence kept up by adding to it, not a wall.
+
 ## Temporaries
 
 An intermediate value that has no Julia name becomes a C local called a
