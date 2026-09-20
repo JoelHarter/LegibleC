@@ -1774,3 +1774,96 @@ binding, so the line is found by searching: the module's own file from its
 first line when it has one, else the files the program's functions came
 from, taking the last top-level `name = …`, since that is the value the
 transpiler saw. A `Main` global in a script had no comment at all before.
+
+---
+
+## 2026-09-20 — Names and declarations by scope
+
+**Decision.** *Rename as little as possible, never at any risk to
+correctness.* The tenets in order: logic first, then the author's craft, and
+their names are part of it. Concretely:
+
+1. A variable is declared in the innermost block holding every statement that
+   reads or assigns it, moved out of any loop that carries its value from one
+   pass to the next (`homes`, `carried`). Loop locals in their loops; a
+   branch's own variable in its branch; one used after an `if` just above it.
+2. A `let` is a bare `{ }`, which is what a Julia scope is in C. The source
+   proposes where the braces go; every declaration is then placed by rule 1
+   against the blocks as they really are, so a wrong guess costs a brace.
+3. A name changes only where C would resolve a mention differently from
+   Julia: two things in one block, or nested with the inner block mentioning
+   the outer, or a name of C's own. Siblings share; a shadow the Julia wrote
+   is kept (`names!`).
+4. When one must yield, it is the one declared further in, then the lower
+   rank (parameter, local, working copy; invented names below all), then the
+   one whose Julia name isn't already its C name, then the later. `_local` for
+   the local version of the very name it yields to (`x_local`, `i_local`, a
+   parameter's working copy, `x_` before), `_` otherwise.
+5. File-scope names are claimed in one place (`claim!`); `audit` makes the
+   outcome independent of listing order by building again when the
+   exactly-spelled name didn't win, and refuses a true tie between two
+   respelled interface names rather than put a silent `_` on one.
+6. Helper-shaped names are reserved by shape, emitted or not
+   (`ishelpername`). Macros of ours give way to the author's names; an
+   include guard is checked against every word of the program.
+7. Generated helpers are exempt from all of it except macros: closed text,
+   included first.
+
+**Why.** It began as two questions that were one: do Julia and C disagree
+about scope, and do we check for collisions everywhere we should. Probing the
+second found that every bug had one shape — *a name distinct in Julia
+becoming a legal C shadow*, which C resolves silently — and that each was a
+pair of name lists nobody had compared (there were six). A local `ω` beside a
+global `omega` the function read computed with the wrong one; beside a called
+function it didn't compile; two irrationals spelled alike shared a macro; an
+index the transpiler invented, `i`, would have hidden a global `i` the loop
+read.
+
+Rather than audit pairs of kinds, the harm was derived from C's own rules
+(name spaces, scopes, linkage, and macros outside all three) and from where an
+identifier can come from (spelled from the Julia, invented by us, or already
+in C's environment). That gives the three harmful cases of decision 3 and
+nothing else, so outside them not renaming is *provably* safe, which is what
+lets the author's names stand. It also showed that most of the `_` the
+transpiler used to add was needless: a parameter beside an unrelated global,
+a local named after its own function, the second of two sibling loops.
+
+The strict alternative, never shadow anything, was set aside: it renames
+interface names because of unrelated things elsewhere in the program
+(a parameter `long_` became `long__` because some other function was called
+`long_`), and it makes one function's text depend on the rest.
+
+**What was wrong along the way**, recorded because each was believed until
+it was compiled:
+
+- *"The scopes come from the compiler's slots."* They don't. Distinct slots
+  say two variables differ, not where each lives; an ordinary loop local
+  carries no marker, a `let` leaves no trace, and the marker for a variable
+  assigned in a branch sits at the top of the function. It turned out Julia's
+  scope isn't needed: a C scope is wrong only when it is too wide (captures a
+  later mention of something else of that name: **18 where Julia gives 60**)
+  or declared inside a loop that carries the variable, and both are read off
+  the statements.
+- *"Never narrow a variable's scope across a loop."* Too strict, and not
+  decidable anyway. The condition is carrying, which is.
+- *A temp to keep both names in `let x = x + 1`.* It kept the author's `x`
+  inside the block at the price of a line of clutter. The inner yields.
+- *Matching π by value*, a week earlier, belongs to the same lesson: the name
+  follows what the Julia wrote, never what a value happens to be.
+
+**Found on the way, and fixed.** A loop's bound is read once in Julia and on
+every pass in C: `for k in 1:n; n -= 1` was **21 in Julia and 6 in the C**; a
+bound the body can change is now taken into a temp. An include guard erased
+a global spelled like it. The POSIX I/O names weren't reserved. A user
+subtype of `AbstractIrrational` held in a `const` came out as an empty struct.
+A function named like a helper was accepted until the day the program needed
+that helper, then refused.
+
+**How it is built.** A function is walked twice. The `if`s are only
+recognised as they are emitted, so the first walk exists to find the blocks;
+it also names every variable unmistakably (`v5__omega`), so that its text
+shows, block by block, exactly which variables and outer names C will see
+mentioned. The second walk writes the C. That a function mentions only what
+its own first walk has already met is what let the old pass, which generated
+functions again with every file-scope name blocked, be deleted.
+

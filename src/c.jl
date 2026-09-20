@@ -439,7 +439,7 @@ function analyze!(sc::Scope)
     # A parameter that is reassigned: Julia copies it into a fresh slot of the same name
     # at entry and reads that slot from then on. A scalar parameter is by value in C, so
     # the slot simply *is* the parameter, reassigned in place. An array parameter is the
-    # caller's memory, so the slot is a working copy, `x_`, made at the top of the
+    # caller's memory, so the slot is a working copy, `x_local`, made at the top of the
     # function (`cfunction`) — as Julia does, with a comment saying why.
     for (s, at) in assigned
         length(at) >= 2 && s > ci.nargs || continue
