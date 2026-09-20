@@ -19,6 +19,8 @@ const origin = Point(0.0, 0.0)
 const τ = 2π                       # a full turn: the initializer is the expression, with π as the macro
 const frame = [1.0 0.0; 0.0 π]
 
+const SHIELD_H = 2.0                # spelled like the include guard of a file named `shield`
+shielded(x::Float64) = x * SHIELD_H
 fall(t::Float64) = 0.5 * g * t^2
 turn(x::Float64) = τ * x + frame[2, 2]
 shifted(v::SVector{3,Float64}) = v + w
@@ -44,6 +46,9 @@ check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(sc
     @test occursin("const Point origin = {0.0, 0.0};", src) && occursin("origin.x", src)
     # A global's initializer is its Julia expression where a static initializer can hold it:
     # `π` is the macro, defined in the helper header, which the header then includes.
+    # An include guard is a macro, and would erase a name spelled like it: the guard gives way.
+    sh = csource("shield", shielded)
+    @test occursin("#ifndef SHIELD_H_\n#define SHIELD_H_\n", sh) && occursin("static const double SHIELD_H = 2.0;", sh) && occursin("#endif  // SHIELD_H_", sh)
     sym = csource("symbolic", turn)
     @test occursin("static const double tau = 2 * LEGIBLEC_PI;", sym) && occursin("static const double frame[2][2] = {\n    {1.0, 0.0},\n    {0.0, LEGIBLEC_PI},\n};", sym)
     @test occursin("#define LEGIBLEC_PI 3.141592653589793", sym) && !occursin("LEGIBLEC_E", sym) && occursin("#include \"helper.h\"", sym)

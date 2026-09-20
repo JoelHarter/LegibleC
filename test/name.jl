@@ -34,6 +34,7 @@ function keyword(exp::Float64, long::Float64)
     ω
 end
 long(a::Float64) = a * 2.0
+select(a::Float64) = a * 3.0          # libc's `select`: never included, but a symbol the author's function would replace
 named(a::Float64, c::Float64) = (x = a + c * c; return x)
 fun45(a::Float64, c::Float64) = a + c * c
 resulttaken(a::Float64, result::Float64) = ccall(:fabs, Float64, (Float64,), a * result)   # a ccall's value can't be inlined
@@ -106,6 +107,7 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test_throws ArgumentError csource("bad", physics; spelling=Dict("ħ" => "hbar"))       # not a character
     @test occursin("double keyword(double exp_, double long__)", src) && occursin("omega_", src)   # `long_` is the function `long`'s: the parameter yields
     @test occursin("double long_(double a)", src)
+    @test occursin("double select_(double a)", csource("posix", select))
     @test occursin("return x;", src)
     @test occursin("return a + c * c;", src)
     @test occursin("double result_ = fabs(a * result);", src) && occursin("return result_;", src)   # `result` is taken

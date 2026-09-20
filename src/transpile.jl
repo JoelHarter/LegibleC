@@ -261,9 +261,11 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
     for f in functions; push!(everything, f[2], f[3]); end
     for g in prog.globals; append!(everything, globallines(g, files, source, "")); end
     append!(everything, Base.values(prog.helpers))
+    for (_, def) in prog.structs; push!(everything, def); end
+    for (_, def) in prog.tupledefs; push!(everything, def); end
     everything = join(everything, "\n")
     writehelpers(dir, prog, separate ? where : Dict(n => base for n in prog.exported), helper, everything)
-    return writefiles(dir, prog, base, where, order, names, functions, helper, files, source)
+    return writefiles(dir, prog, base, where, order, names, functions, helper, files, source, everything)
 end
 
 # Every name at file scope in the output: functions and globals, helpers, foreign
@@ -404,7 +406,7 @@ function writehelpers(dir, prog::Program, external, helper, everything)
     text = join((prog.helpers[n] for n in order), "\n")
     inline = [n for n in order if isinline(prog.helpers[n])]
     outline = [n for n in order if !isinline(prog.helpers[n])]
-    guard = "LEGIBLEC_" * uppercase(identifier(helper)) * "_H"
+    guard = guardname("LEGIBLEC_" * uppercase(identifier(helper)) * "_H", everything)
     htext = String[]
     append!(htext, used); isempty(used) || push!(htext, "")
     headers = String[]
@@ -476,7 +478,17 @@ end
 # `<base>` header of a split includes every other header, so a caller can include just
 # that. A file with nothing for a `.c` — a struct's header — gets none. Returns the
 # path of the `.c`, or the paths in file order when there are several.
-function writefiles(dir, prog::Program, base, where, order, names, functions, helper, files, source::Bool)
+# A header's include guard. It is a macro, and a macro rewrites every later use of its
+# name whatever that names — a global `GUARD_H`, a local, a struct's member — so it is
+# checked against every word of the program and gives way with `_`.
+function guardname(guard, everything)
+    while occursin(Regex("\\b" * guard * "\\b"), everything)
+        guard *= "_"
+    end
+    return guard
+end
+
+function writefiles(dir, prog::Program, base, where, order, names, functions, helper, files, source::Bool, everything)
     declared(g::Global, prefix) = globallines(g, files, source, prefix)
     definition = Dict(zip(names, (f[3] for f in functions)))
     # What each file defines, for the includes: functions and foreign wrappers are looked
@@ -522,7 +534,7 @@ function writefiles(dir, prog::Program, base, where, order, names, functions, he
         isempty(gls) || push!(body, "")
         append!(body, protos)
         htext = join(body, "\n")
-        guard = uppercase(identifier(file)) * "_H"
+        guard = guardname(uppercase(identifier(file)) * "_H", everything)
         header = ["#ifndef $guard", "#define $guard", ""]
         n0 = length(header)
         for h in includes(htext); push!(header, "#include <$h>"); end

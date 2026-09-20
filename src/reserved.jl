@@ -95,6 +95,15 @@ const reserved = Set([
     "FP_NAN", "FP_INFINITE", "FP_ZERO", "FP_SUBNORMAL", "FP_NORMAL", "FP_ILOGB0", "FP_ILOGBNAN",
     "MATH_ERRNO", "MATH_ERREXCEPT", "math_errhandling", "float_t", "double_t",
     "M_E", "M_LOG2E", "M_LOG10E", "M_LN2", "M_LN10", "M_PI", "M_PI_2", "M_PI_4", "M_1_PI", "M_2_PI", "M_2_SQRTPI", "M_SQRT2", "M_SQRT1_2",
+    # POSIX <unistd.h>, <fcntl.h>, <signal.h> and friends: never included by the output, but
+    # every one is a symbol in libc with external linkage, so a function of the author's
+    # that came out under one of these names would replace libc's for the whole program
+    "read", "write", "open", "close", "creat", "pipe", "dup", "dup2", "lseek", "link", "unlink", "symlink", "readlink",
+    "access", "chdir", "getcwd", "chmod", "chown", "mkdir", "rmdir", "stat", "fstat", "truncate", "sync", "fsync",
+    "fork", "execl", "execv", "execve", "execvp", "wait", "waitpid", "kill", "signal", "raise", "sigaction", "alarm", "pause",
+    "sleep", "usleep", "nanosleep", "getpid", "getppid", "getuid", "geteuid", "getgid", "isatty", "select", "poll",
+    "socket", "bind", "listen", "accept", "connect", "send", "recv", "shutdown", "ioctl", "fcntl", "mmap", "munmap",
+    "getline", "getdelim", "popen", "pclose", "fdopen", "fileno", "environ", "setenv", "unsetenv", "putenv", "random", "srandom",
     # POSIX and glibc additions to <math.h> that a default compiler exposes
     "j0", "j1", "jn", "y0", "y1", "yn", "gamma", "lgamma_r", "significand", "drem", "scalb", "exp10", "pow10", "sincos",
 

@@ -172,15 +172,46 @@ function nested!(lines, sc::Scope, lo, hi)
     sc.result = saved
 end
 
+# Can the body of the loop change what its end bound reads? A variable the bound reads that
+# the body assigns; or memory the bound reads (an element, a field) when the body may write
+# memory at all — a store, or a call to a function of the author's.
+function boundchanges(sc::Scope, F::For)
+    code = sc.ci.code
+    slots, memory = Set{Int}(), Ref(false)
+    function read!(x)
+        x isa Core.SlotNumber && return push!(slots, x.id)
+        if x isa Core.SSAValue
+            st = code[x.id]
+            st isa Expr && st.head === :call && !(sc.ci.ssavaluetypes[x.id] isa Core.Const) &&
+                callee_or_nothing(sc.ci, st.args[1]) in (Base.getindex, Base.getproperty, Core.getfield, Base.getfield) && (memory[] = true)
+            return read!(st)
+        end
+        x isa Expr && foreach(read!, x.args)
+    end
+    read!(F.hi)
+    for st in code[F.bodylo:F.bodyhi]
+        st isa Expr || continue
+        st.head === :(=) && st.args[1] isa Core.SlotNumber && st.args[1].id in slots && return true
+        memory[] || continue
+        c = consumer(st)
+        c isa Expr && c.head === :call || continue
+        f = callee_or_nothing(sc.ci, c.args[1])
+        f in (Base.setindex!, Base.setproperty!, Core.setfield!, Base.setfield!, Base.fill!, Base.materialize!, Base.copyto!) && return true
+        f isa Function && !(nameof(Base.moduleroot(parentmodule(f))) in known) && return true
+    end
+    return false
+end
+
 function forloop!(lines, sc::Scope, F::For)
     annotate!(lines, sc, sc.stmtline[F.start])
     var = sc.names[F.var]
     T = ctype(widen(sc.ci.slottypes[F.var]))
     lo = bound(sc, F.lo)
     hi = bound(sc, F.hi)
-    # A bound that is a call — `1:ncodeunits(s)` — is computed once, before the loop,
-    # as Julia's range is; in the header it would run every iteration.
-    if F.hi isa Core.SSAValue && F.hi.id in sc.inlined && occursin("(", hi)
+    # Julia builds the range once, so its end is read once; C's header reads it every pass.
+    # A bound that is a call — `1:ncodeunits(s)` — or that the body can change — `for k in
+    # 1:n; n -= 1` is `n` passes in Julia — is taken into a temp before the loop.
+    if F.hi isa Core.SSAValue && F.hi.id in sc.inlined && occursin("(", hi) || F.array === nothing && boundchanges(sc, F)
         t = temp!(sc, nothing, contribution(sc, F.hi))
         emit!(lines, sc, "$T $t = $hi;")
         hi = t
