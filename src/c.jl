@@ -199,6 +199,11 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     first = ready(name, mi, sig, prog, rettype, templimit, source, nothing)
     walk!(String[], first)
     first.home = homes(first)
+    # A variable the walk never declared — assigned only where it doesn't look — is declared
+    # at the top of the function (`finish`), so the top is where it lives, for its name too.
+    for s in ci.nargs+1:length(ci.slotnames)
+        s in first.declared || s in first.hidden || (first.home[s] = 1)
+    end
     sc = ready(name, mi, sig, prog, rettype, templimit, source, first)
     sc.home = first.home
     ci = sc.ci

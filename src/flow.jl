@@ -335,10 +335,35 @@ function findlets(sc::Scope)
         isempty(inside) && continue
         lo, hi = extrema(inside)
         all(i -> l <= sc.stmtline[i] <= last, lo:hi) || continue
+        whole(sc, lo, hi) || continue
         push!(get!(lets, lo, NTuple{3, Int}[]), (lo, hi, l))
     end
     foreach(v -> sort!(v; by=t -> t[1] - t[2]), values(lets))     # the widest first: it is the outermost
     return lets
+end
+
+# Is `lo:hi` a whole piece of the function's control flow, so that braces may go round it?
+# Line numbers proposed it, and lines can mislead (a macro's, a file edited since it was
+# loaded); a range that cut through an `if` or a loop would confuse the recovery of the
+# control flow itself, not just misplace a brace. So: nothing outside jumps into its
+# middle, and nothing inside jumps out, except to its own end, or — a `break` or a
+# `continue` — to the exit or next-pass point of a loop that holds all of it.
+function whole(sc::Scope, lo, hi)
+    code = sc.ci.code
+    target(st) = st isa Core.GotoNode ? st.label : st isa Core.GotoIfNot ? st.dest : nothing
+    around = Int[]
+    for F in values(sc.fors); F.bodylo <= lo && hi <= F.bodyhi && push!(around, F.exit, F.next); end
+    for W in values(sc.whiles); W.header <= lo && hi < W.backedge && push!(around, W.exit, W.backedge, W.header); end
+    for (i, st) in enumerate(code)
+        t = target(st)
+        t === nothing && continue
+        if lo <= i <= hi
+            lo <= t <= hi + 1 || t in around || return false
+        else
+            lo < t <= hi && return false
+        end
+    end
+    return true
 end
 
 # The variables a statement reads, and the ones it assigns.
