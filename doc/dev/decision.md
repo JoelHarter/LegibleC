@@ -2072,3 +2072,103 @@ need a decision about what the C should look like.
 told to name the line, finds in an hour what the suite missed for weeks. A critic
 shown the others' coverage finds what falls between the areas. Every probe that
 failed becomes a test before the fix is committed.
+
+## 2026-09-22 — Three structures in place of the patches
+
+**The question.** About forty failures had been fixed one at a time. The author
+asked for the opposite: look at everything still open, find what is related,
+and restructure where one rule would answer many, however much work that is.
+The tenet was written down the same day: a mistake is answered by repairing the
+rule or writing the missing one, never by a patch for the one case
+(`philosophy.md`, Generality). The plan that came of it had three tracks, each
+a structure, one rule, and a generator that tries the rule's whole space.
+
+**The compilers.** The author's position: the C must work fully on GCC, and on
+Clang too unless that proves impossible; Microsoft's compiler is accommodated
+wherever it can be, its quirks listed, a setting per compiler avoided. GCC and
+Clang between them cover Linux, macOS, Windows and the embedded toolchains, so
+that is a sound way to see it. The build server now runs the whole suite under
+GCC and Clang on Linux and under Apple's Clang on every push. It had never
+passed under GCC before; what that found was real (a warning on `b * c` in a
+condition, a trap on `rem(typemin, -1)` on x86, `signbit(-0.0)` under fast
+math). No setting was needed. What Microsoft's compiler lacks is on the todo.
+
+**Decisions taken on the way**, each with the author's word or inside his
+condition that the C must always do what Julia does:
+
+- Signed overflow wraps in Julia and is undefined in C. `-fwrapv` joins the one
+  compiler setting. No output changes.
+- A shift by a count known to lie within the width is C's shift. Any other goes
+  through `shl`, `shr`, `shru`, which say what Julia says for every count.
+- `min` and `max` keep a NaN, which `fmin` and `fmax` drop. The helpers are
+  `minN` and `maxN`: the author asked for a name that doesn't claim to be the
+  library's function.
+- A `break` out of a nest of loops is a flag the outer loops test. With the
+  `goto` option it is `goto done;` and a label. Both come from one recognition,
+  so the option costs nothing to keep right.
+- A global's first value. The proposal was to take it from the line that
+  defines it. That cannot be guaranteed to be what Julia has when the function
+  runs, so it became: the value when transpiled, a warning and a note in the C
+  when that differs from the defining line, and `transpile(f; counter = 0)` to
+  say otherwise.
+- A product of several factors is grouped as Julia groups it, by asking Julia:
+  the product is run on stand-ins that remember what was multiplied with what.
+
+**Track 1, numbers.** Half the failures were one missing fact: an expression
+has two types, Julia's and the one C computes it in. Four patches had each
+looked at Julia's type from a different corner of one long function. Now an
+expression is a small tree until it is printed (`src/term.jl`), each part with
+both types and with how far its value can reach, and one place decides where a
+cast is written. The switch was made beside the old code and checked against a
+frozen copy of every C file the suite writes: nothing written by hand in the
+tests changed by a byte. What did change was in the grid, and every change was
+a cast that was missing or one that was never needed. The rule answered what
+the patches had missed: `(a + 1) * 100000000` on a `UInt8`, `a + b + n` where
+the first sum wraps, the `mod` idiom inside wide arithmetic, `u32 > -1`,
+`div(i32, -1)`, an integer compared with a `Float32`. A signed integer compared
+with a `UInt32` stopped being refused, because a type holds both. GCC then
+objected to `(int64_t)u > -1` as a comparison that can only go one way, which
+it is in the Julia too, so what the types alone decide is written `true`.
+
+One thing was left on purpose. Julia compares an integer with a float exactly.
+C rounds the integer first, which differs past 2^53. The exact form is a
+function's worth of C at every such comparison. It is said in the guide and
+waits for the author's word.
+
+**The table and the grid.** The `math.h` functions, the classification macros
+and the character classes became rows of `src/idiom.jl`, and the grid reads the
+table. It found `ispunct` on its first run: nine ASCII characters that are
+symbols to Julia and punctuation to C. A test that reads the transpiler's own
+table tries a function on types its author didn't think of, the day its row is
+added. The operators stayed code: they build trees, and the grid has them by
+hand. A call written twice in one expression is now a fault, which checks that
+what writes an operand twice and what keeps a call out of such a place agree.
+
+**Track 2, conditions.** A part of a condition that needs lines of its own is
+worked out into a truth value first, in Julia's order and stopping where Julia
+stops. Its generator (`test/shape.jl`) joins up to three parts every way, puts
+the condition in eleven places, makes each part light or heavy, and runs every
+truth assignment: 990 functions, none wrong, none refused, one fault found.
+
+**Track 3, arrays.** In C an array variable is its storage and its name at
+once. Julia's mutable arrays keep them apart. `src/storage.jl` decides, before
+any C is written, whether each mutable array variable is storage, a second name
+(`double *const m = v;`) or a moving name (`double *x = x_data;`, then
+`x = xnew;`). Parameters are pointers already, so two of them swapped need no
+declaration. The iteration with two buffers swapped each pass, refused until
+now, comes out as a C programmer writes it, with no copy. Names that can come
+to hold one array count as the same storage wherever that is asked. A variable
+that is storage comes out byte for byte as before.
+
+Attacking the new code found two silent wrong answers that were older than it:
+a write into an array held by a struct that isn't `mutable` reached only C's
+by-value copy of the struct. Both are refused now, with the advice that works,
+`mutable struct`, which is passed by pointer.
+
+**Refused by line**, and meant to be: a variable given a freshly made array
+while another name may still hold the one it had. Supporting it means naming
+anonymous storage everywhere. Not yet: `view`, and `y .= A * x`.
+
+**The method to keep.** Freeze the output, build the structure beside the old
+code, switch, and read every difference. Then attack what was built. Each of
+the three structures found bugs older than itself within the hour.
