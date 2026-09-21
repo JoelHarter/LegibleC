@@ -24,6 +24,7 @@ const numbers = (Bool, ints..., floats...)
 values(::Type{Bool}) = [false, true]
 values(T::Type{<:Signed}) = T[0, 1, -1, 2, 7, -7, 100, typemin(T), typemin(T) + 1, typemax(T), typemax(T) - 1]
 values(T::Type{<:Unsigned}) = T[0, 1, 2, 7, 100, 200, typemax(T) ÷ 2 + 1, typemax(T) - 1, typemax(T)]
+values(::Type{Char}) = Char.(0:127)             # every character a C `char` holds for sure
 values(T::Type{<:AbstractFloat}) = T[0.0, -0.0, 1.0, -1.0, 0.5, 2.5, -2.5, 3.0, 180.0, 1e6, floatmin(T), floatmax(T), -floatmax(T), NaN, Inf, -Inf]
 
 one_ = [(:neg, :(-a), numbers), (:abs, :(abs(a)), numbers), (:not, :(~a), ints), (:lnot, :(!a), (Bool,)), (:zero, :(zero(a)), numbers), (:one, :(one(a)), numbers),
@@ -63,7 +64,7 @@ struct Item
     answers::Vector{Any}             # Julia's, in the order the C prints them; `nothing` where Julia throws
 end
 
-supported(x) = x isa Union{Bool, Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, Float32, Float64}
+supported(x) = x isa Union{Bool, Char, Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, Float32, Float64}
 
 # One function with what Julia answers on every combination of its inputs, or `nothing` if Julia
 # never answers, or answers with more than one type.
@@ -81,7 +82,7 @@ function items()
     out = Item[]
     add(name, body, types) = begin
         isempty(only) || any(o -> startswith(name, o), only) || return
-        args = [Expr(:(::), s, T) for (s, T) in zip((:a, :b), types)]
+        args = [Expr(:(::), s, T) for (s, T) in zip((:a, :b, :c), types)]
         f = Core.eval(Grid, Expr(:function, Expr(:call, Symbol(name), args...), body))
         it = item(name, f, types, Any[values(T) for T in types])
         it === nothing || push!(out, it)
@@ -92,18 +93,31 @@ function items()
     for (name, body, as, bs) in two, A in as, B in bs
         add("$(name)_$(A)_$B", body, (A, B))
     end
+    # And the transpiler's own table of scalar functions (`src/idiom.jl`), every row on every
+    # combination of types it says it applies to: a row is tried the day it is added, on types
+    # its author didn't think of.
+    for r in LegibleC.idioms
+        n = count(p -> occursin(p, r.c), ("{a}", "{b}", "{c}"))
+        for A in Iterators.product(fill((numbers..., Char), n)...)
+            T = Base.promote_op(r.f, A...)
+            T isa DataType && isconcretetype(T) && r.applies(T, collect(A)) || continue
+            add("row_$(nameof(r.f))_$(join(A, "_"))", Expr(:call, r.f, (:a, :b, :c)[1:n]...), A)
+        end
+    end
     return out
 end
 
 literal(x::Bool) = x ? "true" : "false"
+literal(x::Char) = LegibleC.charliteral(x)
 literal(x::Integer) = LegibleC.integer(x)
 literal(x::AbstractFloat) = isnan(x) ? "NAN" : isinf(x) ? (x > 0 ? "INFINITY" : "-INFINITY") : x isa Float32 ? repr(Float64(x)) * "f" : repr(x)
-printer(T) = T === Bool ? ("%d", "(int)") : T <: Unsigned ? ("%llu", "(unsigned long long)") : T <: Integer ? ("%lld", "(long long)") : ("%.17g", "(double)")
+printer(T) = T === Bool || T === Char ? ("%d", "(int)") : T <: Unsigned ? ("%llu", "(unsigned long long)") : T <: Integer ? ("%lld", "(long long)") : ("%.17g", "(double)")
 
 # Does the C's answer agree with Julia's? Integers and truth values exactly. Floats exactly, or to
 # rounding: the C's math library is not Julia's, and the compiler setting lets rounding move.
 function agrees(want, got::AbstractString)
     want isa Bool && return got == (want ? "1" : "0")
+    want isa Char && return got == string(Int(want))
     want isa Integer && return got == string(want)
     g = got in ("nan", "-nan") ? NaN : got == "inf" ? Inf : got == "-inf" ? -Inf : parse(Float64, got)
     isnan(want) && return isnan(g)

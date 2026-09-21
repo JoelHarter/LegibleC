@@ -944,7 +944,7 @@ function statement!(lines, sc::Scope, i, st)
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.sincos && length(st.args) == 2
         # `s, c = sincos(x)` is exactly `s = sin(x); c = cos(x)`: ISO C has no `sincos`,
         # and the compiler fuses the two calls itself. The pair is read by destructuring.
-        a = expression(sc, st.args[2])[1]
+        a = string(expression(sc, st.args[2]))
         f = valuetype(sc, st.args[2]) === Float32 ? "f" : ""
         push!(sc.headers, "math.h")
         pair!(lines, sc, i, st.args[2:2], "sin$f($a)", "cos$f($a)")
@@ -952,7 +952,7 @@ function statement!(lines, sc::Scope, i, st)
            valuetype(sc, st.args[2]) === valuetype(sc, st.args[3]) && valuetype(sc, st.args[2]) <: Union{Base.BitInteger64, Float32, Float64}
         # `lo, hi = minmax(a, b)` is `lo = min(a, b); hi = max(a, b)`, read the same way.
         A = valuetype(sc, st.args[2])
-        a, b = expression(sc, st.args[2])[1], expression(sc, st.args[3])[1]
+        a, b = string(expression(sc, st.args[2])), string(expression(sc, st.args[3]))
         A <: AbstractFloat && push!(sc.headers, "math.h")
         A <: AbstractFloat ? pair!(lines, sc, i, st.args[2:3], "$(nanhelper!(sc.helpers, :min, A))($a, $b)", "$(nanhelper!(sc.helpers, :max, A))($a, $b)") :
                              pair!(lines, sc, i, st.args[2:3], "($a < $b ? $a : $b)", "($a > $b ? $a : $b)")
@@ -1087,7 +1087,7 @@ function statement!(lines, sc::Scope, i, st)
                 emit!(lines, sc, "$(k.cname) $name = $code;")
             end
         else
-            code, _ = render(sc, i, st)
+            code = string(render(sc, i, st))
             name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, callparts(sc, st))
             emitexpr!(lines, sc, "$(ctype(T)) $name = ", code)
             haskey(sc.math, i) && step!(lines, sc, "$name = $(sc.math[i])")
@@ -1159,7 +1159,7 @@ function statement!(lines, sc::Scope, i, st)
         isarray(T) && (sc.shapes[i] = valuetype(sc, slot))
     elseif haskey(sc.choices, i)
         # `a && b`, `c ? x : y`, used where it can't be written in place: one line, into a temp.
-        emitexpr!(lines, sc, "$(ctype(T)) $(temp!(sc, i, String[])) = ", first(chosen(sc, sc.choices[i])))
+        emitexpr!(lines, sc, "$(ctype(T)) $(temp!(sc, i, String[])) = ", string(chosen(sc, sc.choices[i])))
     elseif st isa Core.SlotNumber
         # `%i = x`: a read of a variable. Same rule as above.
         x = sc.names[st.id]
@@ -1782,7 +1782,7 @@ function indexnotation(sc::Scope, k)
     x isa AbstractUnitRange && return "$(first(x)):$(last(x))"
     x isa AbstractVector && return "[" * join(x, ", ") * "]"
     k isa Integer && return string(k)
-    return first(expression(sc, k))
+    return string(expression(sc, k))
 end
 
 # One index of a slice along dimension `d` of `T`, as the 0-based C offset it starts at
@@ -2096,7 +2096,20 @@ The C expression for the scalar call `ex`, whose result is SSA value `i`.
 """
 function render(sc::Scope, i, ex::Expr)
     r = rendered(sc, i, ex)
-    return r isa Term ? r : Term(r[1], r[2], widen(sc.ci.ssavaluetypes[i]))      # C text composed by hand: a call, a helper, a macro
+    r isa Term || return Term(r[1], r[2], widen(sc.ci.ssavaluetypes[i]))      # C text composed by hand: a call, a helper, a macro
+    once(r, i)
+    return r
+end
+
+# What is written twice is computed twice, so nothing that calls anything may be: `x * x`
+# and `(uint32_t)k > u ? (uint32_t)k : u` are fine, `f(x) * f(x)` is not. A call is kept out
+# of the places that write an operand twice (`duplicates`), and this is the check that the
+# two agree.
+function once(t::Term, i, seen=IdDict{Any, Bool}())
+    isempty(t.parts) && return
+    haskey(seen, t.parts) && !callfree(t) && error("`$t` is written twice in one expression (statement $i)")
+    seen[t.parts] = true
+    foreach(p -> once(p, i, seen), t.parts)
 end
 
 function rendered(sc::Scope, i, ex::Expr)
@@ -2149,7 +2162,7 @@ function rendered(sc::Scope, i, ex::Expr)
     # The variant is the result's, which is Julia's promotion of the arguments: `max(x32, y64)` is
     # `fmax`, not `fmaxf`. A complex argument names its own (`cabs` of a complex gives a real).
     variant() = (k = findfirst(a -> valuetype(sc, a) <: Complex, args); k !== nothing ? valuetype(sc, args[k]) : T <: AbstractFloat ? T : valuetype(sc, args[1]))
-    fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$(hdr == "math.h" ? mathname(variant(), name) : name)(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
+    fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$(hdr == "math.h" ? mathname(variant(), name) : name)(" * join((string(expression(sc, a)) for a in args), ", ") * ")", PRIMARY))
     # `div`, `rem` and `mod` of a signed integer by an unsigned one, or the other way round:
     # Julia has methods of their own for those, with a result type and a rule that no one C
     # expression gives. Refused, unless the signed one is a literal that isn't negative.
@@ -2163,14 +2176,14 @@ function rendered(sc::Scope, i, ex::Expr)
     cplx = T <: Complex || any(a -> valuetype(sc, a) <: Complex, args)
     if cplx
         f in (Base.real, Base.imag, Base.conj, Base.abs, Base.angle) && n == 1 && valuetype(sc, args[1]) <: Complex &&
-            return (push!(sc.headers, "complex.h"); ("$(mathname(valuetype(sc, args[1]), f === Base.abs ? "fabs" : string(nameof(f))))($(expression(sc, args[1])[1]))", PRIMARY))
-        f === Base.adjoint && n == 1 && valuetype(sc, args[1]) <: Complex && return "$(mathname(valuetype(sc, args[1]), "conj"))($(expression(sc, args[1])[1]))", PRIMARY
-        f === Base.abs2 && n == 1 && valuetype(sc, args[1]) <: Complex && return "$(abs2helper!(sc.helpers, valuetype(sc, args[1])))($(expression(sc, args[1])[1]))", PRIMARY
-        (f === Base.complex || f isa Type && f <: Complex) && n == 2 && return "$(T === ComplexF32 ? "CMPLXF" : "CMPLX")($(expression(sc, args[1])[1]), $(expression(sc, args[2])[1]))", PRIMARY
+            return (push!(sc.headers, "complex.h"); ("$(mathname(valuetype(sc, args[1]), f === Base.abs ? "fabs" : string(nameof(f))))($(expression(sc, args[1])))", PRIMARY))
+        f === Base.adjoint && n == 1 && valuetype(sc, args[1]) <: Complex && return "$(mathname(valuetype(sc, args[1]), "conj"))($(expression(sc, args[1])))", PRIMARY
+        f === Base.abs2 && n == 1 && valuetype(sc, args[1]) <: Complex && return "$(abs2helper!(sc.helpers, valuetype(sc, args[1])))($(expression(sc, args[1])))", PRIMARY
+        (f === Base.complex || f isa Type && f <: Complex) && n == 2 && return "$(T === ComplexF32 ? "CMPLXF" : "CMPLX")($(expression(sc, args[1])), $(expression(sc, args[2])))", PRIMARY
         if f in (Base.getproperty, Core.getfield) && n == 2 && valuetype(sc, args[1]) <: Complex
             field = literal(sc, args[2])
             field in (:re, :im) || throw(ArgumentError("a complex number has fields re and im, not $field (statement $i)"))
-            return "$(mathname(valuetype(sc, args[1]), field === :re ? "real" : "imag"))($(expression(sc, args[1])[1]))", PRIMARY
+            return "$(mathname(valuetype(sc, args[1]), field === :re ? "real" : "imag"))($(expression(sc, args[1])))", PRIMARY
         end
     elseif f in (Base.real, Base.conj) && n == 1 && T <: Real
         return expression(sc, args[1])                # a real's real part and conjugate are itself
@@ -2223,27 +2236,13 @@ function rendered(sc::Scope, i, ex::Expr)
         return value(sc, GlobalRef(literal(sc, args[1]), literal(sc, args[2]))), PRIMARY
     end
 
-    # Characters: the `ctype.h` classes and cases. Julia's classes are Unicode-aware and
-    # C's are ASCII; for the ASCII characters `char` can hold, they agree.
-    if n == 1 && valuetype(sc, args[1]) === Char
-        for (g, name) in ((Base.isdigit, "isdigit"), (Base.isletter, "isalpha"), (Base.isspace, "isspace"), (Base.isuppercase, "isupper"),
-                          (Base.islowercase, "islower"), (Base.isnumeric, "isdigit"), (Base.ispunct, "ispunct"), (Base.iscntrl, "iscntrl"),
-                          (Base.isprint, "isprint"), (Base.isxdigit, "isxdigit"))
-            f === g && return fn(name, "ctype.h")
-        end
-        f === Base.isascii && return "(unsigned char)$(operand(sc, args[1], UNARY)) < 128", REL
-        if f === Base.uppercase || f === Base.lowercase
-            push!(sc.headers, "ctype.h")
-            return "(char)$(f === Base.uppercase ? "toupper" : "tolower")($(expression(sc, args[1])[1]))", UNARY
-        end
-    end
     # Strings: UTF-8 bytes in both languages. Compared with `strcmp`, measured with
     # `strlen` (code units) or a character count (`length`), indexed by byte.
     if any(a -> valuetype(sc, a) <: AbstractString, args)
-        s = expression(sc, args[1])[1]
+        s = string(expression(sc, args[1]))
         if (f === Base.:(==) || f === Base.:!=) && n == 2
             push!(sc.headers, "string.h")
-            return "strcmp($s, $(expression(sc, args[2])[1])) $(f === Base.:(==) ? "==" : "!=") 0", EQ
+            return "strcmp($s, $(expression(sc, args[2]))) $(f === Base.:(==) ? "==" : "!=") 0", EQ
         end
         f === Base.length && n == 1 && return "$(lengthhelper!(sc.helpers))($s)", PRIMARY
         f in (Base.ncodeunits, Base.sizeof, Base.lastindex) && n == 1 && (push!(sc.headers, "string.h"); return "(int64_t)strlen($s)", UNARY)
@@ -2278,23 +2277,18 @@ function rendered(sc::Scope, i, ex::Expr)
     # A truth value times a float: Julia's `false` is a strong zero, `false * Inf` and `false * NaN`
     # are 0.0, where C's `0 * INFINITY` is NaN. So it is a choice, which is what the author means by it.
     if f === Base.:* && floating && any(a -> valuetype(sc, a) === Bool, args)
-        text, p = expression(sc, args[1])
+        acc = expression(sc, args[1])
         ty = valuetype(sc, args[1])
-        wrapped(t, q, prec) = q < prec ? "($t)" : t
         for a in args[2:end]
-            t2, p2 = expression(sc, a)
+            b = expression(sc, a)
             ty2 = valuetype(sc, a)
             R = promote_type(ty, ty2)
-            if ty === Bool && ty2 <: AbstractFloat
-                text, p = "($(wrapped(text, p, UNARY)) ? $(wrapped(t2, p2, 4)) : $(value(sc, zero(R))))", PRIMARY
-            elseif ty2 === Bool && ty <: AbstractFloat
-                text, p = "($(wrapped(t2, p2, UNARY)) ? $(wrapped(text, p, 4)) : $(value(sc, zero(R))))", PRIMARY
-            else
-                text, p = "$(wrapped(text, p, MUL)) * $(wrapped(t2, p2, MUL + 1))", MUL
-            end
+            none = atom(value(sc, zero(R)), R)
+            acc = ty === Bool && ty2 <: AbstractFloat ? paren(choice(bare(acc, UNARY) ? acc : paren(acc), b, none, R)) :
+                  ty2 === Bool && ty <: AbstractFloat ? paren(choice(bare(b, UNARY) ? b : paren(b), acc, none, R)) : arithmetic("*", MUL, acc, b, R)
             ty = R
         end
-        return text, p
+        return acc
     end       # `b * c` on truth values is `and`; GCC warns of a `*` in a condition
     f === Base.:* && return op("*", MUL)
     if f === Base.:/
@@ -2324,7 +2318,7 @@ function rendered(sc::Scope, i, ex::Expr)
     end
     if f in (Base.div, Base.fld) && floating && n == 2 && all(a -> valuetype(sc, a) <: Real, args)
         push!(sc.headers, "math.h")
-        x, y = expression(sc, args[1])[1], expression(sc, args[2])[1]
+        x, y = string(expression(sc, args[1])), string(expression(sc, args[2]))
         left = f === Base.div ? "$(mathname(T, "fmod"))($x, $y)" : "$(modhelper!(sc.helpers, T))($x, $y)"
         return "$(mathname(T, "rint"))(($(operand(sc, args[1], ADD)) - $left) / $(operand(sc, args[2], MUL; right=true)))", PRIMARY
     end
@@ -2350,7 +2344,7 @@ function rendered(sc::Scope, i, ex::Expr)
             a, b = expression(sc, args[1]), expression(sc, args[2])
             return arithmetic("%", MUL, arithmetic("+", ADD, paren(arithmetic("%", MUL, a, b, T)), b, T), b, T)      # `((a % b) + b) % b`
         end
-        return "$(modhelper!(sc.helpers, T))($(expression(sc, args[1])[1]), $(expression(sc, args[2])[1]))", PRIMARY
+        return "$(modhelper!(sc.helpers, T))($(expression(sc, args[1])), $(expression(sc, args[2])))", PRIMARY
     end
     if f === Base.literal_pow
         p = literal(sc, args[3])
@@ -2366,7 +2360,7 @@ function rendered(sc::Scope, i, ex::Expr)
         e == 2 && return arithmetic("*", MUL, x, x, T)
         e == 3 && return arithmetic("*", MUL, arithmetic("*", MUL, x, x, T; wrap=false), x, T)
         e == -1 && return "$unit / $(within(x, MUL; right=true))", MUL
-        return "$(powhelper!(sc.helpers, T))($(expression(sc, args[2])[1]), $e)", PRIMARY
+        return "$(powhelper!(sc.helpers, T))($(expression(sc, args[2])), $e)", PRIMARY
     end
     # `@fastmath x^2` arrives as `pow_fast(x, Val(2))`: the literal power it was written as.
     f === Base.:^ && n == 2 && literal(sc, args[2]) isa Val && return rendered(sc, i, Expr(:call, Base.literal_pow, Base.:^, args[1], args[2]))
@@ -2411,39 +2405,22 @@ function rendered(sc::Scope, i, ex::Expr)
             return "($(ctype(T)))(($(ctype(unsigned(T))))$(operand(sc, args[1], UNARY)) >> $(operand(sc, args[2], SHIFT; right=true)))", UNARY
         end
         h = shifthelper!(sc.helpers, f === Base.:<< ? :shl : f === Base.:>> ? :shr : :shru, T)
-        count = expression(sc, args[2])[1]
+        count = string(expression(sc, args[2]))
         valuetype(sc, args[2]) === UInt64 && (count = "$(operand(sc, args[2], REL)) < $bits ? (int64_t)$(operand(sc, args[2], UNARY)) : $bits")   # past `int64_t`, it is past the width too
-        return "$h($(expression(sc, args[1])[1]), $count)", PRIMARY
+        return "$h($(expression(sc, args[1])), $count)", PRIMARY
     end
     f === Base.:~ && return unary(valuetype(sc, args[1]) === Bool ? "!" : "~")      # C's `~true` is -2, which is true
 
     # Math.
     if floating || cplx
-        f === Base.abs   && return fn("fabs")
         # `minN`, `maxN`: a NaN is kept, where `fmin` and `fmax` would drop it (`nanhelper!`).
         if (f === Base.max || f === Base.min) && !cplx
             push!(sc.headers, "math.h")
             h = nanhelper!(sc.helpers, f === Base.max ? :max : :min, T)
-            acc = expression(sc, args[1])
-            for a in args[2:end]              # `max(a, b, c)` is `max(max(a, b), c)`
-                acc = ("$h($(acc[1]), $(expression(sc, a)[1]))", PRIMARY)
-            end
-            return acc
-        end
-        f === Base.round && n == 1 && return fn("rint")            # Julia rounds to even; so does rint
-        f === Base.atan  && n == 2 && return fn("atan2")
-        for (g, name) in ((Base.sqrt, "sqrt"), (Base.cbrt, "cbrt"), (Base.sin, "sin"), (Base.cos, "cos"), (Base.tan, "tan"),
-                          (Base.asin, "asin"), (Base.acos, "acos"), (Base.atan, "atan"), (Base.sinh, "sinh"),
-                          (Base.cosh, "cosh"), (Base.tanh, "tanh"), (Base.exp, "exp"), (Base.exp2, "exp2"),
-                          (Base.expm1, "expm1"), (Base.log, "log"), (Base.log2, "log2"), (Base.log10, "log10"),
-                          (Base.log1p, "log1p"), (Base.floor, "floor"), (Base.ceil, "ceil"), (Base.trunc, "trunc"),
-                          (Base.hypot, "hypot"), (Base.copysign, "copysign"))
-            f === g && n == length(args) && !(args[1] isa Type) && return fn(name)
+            return foldl((acc, b) -> call(h, [acc, b], T), [expression(sc, a) for a in args])      # `max(a, b, c)` is `max(max(a, b), c)`
         end
     elseif T <: Integer
         f === Base.abs && (T <: Unsigned || T === Bool) && return expression(sc, args[1])        # nothing to do
-        f === Base.abs && return T === Int64 ? fn("llabs", "stdlib.h") : T === Int32 ? fn("abs", "stdlib.h") :
-                                 (push!(sc.headers, "stdlib.h"); ("($(ctype(T)))abs($(expression(sc, args[1])[1]))", UNARY))
         if f === Base.max || f === Base.min
             # Julia converts both to the type they promote to and takes one of them. Where C converts
             # them to that same type there is nothing to decide: a negative value going to an unsigned
@@ -2470,7 +2447,7 @@ function rendered(sc::Scope, i, ex::Expr)
         if f in (Base.round, Base.floor, Base.ceil, Base.trunc) && n == 2
             g = f === Base.round ? "rint" : f === Base.floor ? "floor" : f === Base.ceil ? "ceil" : "trunc"
             push!(sc.headers, "math.h")
-            return "($(ctype(T)))$g($(expression(sc, args[2])[1]))", UNARY
+            return "($(ctype(T)))$g($(expression(sc, args[2])))", UNARY
         end
     end
 
@@ -2485,11 +2462,6 @@ function rendered(sc::Scope, i, ex::Expr)
     # One C expression of its arguments: a row of the table (`idiom.jl`).
     r = idiom(f, T, [widen(valuetype(sc, a)) for a in args])
     r === nothing || return written(sc, r, T, args)
-
-    # Classification of a floating value: the same names, from math.h.
-    # They are macros that take any floating type: no `f` forms.
-    f in (Base.isnan, Base.isinf, Base.isfinite, Base.signbit) && n == 1 &&
-        return (push!(sc.headers, "math.h"); ("$(nameof(f))($(expression(sc, args[1])[1]))", PRIMARY))
 
     # The limits of a type: the macros C names them by.
     if f in (Base.typemax, Base.typemin, Base.floatmax, Base.floatmin, Base.eps) && (n == 0 || literal(sc, args[1]) isa Type)
@@ -3295,7 +3267,7 @@ integer(x::Integer) = x isa Int64 && x == typemin(Int64) ? "INT64_MIN" :
 # C code for an IR value (a name or literal; use `expression` for inlined calls).
 function value(sc::Scope, x)
     if x isa Core.SSAValue
-        x.id in sc.inlined && return first(expression(sc, x))
+        x.id in sc.inlined && return string(expression(sc, x))
         haskey(sc.expr, x.id) && return sc.expr[x.id]
         haskey(sc.pair, x.id) && throw(ArgumentError("`sincos` and `minmax` are only available destructured, `s, c = sincos(x)`, `lo, hi = minmax(a, b)` (statement $(x.id))"))
         sc.ci.code[x.id] isa GlobalRef && return value(sc, sc.ci.code[x.id])

@@ -69,7 +69,7 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `<<`, `>>`, `>>>` | the same where the count is known to lie within the width, a literal or a loop's own variable; otherwise `shl(x, n)`, `shr`, `shru` | Julia defines every count, `5 << 64` is 0; C defines none outside the width |
 | `&&`, `\|\|`, `c ? x : y` | the same, or an `if` — see `flow.md` | |
 | `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc hypot copysign` | the same, from `math.h`; the `f` family on a `Float32` (`sqrtf`, `fabsf`, `powf`) | |
-| `'a'`, `c + 1`, `c - 'a'`, `Int(c)`, `Char(n)`, `isdigit(c)`, `uppercase(c)` | `'a'`, `c + 1`, `c - 'a'`, `(int64_t)c`, `(char)n`, `isdigit(c)`, `(char)toupper(c)` | a `Char` is an ASCII `char`; the `ctype.h` classes agree with Julia's there |
+| `'a'`, `c + 1`, `c - 'a'`, `Int(c)`, `Char(n)`, `isdigit(c)`, `uppercase(c)` | `'a'`, `c + 1`, `c - 'a'`, `(int64_t)c`, `(char)n`, `isdigit(c)`, `(char)toupper(c)` | a `Char` is an ASCII `char`; the `ctype.h` classes agree with Julia's on all 128, except `ispunct`, which is written with the nine characters Julia calls symbols taken out |
 | `s == "abc"`, `length(s)`, `ncodeunits(s)`, `isempty(s)`, `s[i]` | `strcmp(s, "abc") == 0`, `utf8len(s)`, `(int64_t)strlen(s)`, `s[0] == '\0'`, `s[i - 1]` | a `String` is `const char *`, UTF-8 in both languages |
 | `pi`, `ℯ`, `Base.MathConstants.γ`, `catalan`, your own `Base.@irrational` | `LEGIBLEC_PI`, `LEGIBLEC_E`, `LEGIBLEC_GAMMA`, `LEGIBLEC_CATALAN`, `LEGIBLEC_<NAME>` | any `AbstractIrrational`, by its symbol: a macro named after it, defined in the helper header to 128-bit precision, which the compiler rounds to the nearest double; the `posix` option writes POSIX's `M_PI` and `M_E` for π and ℯ instead |
 | `abs(x)` | `fabs(x)`; `llabs(x)` for `Int64`, `abs(x)` for `Int32` (`stdlib.h`) | |
@@ -120,7 +120,10 @@ that range leaves the type C computes in, or the type Julia wraps in.
 
 `test/grid.jl` tries every scalar function on every pair of number types at
 the values where the languages part ways, so a rule here is checked on all
-of them.
+of them. It reads the transpiler's own table of scalar functions
+(`src/idiom.jl`, a row each), so a function is tried on every type the day
+its row is added. That is how `ispunct` was caught: to Julia `$ + < = > ^ | ~`
+and the backtick are symbols, to C they are punctuation.
 
 ## Where the languages differ
 

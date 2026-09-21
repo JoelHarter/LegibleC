@@ -720,7 +720,7 @@ const standard = (
     ("stdint.h", r"\b(u?int(8|16|32|64)_t)\b"),
     ("stdbool.h", r"\b(bool|true|false)\b"),
     ("stdlib.h", r"\b(llabs|abs|exit|abort|malloc|calloc|free)\("),
-    ("string.h", r"\b(memcpy|memset|strcmp|strlen|strcpy)\("),
+    ("string.h", r"\b(memcpy|memset|memmove|memcmp|strcmp|strlen|strcpy|strncpy|strcat|strchr|strstr)\("),
     ("ctype.h", r"\b(isdigit|isalpha|isspace|isupper|islower|ispunct|iscntrl|isprint|isxdigit|toupper|tolower)\("),
     ("stdio.h", r"\b(printf|fprintf|snprintf|fputs|fputc|putchar|puts|fflush|fopen|fclose|FILE|stdout|stderr)\b"),
     ("float.h", r"\b(DBL|FLT)_(EPSILON|MAX|MIN)\b"),

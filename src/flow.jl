@@ -524,8 +524,8 @@ end
 function bound(sc::Scope, x)
     x isa Expr && x.head === :length && return string(prod(shape(valuetype(sc, x.args[1]))))
     x isa Expr && x.head === :size && return string(shape(valuetype(sc, x.args[1]))[x.args[2]])
-    text, p = expression(sc, x)
-    return p <= REL ? "($text)" : text          # it stands beside `<=` in the header
+    t = expression(sc, x)
+    return t.prec <= REL ? "($t)" : string(t)          # it stands beside `<=` in the header
 end
 
 function whileloop!(lines, sc::Scope, R::Round)
@@ -779,7 +779,7 @@ function opposite(sc::Scope, conds, op)
         f = callee_or_nothing(sc.ci, st.args[1])
         if haskey(flipped, f) && length(st.args) == 3 && all(a -> valuetype(sc, a) <: Number, st.args[2:3]) &&
            (f in (Base.:(==), Base.:!=) || all(a -> valuetype(sc, a) <: Integer, st.args[2:3]))
-            return first(render(sc, x.id, Expr(:call, GlobalRef(Base, flipped[f]), st.args[2:3]...)))
+            return string(render(sc, x.id, Expr(:call, GlobalRef(Base, flipped[f]), st.args[2:3]...)))
         end
     end
     text = condition(sc, conds, op)
@@ -791,7 +791,8 @@ function condition(sc::Scope, conds, op)
     prec = op == "&&" ? 5 : 4
     parts = String[]
     for (x, negated) in conds
-        text, p = expression(sc, x)
+        t = expression(sc, x)
+        text, p = string(t), t.prec
         negated && (text = "!" * (p < 14 ? "($text)" : text); p = 14)
         push!(parts, length(conds) > 1 && (p < prec || (prec == LOR && p == LAND)) ? "($text)" : text)      # one part alone needs no brackets
     end

@@ -107,6 +107,9 @@ Base.show(io::IO, t::Term) = print(io, "Term(", string(t), " :: ", t.julia, " in
 # done again each time it is written.
 simple(t::Term) = t.kind in (:atom, :number) || t.kind in (:binary, :prefix, :cast, :paren) && all(simple, t.parts) || t.kind === :text && !occursin("(", t.text)
 
+# Does it call nothing, however it is put together?
+callfree(t::Term) = t.kind === :call ? false : t.kind === :text ? !occursin(r"\w\(", t.text) : all(callfree, t.parts)
+
 # Does its text begin with a minus sign: `-x`, `-3`, `-x * y`?
 leading(t::Term) = t.kind === :prefix ? t.text == "-" : t.kind === :binary ? bare(t.parts[1], t.prec) && leading(t.parts[1]) :
                    t.kind in (:number, :atom, :text) && startswith(t.text, "-")
@@ -226,7 +229,3 @@ function choice(c::Term, a::Term, b::Term, J)
     reach = a.reach === nothing || b.reach === nothing ? limits(J) : (min(a.reach[1], b.reach[1]), max(a.reach[2], b.reach[2]))
     return Term(:choice, "?", [c, a, b], J, C === nothing ? J : C, COND, reach)
 end
-
-# While the rest of the transpiler still takes an expression as `(text, precedence)`.
-Base.iterate(t::Term, state=1) = state == 1 ? (string(t), 2) : state == 2 ? (t.prec, 3) : nothing
-Base.getindex(t::Term, k::Int) = k == 1 ? string(t) : k == 2 ? t.prec : throw(BoundsError(t, k))
