@@ -157,6 +157,7 @@ mutable struct Scope
     choices::Dict{Int, Any}             # `a && b`, `a || b`, `c ? x : y` as values, by the statement that reads one (`choice.jl`)
     folded::Set{Int}                    # jumps of a test Julia has already decided: no C, and no branch
     alias::Dict{Int, Any}               # a read of a variable of Julia's own making that is just what was stored in it -> that value
+    ready::Dict{Int, String}            # a number whose C took lines of its own to prepare (a product of several arrays) -> its text
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
@@ -179,12 +180,13 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}())
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}(), Dict{Int, String}())
 end
 
 include("flow.jl")
 include("io.jl")
 include("move.jl")
+include("product.jl")   # how Julia groups a product of several factors: asked, not copied
 
 """
     cfunction(name, mi, sig, helpers, headers; templimit=40, source=true) -> (prototype, definition)
@@ -804,6 +806,13 @@ function statement!(lines, sc::Scope, i, st)
     ci = sc.ci
     sc.current = i
     st === nothing && return
+    # `v' * A * w`: a number, but its arrays on the way take lines of their own, written here;
+    # the number itself is then a call like any other (`rendered` finds it in `sc.ready`).
+    if manyfactors(sc, consumer(st)) && !isarray(widen(ci.ssavaluetypes[i])) && !haskey(sc.ready, i)
+        args = consumer(st).args[2:end]
+        g = grouping([valuetype(sc, a) for a in args])
+        g isa Weight && (sc.ready[i] = product!(lines, sc, i, args, g, nothing)[2])
+    end
     if st isa GlobalRef                           # a global: resolved where it's used
         # A global with neither `const` nor a type is `Any` to Julia wherever it is read,
         # so nothing computed from it has a type. Refused by name, with the two ways to give it one.
@@ -1537,11 +1546,21 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     end
     f === Base.getindex && return slice!(lines, sc, i, args, dest; declaration)
     if f === Base.literal_pow && length(args) == 3 && isarray(valuetype(sc, args[2]))
-        # `A^2`, `A^3` on a square matrix: Julia's own definition is `A * A`, `A * A * A`.
+        # `A^5` with the power written out: the squarings and products Julia's own power makes,
+        # in its order, each product of two computed once (`power` in `product.jl`).
         p = literal(sc, args[3])
         e = p isa Val ? typeof(p).parameters[1] : nothing
-        e in (2, 3) || throw(ArgumentError("a matrix to the power $(something(e, "of a variable")): only `A^2` and `A^3` are supported; write the products out (statement $i)"))
-        return arraycall!(lines, sc, i, Expr(:call, GlobalRef(Base, :*), fill(args[2], e)...), dest; declaration)
+        g = e isa Integer ? power(valuetype(sc, args[2]), e) : nothing
+        g === nothing && throw(ArgumentError("a matrix to the power $(something(e, "of a variable")): a power of 2 or more, written as a literal, is what is supported; write the products out (statement $i)"))
+        R, _ = product!(lines, sc, i, args[2:2], g, dest; declaration)
+        sc.shapes[i] = R
+        return
+    end
+    # `A * B * v`, `v' * w * A`, `s * A * B * C`: grouped as Julia groups it (`product.jl`).
+    if f === Base.:* && length(args) >= 3 && (g = grouping([valuetype(sc, a) for a in args])) !== nothing && unwrapped(g) isa Factor
+        R, _ = product!(lines, sc, i, args, g, dest; declaration)
+        sc.shapes[i] = R
+        return
     end
     if f === Base.copy
         R = valuetype(sc, args[1])
@@ -1583,11 +1602,7 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     result(types) = (R = widen(sc.ci.ssavaluetypes[i]); shape(R) === nothing ? resulttype(op, types, E) : R)
     # An integer literal coefficient of a floating array takes the array's element type:
     # `-3A` is `mul_s_2x2(-3.0, A, out)`, not a mixed-type helper and an `int64_t`.
-    function operand(x, other)
-        x isa Integer && isarray(other) && eltype(other) <: AbstractFloat && return eltype(other), value(sc, eltype(other)(x))
-        x isa Integer && isarray(other) && eltype(other) <: Complex && return real(eltype(other)), value(sc, real(eltype(other))(x))   # `2y` on complex: a real 2.0
-        return valuetype(sc, x), value(sc, x)
-    end
+    operand(x, other) = coefficient(sc, x, other)
     acc = args[1]
     acctype, accname = length(args) >= 2 ? operand(acc, valuetype(sc, args[2])) : (valuetype(sc, acc), value(sc, acc))
     # `A + B + C` accumulates in the destination, as a person would write it, when every
@@ -2045,6 +2060,7 @@ function render(sc::Scope, i, ex::Expr)
 end
 
 function rendered(sc::Scope, i, ex::Expr)
+    haskey(sc.ready, i) && return sc.ready[i], MUL
     ci = sc.ci
     f = callee(ci, ex.args[1])
     args = ex.args[2:end]

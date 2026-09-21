@@ -15,7 +15,17 @@ using LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname,
 # The compiler is `cc`, or whatever `CC` names: the build server runs the suite under GCC and
 # under Clang, the two compilers the C is written for.
 const cc = get(ENV, "CC", "cc")
-const cxflag = success(pipeline(`$cc -fno-cx-limited-range -x c -c /dev/null -o /dev/null`; stderr=devnull)) ? ["-fno-cx-limited-range"] : String[]
+# It is spelled three ways: GCC's, Clang 18's, and not at all (Apple's Clang before that). A
+# newer Clang also warns that the flag overrides what `-ffast-math` implies, which is the
+# point of it, so that one warning is switched off there. Each spelling is tried with the rest
+# of the setting and `-Werror`, as the tests will use it; the first the compiler takes is used.
+accepts(extra) = success(pipeline(`$cc -std=c11 -O2 -ffast-math -fno-finite-math-only $extra -ffp-contract=fast -Werror -x c -c /dev/null -o /dev/null`; stderr=devnull))
+const cxflag = let tried = (["-fno-cx-limited-range"], ["-fno-cx-limited-range", "-Wno-overriding-option"],
+                            ["-fcomplex-arithmetic=full"], ["-fcomplex-arithmetic=full", "-Wno-overriding-option"])
+    k = findfirst(accepts, tried)
+    k === nothing ? String[] : tried[k]
+end
+println("compiler: ", cc, "   complex division kept safe by: ", isempty(cxflag) ? "nothing this compiler has" : join(cxflag, " "))
 const flags = ["-std=c11", "-O2", "-ffast-math", "-fno-finite-math-only", cxflag..., "-ffp-contract=fast", "-fwrapv", "-march=native",
                "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 

@@ -320,13 +320,13 @@ arrayquadratic(v::SVector{3,Float64}, A::SMatrix{3,3,Float64,9}, w::SVector{3,Fl
 arrayscaledrowcol(s::Float64, v::SVector{3,Float64}, w::SVector{3,Float64}) = s * v' * w
 arrayrowcolmatrix(v::SVector{2,Float64}, w::SVector{2,Float64}, A::SMatrix{2,2,Float64,4}) = v' * w * A
 @testset "hunt" begin
-    check("huntarray", [Case(arraystoreonce, 7.0), Case(arraystoreonce, -2.5),
+    check("huntarray", [Case(arrayquadratic, SVector(1.0, -2.0, 3.5), SMatrix{3,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.5), SVector(0.5, 0.25, -1.0)),
+        Case(arrayscaledrowcol, 2.5, SVector(1.0, -2.0, 3.5), SVector(0.5, 0.25, -1.0)),
+        Case(arrayrowcolmatrix, SVector(0.3, 0.7), SVector(2.0, -1.0), SMatrix{2,2}(1.0, 2.0, 3.0, 4.5)),
+        Case(arraystoreonce, 7.0), Case(arraystoreonce, -2.5),
         Case(arraytransposedelement, SMatrix{3,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0), 1, 2), Case(arraytransposedelement, SMatrix{3,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0), 3, 1), Case(arraytransposedelement, SMatrix{3,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0), 2, 2),
         Case(arraynormint, SVector(3, -4, 2)), Case(arraynormint, SVector(-1, 0, -9)),
         Case(arrayintsum, SVector(1, 2, 3), SVector(10, 20, 30), SVector(0.5, 0.25, 0.125))])
-    @test_throws ArgumentError csource("arrayquadratic", arrayquadratic)
-    @test_throws ArgumentError csource("arrayscaledrowcol", arrayscaledrowcol)
-    @test_throws ArgumentError csource("arrayrowcolmatrix", arrayrowcolmatrix)
 end
 
 # Found by the critic who looked for what the other readers had not attacked (2026-09-21).

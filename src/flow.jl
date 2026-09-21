@@ -772,6 +772,7 @@ function mark!(sc::Scope)
             continue
         end
         get(count, i, 0) == 1 || continue
+        !choice && manyfactors(sc, st) && continue      # its arrays on the way take lines: never inside another expression
         T = widen(ci.ssavaluetypes[i])
         u = findfirst(s -> uses(s, i), code)
         use = code[u]
