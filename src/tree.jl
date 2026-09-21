@@ -123,6 +123,11 @@ function recover(sc::Scope)
         claim!(tree, sc, c.jump, :choice)
         push!(tree.regions, (c.test, c.join))
     end
+    # A test Julia has decided is no test: control goes the one way, and its jumps are accounted for.
+    for t in sc.folded
+        claim!(tree, sc, t, :folded)
+        code[t] isa Core.GotoIfNot && push!(tree.chosen, t)
+    end
     recover!(tree, sc, 1, length(code), NTuple{4, Int}[], length(code) + 1)
     validate(tree, sc)
     return tree

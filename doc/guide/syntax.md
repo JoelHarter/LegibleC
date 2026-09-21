@@ -26,7 +26,8 @@ an array of that element type and size. Options: `outfile`, `outpath`,
 | `f(x, y) = …`, `function f(x, y) … end` | yes; the name is kept in C |
 | argument types: the scalars below, static arrays, `Array{T,N}` with a size given in the call | yes |
 | the same function at several signatures | yes; each gets the types appended to its name (`poly_I64_I64`) |
-| default arguments, keyword arguments | untested (the IR should already show the filled-in call) |
+| default arguments, `agm(x, y, e=5)` | yes: the short method Julia makes is a C function that calls the long one, `return agm_F64_F64_I64(x, y, 5);` |
+| keyword arguments | not yet |
 | returning a scalar | `return x;` |
 | returning an array | through a trailing parameter: the returned variable itself when every exit returns the same one, else `out` |
 | `return nothing`, a `Nothing` result | `void` |

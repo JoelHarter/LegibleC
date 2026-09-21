@@ -23,6 +23,12 @@ so `const τ = 2π` is `2 * LEGIBLEC_PI`. A typed global, `k::Float64 = 2.0`,
 is a plain global in the `.c` and `extern` in the header. See
 [target.md](target.md).
 
+A function may give a typed scalar global a new value, `global count += 1`,
+and the C does the same to its global: `count++;`. An array global's elements
+can be written, `tally[2] += k`; the array itself can't be replaced. Every
+global starts from the value it has at the moment it is transpiled, so
+transpile before running anything that changes one, or set it in the code.
+
 ## A macro constant is an irrational
 
 `π` is not `3.141592653589793` in the C; it is `LEGIBLEC_PI`, defined once

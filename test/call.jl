@@ -34,4 +34,12 @@ end
     @test occursin("double mysum(const double *, int32_t);", src)
     @test occursin("mysum(v, 3)", src)
 end
+# A default argument: Julia makes the short method, which calls the long one through itself.
+agm(x::Float64, y::Float64, e::Int64=5) = (for k in 1:e; x, y = (x + y) / 2, sqrt(x * y); end; x)
+callsagm(x::Float64) = agm(x, 2.0) + agm(x, 3.0, 2)
+@testset "default argument" begin
+    check("default", [Case(callsagm, 1.0), Case(agm, 1.0, 2.0)]; targets=[callsagm])
+    src = csource("defaulttext", callsagm)
+    @test occursin("return agm_F64_F64_I64(x, y, 5);", src)
+end
 end

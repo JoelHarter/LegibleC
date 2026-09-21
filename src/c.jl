@@ -155,6 +155,8 @@ mutable struct Scope
     lets::Dict{Int, Vector{NTuple{3, Int}}}   # the source's `let` blocks: first statement -> (first, last, the `let` line), outermost first
     tree::Any                           # the control flow, recovered and checked before anything is written (`tree.jl`)
     choices::Dict{Int, Any}             # `a && b`, `a || b`, `c ? x : y` as values, by the statement that reads one (`choice.jl`)
+    folded::Set{Int}                    # jumps of a test Julia has already decided: no C, and no branch
+    alias::Dict{Int, Any}               # a read of a variable of Julia's own making that is just what was stored in it -> that value
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
@@ -177,7 +179,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}())
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}())
 end
 
 include("flow.jl")
@@ -468,6 +470,21 @@ function analyze!(sc::Scope)
         # An exception is made to be thrown, and is written there (`throw!`): no C of its own.
         f isa Type && f <: Exception && all(u -> u isa Expr && u.head === :call && callee_or_nothing(ci, u.args[1]) === Core.throw, (u for u in code if uses(u, i))) && push!(sc.skipped, i)
     end
+    # A store into a typed global or a typed local, `global count += 1`, `local t::Float64`,
+    # is lowered with a test before it: is the value already of that type? If not, convert.
+    # Where Julia has decided the test, and it holds, the test and the conversion it guards
+    # are no part of the C: what is left is the store.
+    for (g, st) in enumerate(code)
+        st isa Core.GotoIfNot && st.cond isa Core.SSAValue && iscall(code[st.cond.id], Core.isa) || continue
+        t = ci.ssavaluetypes[st.cond.id]
+        t isa Core.Const && t.val === true || continue
+        push!(sc.skipped, st.cond.id, g)
+        push!(sc.folded, g)
+        code[g+1] isa Core.GotoNode && (push!(sc.skipped, g + 1); push!(sc.folded, g + 1))
+    end
+    for (i, st) in enumerate(code)
+        st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.get_binding_type && push!(sc.skipped, i)
+    end
     # The keyword tuple of a `kwcall` — `(dims = 1,)`, built over a few statements — is
     # read at transpile time; none of it is C.
     function skipconstant!(x)
@@ -553,6 +570,36 @@ function analyze!(sc::Scope)
         push!(sc.skipped, at[1])
     end
     markinlined!(sc)
+    # A variable of Julia's own making, stored once and read once with nothing in between
+    # that does anything, is another name for what was stored: the lowering of a store into a
+    # typed global or a typed local goes through one. The read is the value, written where
+    # it is used, which is the move the inlining makes anyway.
+    for s in ci.nargs+1:length(ci.slotnames)
+        isempty(string(ci.slotnames[s])) && length(get(assigned, s, ())) == 1 || continue
+        widen(ci.slottypes[s]) <: Number || continue
+        p = assigned[s][1]
+        V = code[p].args[2]
+        # The value may sit on the store itself: `foldstores!` has put a call used once there.
+        (V isa Number || V isa Core.SSAValue && V.id in sc.inlined && !haskey(sc.choices, V.id) ||
+         V isa Expr && V.head === :call && pure(sc, V)) || continue
+        live(r) = any(u -> uses(code[u], r) && !(u in sc.skipped), eachindex(code))
+        reads = [r for r in eachindex(code) if code[r] isa Core.SlotNumber && code[r].id == s && live(r)]
+        length(reads) == 1 && reads[1] > p || continue
+        r = reads[1]
+        users = [u for u in eachindex(code) if uses(code[u], r) && !(u in sc.skipped)]
+        length(users) == 1 || continue
+        # Into a plain store, of a variable or a global: nothing that writes its operand twice.
+        u = code[users[1]]
+        (u isa Expr && u.head === :(=) && u.args[2] == Core.SSAValue(r) || iscall(u, Core.setglobal!)) || continue
+        all(k -> k in sc.skipped || silent(sc, k) || widen(ci.ssavaluetypes[k]) === Union{}, p+1:users[1]-1) || continue
+        any(k -> code[k] isa Core.SlotNumber && code[k].id == s && k != r && live(k), eachindex(code)) && continue
+        # A folded store leaves a copy of itself behind, `%p`, for a `return` to read: none may.
+        all(k -> k == p + 1 && code[k] == Core.SSAValue(p), (k for k in eachindex(code) if uses(code[k], p))) || continue
+        push!(sc.skipped, p)
+        p < length(code) && code[p+1] == Core.SSAValue(p) && push!(sc.skipped, p + 1)
+        push!(sc.inlined, r)
+        sc.alias[r] = V isa Expr ? (p, V) : V
+    end
     # A `while`'s test is the first that is its own, not that of a value its condition opens
     # with: `while (a || b) && n > 0`.
     past = Dict(c.test => c.join for c in values(sc.choices))
@@ -778,6 +825,18 @@ function statement!(lines, sc::Scope, i, st)
         printf!(lines, sc, st.args[2:end])
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.fill!, Base.materialize!)
         inplace!(lines, sc, i, st)
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.setglobal! && length(st.args) == 4
+        # `global count = …`, `global count += 1`: a store into the C global, which for that
+        # is not `const`. It starts from the value it had when it was transpiled, as every global does.
+        mod, name = literal(sc, st.args[2]), literal(sc, st.args[3])
+        g = global!(sc.prog, mod, name, getfield(mod, name))
+        G = globaltype(getfield(mod, name))
+        G <: Number || throw(ArgumentError("assigning to the global `$name`, a $(G): only a scalar global can be given a new value; an array's elements can be written, `$name[i] = …` (statement $i)"))
+        push!(sc.prog.written, (mod, name))
+        text = first(expression(sc, st.args[4]))
+        short = compound(g.cname, G, text)
+        short === nothing ? emitexpr!(lines, sc, "$(g.cname) = ", text) : emit!(lines, sc, short * ";")
+        sc.expr[i] = g.cname
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.sincos && length(st.args) == 2
         # `s, c = sincos(x)` is exactly `s = sin(x); c = cos(x)`: ISO C has no `sincos`,
         # and the compiler fuses the two calls itself. The pair is read by destructuring.
@@ -1827,6 +1886,7 @@ function contribution(sc::Scope, x)
     x isa Core.SSAValue || x isa Core.SlotNumber || return String[]
     x isa Core.SSAValue && !(x.id in sc.inlined) && !haskey(sc.expr, x.id) && return String[]   # a constant load
     x isa Core.SSAValue && haskey(sc.choices, x.id) && return String[]
+    x isa Core.SSAValue && haskey(sc.alias, x.id) && return sc.alias[x.id] isa Tuple ? String[] : contribution(sc, sc.alias[x.id])
     x isa Core.SSAValue && x.id in sc.inlined && return unique(reduce(vcat, (contribution(sc, a) for a in sc.ci.code[x.id].args[2:end]); init=String[]))
     # A field read contributes its path, p.x -> p_x. The `_local` of a variable that gave
     # way is ours, not the author's: a temp computed from `x_local` is named after `x`.
@@ -2952,6 +3012,9 @@ function callee(ci, x)
         return callee(ci, ci.code[x.id])
     end
     x isa GlobalRef     && return getfield(x.mod, x.name)
+    # The function itself: how a method with a default argument, `agm(x, y, e=5)`, calls the
+    # long one from the short one Julia makes for it, `agm(x, y) = agm(x, y, 5)`.
+    x isa Core.SlotNumber && x.id == 1 && ci.slottypes[1] isa Core.Const && ci.slottypes[1].val isa Function && return ci.slottypes[1].val
     x isa Expr && x.head === :call && ci.ssavaluetypes !== nothing && return throw(ArgumentError("unsupported callee: $x"))
     (x isa Function || x isa Type || x isa Colon) && return x
     throw(ArgumentError("unsupported callee: $x"))

@@ -985,7 +985,7 @@ end
 
 # Calls with an effect the C must keep in order: writes and prints. Anything foreign
 # (a `ccall`) counts as both.
-const writing = (Base.setindex!, Base.setproperty!, Core.setfield!, Base.push!, Base.pop!, Base.fill!, Base.copyto!, Base.materialize!)
+const writing = (Base.setindex!, Base.setproperty!, Core.setfield!, Base.push!, Base.pop!, Base.fill!, Base.copyto!, Base.materialize!, Core.setglobal!)
 const printing = (Base.print, Base.println, Printf.format)
 const known = (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf)
 
@@ -1040,6 +1040,7 @@ countuses!(uses, x) = x isa Core.SSAValue ? (uses[x.id] = get(uses, x.id, 0) + 1
 # marked inline is rendered from its call; anything else is its name or literal.
 function expression(sc::Scope, x)
     x isa Core.SSAValue && x.id in sc.inlined && haskey(sc.choices, x.id) && return chosen(sc, sc.choices[x.id])
+    x isa Core.SSAValue && haskey(sc.alias, x.id) && return sc.alias[x.id] isa Tuple ? render(sc, sc.alias[x.id]...) : expression(sc, sc.alias[x.id])
     if x isa Core.SSAValue && x.id in sc.inlined
         return render(sc, x.id, sc.ci.code[x.id])
     end

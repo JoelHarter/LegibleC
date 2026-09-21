@@ -90,4 +90,47 @@ check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(sc
     near = csource("near", Physics.speed; scope=Physics)
     @test occursin("const double c = 3.0e8;", near) && occursin("double speed(double t)", near) && occursin("return c * t;", near)
 end
+# A scalar global given a new value: a store into the C global, which for that is not
+# `const`. Julia lowers `global count += k` with a test that the value is already of the
+# global's type, which it has decided, and a variable of its own making to hold the value;
+# neither is any part of the C. A typed local, `local prev::Float64`, lowers the same way.
+counter::Int64 = 0
+level::Float64 = 1.5
+function countup(n::Int64)
+    global counter = 0
+    for k in 1:n
+        global counter += k
+    end
+    return counter
+end
+function relevel(x::Float64)
+    global level = 2.0
+    old = level
+    global level *= x
+    global level -= 1.0
+    return old + level
+end
+bumpcounter!(n::Int64) = (global counter += n; nothing)
+function through(n::Int64)
+    global counter = 10
+    before = counter + 1
+    bumpcounter!(n)                  # writes the global: `before` was read first, and stays read first
+    return before + counter
+end
+function typedlocal(x::Float64)
+    local prev::Float64 = 0.0
+    for k in 1:3
+        prev = prev + x * k
+    end
+    return prev
+end
+@testset "global written" begin
+    check("globalwritten", [Case(countup, 4), Case(relevel, 3.0), Case(through, 5), Case(typedlocal, 2.0)])
+    src = csource("globalwrittentext", countup, relevel, through, typedlocal)
+    # Not `const`. The value is the one it has when transpiled, as for every global, and by now the cases above have run.
+    @test occursin(r"\nint64_t counter = \d+;", src) && occursin(r"\ndouble level = [\d.]+;", src)
+    @test occursin("counter = 0;", src) && occursin("counter += k;", src) && occursin("level *= x;", src) && occursin("level -= 1.0;", src)
+    @test occursin("int64_t before = counter + 1;\n", src) && occursin("bumpcounter(n);", src)
+    @test occursin("double prev = 0.0;", src) && occursin("prev += x * k;", src) && !occursin("temp", src)
+end
 end
