@@ -70,7 +70,7 @@ check("scalar", [Case(arith, 1.0, 2.0, 3.0), Case(unary, 7), Case(nary, 1.0, 2.0
                  Case(limits), Case(biggest, 7.0)])
 @testset "scalar text" begin
     src = csource("scalartext", math32, fmod_, pie, irrationals)
-    @test occursin("sqrtf(x) + fabsf(-x) + fmaxf(x, 1.0f) + powf(x, 0.5f) + expf(x) + rintf(x)", src) && occursin("+ fmodf(x, 0.7f);", src)   # float math is the `f` family
+    @test occursin("sqrtf(x) + fabsf(-x) + maxNF32(x, 1.0f) + powf(x, 0.5f) + expf(x) + rintf(x)", src) && occursin("+ fmodf(x, 0.7f);", src)   # float math is the `f` family
     @test occursin("return modulo(a, b);", src) && occursin("static inline double modulo(double x, double y) {\n    double r = fmod(x, y);", src)
     @test occursin("return x * LEGIBLEC_PI + LEGIBLEC_E;", src) && !occursin("M_PI", src)   # π and ℯ are our own macros, defined in the file
     # Every irrational is a macro named after it, to 128-bit precision, in the helper header.

@@ -73,7 +73,8 @@ both languages, read-only.
 | `< <= > >= == !=` | yes |
 | `! & \| xor << >> ~` | yes |
 | `&&`, `\|\|`, `c ? x : y` | yes, in conditions and as values |
-| `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc round hypot copysign abs max min atan(y, x)` | yes; the `f` family on `Float32` |
+| `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc round hypot copysign abs atan(y, x)` | yes; the `f` family on `Float32` |
+| `min`, `max` on floats | yes, as the helpers `minN` and `maxN`: Julia's give NaN when either argument is one, where C's `fmin` and `fmax` would give the other number |
 | `isodd`, `iseven`, `inv(x)`, `deg2rad`, `rad2deg`, `>>>`, `eps(x)`, `ifelse(c, a, b)` | yes, each as the C expression it is: `k % 2 != 0`, `1.0 / x`, `x * (LEGIBLEC_PI / 180)` |
 | `gcd`, `lcm`, `isqrt`; `sind`, `cosd`, `tand` | yes, as a small helper each; the degree functions are exact at the multiples of 90, as Julia's are |
 | `zero(x)`, `one(x)` | yes |

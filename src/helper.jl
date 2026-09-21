@@ -57,7 +57,7 @@ const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det
                          "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
 const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
 # The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
-const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp"])
+const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp", "minN", "maxN"])
 
 """
     helpername(op, types; pointwise=false) -> String
@@ -369,6 +369,20 @@ function integerhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
     return name
 end
 
+# `min(a, b)` and `max(a, b)` on floats: Julia's give NaN when either is one, and C's `fmin`
+# and `fmax` give the other number. The compiler setting keeps NaN alive on purpose, so the
+# difference is an answer and not rounding. `minN` and `maxN`, N for the NaN they keep: the
+# name says it is not C's own function, and the comment says what it is.
+function nanhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
+    name = (op === :min ? "minN" : "maxN") * (E === Float64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t, f = ctype(E), E === Float32 ? "f" : ""
+    word, sign, c = op === :min ? ("smaller", "<", "fmin$f") : ("larger", ">", "fmax$f")
+    helpers[name] = definition(t, name, ["$t a", "$t b"], ["return a $sign b || isnan(a) ? a : b;"];
+                               doc=["the $word of two, and NaN if either is one, as Julia's $op; C's $c would drop the NaN", "returns $op(a, b)"])
+    return name
+end
+
 # `eps(x)`: the distance from `|x|` to the next float up, which is the type's epsilon scaled
 # by `x`'s exponent. Below the normal range it is the smallest float there is, and at the
 # largest float it is still finite, which is why it is not `nextafter(x, INFINITY) - x`.
@@ -500,16 +514,21 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
     zero = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? "0.0f" : "0.0") : "0"
     one = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? "1.0f" : "1.0") : "1"
     v = eltype(T) === Bool && booltype[] !== Bool ? "($a != 0)" : a       # an integer as bool: nonzero is true
+    # A NaN among floats is kept, as Julia keeps it: once it is the extreme nothing replaces it,
+    # and for `argmax` and `argmin` the first one is the answer.
+    floats = eltype(T) <: AbstractFloat
+    nan(x) = floats ? " || isnan($x)" : ""
+    nanfirst(x, best) = floats ? " || (isnan($x) && !isnan($best))" : ""
     body = op == :sum     ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $v;"]); "return sum;"] :
            op == :prod    ? ["$(ctype(E)) product = $one;"; nest(pairs, ["product *= $v;"]); "return product;"] :
-           op == :maximum ? ["$(ctype(E)) max = $first;"; nest(pairs, ["if ($a > max) {", "    max = $a;", "}"]); "return max;"] :
-           op == :minimum ? ["$(ctype(E)) min = $first;"; nest(pairs, ["if ($a < min) {", "    min = $a;", "}"]); "return min;"] :
+           op == :maximum ? ["$(ctype(E)) max = $first;"; nest(pairs, ["if ($a > max$(nan(a))) {", "    max = $a;", "}"]); "return max;"] :
+           op == :minimum ? ["$(ctype(E)) min = $first;"; nest(pairs, ["if ($a < min$(nan(a))) {", "    min = $a;", "}"]); "return min;"] :
            op == :any     ? [nest(pairs, ["if ($a) {", "    return true;", "}"]); "return false;"] :
            op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
            op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $(eltype(T) <: Complex ? "$(mathname(eltype(T), "real"))($a) * $(mathname(eltype(T), "real"))($a) + $(mathname(eltype(T), "imag"))($a) * $(mathname(eltype(T), "imag"))($a)" : "$a * $a");"]); "return $(E === Float32 ? "sqrtf" : "sqrt")(sum);"] :
            op in (:norm1, :normInf) ? (mag = eltype(T) <: Integer ? "fabs((double)$a)" : "$(mathname(eltype(T), "fabs"))($a)";
                                        op == :norm1 ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $mag;"]); "return sum;"] :
-                                                      ["$(ctype(E)) max = $zero;"; nest(pairs, ["if ($mag > max) {", "    max = $mag;", "}"]); "return max;"]) :
+                                                      ["$(ctype(E)) max = $zero;"; nest(pairs, ["if ($mag > max$(nan(mag))) {", "    max = $mag;", "}"]); "return max;"]) :
            op == :mean    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a;"]); "return sum / $(prod(shape(T)));"] :
            op in (:var, :std) ? ["$(ctype(E)) mean = $zero;"; nest(pairs, ["mean += $a;"]); "mean /= $(prod(shape(T)));";
                                  "$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += ($a - mean) * ($a - mean);"]);
@@ -517,10 +536,10 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
            op == :count   ? ["int64_t count = 0;"; nest(pairs, ["if ($a) {", "    count++;", "}"]); "return count;"] :
            op == :tr      ? ["$(ctype(E)) sum = $zero;"; "for (int i = 0; i < $(shape(T)[1]); i++) {"; "    sum += $A[i][i];"; "}"; "return sum;"] :
            # `argmax`, `argmin`: Julia's 1-based index of the first extreme element.
-           op == :argmax  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) max = $first;"; nest(pairs, ["if ($a > max) {", "    max = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :
-           op == :argmin  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) min = $first;"; nest(pairs, ["if ($a < min) {", "    min = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :
+           op == :argmax  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) max = $first;"; nest(pairs, ["if ($a > max$(nanfirst(a, "max"))) {", "    max = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :
+           op == :argmin  ? ["int64_t best = 1;"; "$(ctype(eltype(T))) min = $first;"; nest(pairs, ["if ($a < min$(nanfirst(a, "min"))) {", "    min = $a;", "    best = $(idx[1]) + 1;", "}"]); "return best;"] :
            op == :extrema ? ["$(ctype(eltype(T))) min = $first;"; "$(ctype(eltype(T))) max = $first;";
-                             nest(pairs, ["if ($a < min) {", "    min = $a;", "}", "if ($a > max) {", "    max = $a;", "}"]); "return ($(ctype(E))){min, max};"] :
+                             nest(pairs, ["if ($a < min$(nan(a))) {", "    min = $a;", "}", "if ($a > max$(nan(a))) {", "    max = $a;", "}"]); "return ($(ctype(E))){min, max};"] :
            throw(ArgumentError("unsupported reduction: $op"))
     helpers[name] = definition(ctype(E), name, [declare(T, A; constant=true)], body; doc=[prose(op, (T,)), "returns $op($A)"])
     return name
@@ -553,7 +572,8 @@ function dimhelper!(helpers::Dict{String, String}, op::Symbol, d::Integer, T::Ty
     elseif op == :maximum || op == :minimum
         acc, cmp = op == :maximum ? ("max", ">") : ("min", "<")
         first = access(T, A, [k == d ? "0" : idx[k] for k in eachindex(s)])
-        nest(outer, ["$t $acc = $first;"; nest(inner, ["if ($a $cmp $acc) {", "    $acc = $a;", "}"]); "$out = $acc;"])
+        nan = E <: AbstractFloat ? " || isnan($a)" : ""          # a NaN is kept, as Julia keeps it
+        nest(outer, ["$t $acc = $first;"; nest(inner, ["if ($a $cmp $acc$nan) {", "    $acc = $a;", "}"]); "$out = $acc;"])
     elseif op == :diff
         # Loops over the result's shape; the dimension worked along is one shorter.
         so = shape(R)
@@ -1007,6 +1027,8 @@ function broadcasthelper!(helpers::Dict{String, String}, op::Symbol, cfn, types,
                cfn == :neg ? "-" * accesses[1] :
                cfn == :not ? "!" * accesses[1] :
                cfn == :ifelse ? "$(accesses[1]) ? $(accesses[2]) : $(accesses[3])" :
+               cfn in (:maxN, :minN) ? "$(nanhelper!(helpers, cfn === :maxN ? :max : :min, eltype(R)))($(join(accesses, ", ")))" :
+               cfn in (:greater, :lesser) ? "$(accesses[1]) $(cfn === :greater ? ">" : "<") $(accesses[2]) ? $(accesses[1]) : $(accesses[2])" :
                cfn == :div && all(T -> (T <: AbstractArray ? eltype(T) : T) <: Integer, types) ?
                    "($(ctype(eltype(R))))$(accesses[1]) / ($(ctype(eltype(R))))$(accesses[2])" :
                join(accesses, " " * csymbol[cfn] * " ")

@@ -82,4 +82,32 @@ single(v::SVector{3,Float32}) = mean(v) + norm(v, 1)
     @test occursin("return norm1_3(v) + 10.0 * normInf_3(v) + 100.0 * norm_3(v) + 1000.0 * norm_3(v);", src)
     @test occursin("return mean_4(v) + 10.0 * std_4(v) + 100.0 * var_4(v);", src)
 end
+# A NaN is kept wherever Julia keeps it: `min` and `max` of two (`minN`, `maxN`, where C's `fmin`
+# and `fmax` would drop it), `minmax`, the reductions, along a dimension, element by element. For
+# `argmax` and `argmin` the first NaN is the answer. On integers `max.(a, b)` is the comparison,
+# where `fmax` went through a `double` and lost what is past 2^53.
+nanmin(a::Float64, b::Float64) = min(a, b)
+nanmax3(a::Float64, b::Float64, c::Float64) = max(a, b, c) + min(a, b, c)
+nanmax32(a::Float32, b::Float64) = max(a, b)
+function nanpair(a::Float64, b::Float64); lo, hi = minmax(a, b); return lo + 2.0 * hi; end
+nanreduce(v::SVector{4,Float64}) = minimum(v) + 10.0 * maximum(v) + norm(v, Inf)
+nanextrema(v::SVector{4,Float64}) = (e = extrema(v); e[1] + 10.0 * e[2])
+nanarg(v::SVector{4,Float64}) = argmax(v) + 10 * argmin(v)
+nanpoint(a::SVector{3,Float64}, b::SVector{3,Float64}) = max.(a, b) + min.(a, 2.0)
+nanalong(A::SMatrix{2,3,Float64,6}) = maximum(A; dims=1) + minimum(A; dims=1)
+intpoint(a::SVector{3,Int64}, b::SVector{3,Int64}) = max.(a, b) - min.(a, b)
+intreduce(v::SVector{4,Int64}) = minimum(v) + 10 * maximum(v) + 100 * argmax(v) + 1000 * argmin(v)
+@testset "NaN" begin
+    N = NaN
+    vs = (SVector(1.0, N, 3.0, -2.0), SVector(N, 1.0, 3.0, -2.0), SVector(1.0, 3.0, -2.0, N), SVector(1.0, N, N, -2.0), SVector(1.0, 7.0, -3.0, 7.0))
+    check("nan", [Case(nanmin, N, 1.0); Case(nanmin, 1.0, N); Case(nanmin, 2.0, 1.0); Case(nanmin, N, N);
+                  Case(nanmax3, 1.0, N, 3.0); Case(nanmax3, 1.0, 2.0, N); Case(nanmax3, 1.0, 5.0, 3.0); Case(nanmax32, NaN32, 1.0); Case(nanmax32, 1.5f0, 2.123456789);
+                  Case(nanpair, N, 1.0); Case(nanpair, 1.0, N); Case(nanpair, 3.0, 1.0);
+                  [Case(nanreduce, v) for v in vs]; [Case(nanextrema, v) for v in vs]; [Case(nanarg, v) for v in vs];
+                  Case(nanpoint, SVector(1.0, N, 3.0), SVector(N, 2.0, -1.0)); Case(nanalong, SMatrix{2,3}(1.0, N, 3.0, 4.0, N, N));
+                  Case(intpoint, SVector(9007199254740993, -5, 3), SVector(9007199254740992, 7, 3)); Case(intreduce, SVector(3, 9, -4, 9))])
+    src = csource("nantext", nanmin, nanmax3)
+    @test occursin("static inline double minN(double a, double b) {\n    return a < b || isnan(a) ? a : b;", src)
+    @test occursin("return minN(a, b);", src) && occursin("maxN(maxN(a, b), c) + minN(minN(a, b), c)", src)
+end
 end

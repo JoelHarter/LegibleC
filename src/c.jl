@@ -905,7 +905,7 @@ function statement!(lines, sc::Scope, i, st)
         A = valuetype(sc, st.args[2])
         a, b = expression(sc, st.args[2])[1], expression(sc, st.args[3])[1]
         A <: AbstractFloat && push!(sc.headers, "math.h")
-        A <: AbstractFloat ? pair!(lines, sc, i, st.args[2:3], "$(mathname(A, "fmin"))($a, $b)", "$(mathname(A, "fmax"))($a, $b)") :
+        A <: AbstractFloat ? pair!(lines, sc, i, st.args[2:3], "$(nanhelper!(sc.helpers, :min, A))($a, $b)", "$(nanhelper!(sc.helpers, :max, A))($a, $b)") :
                              pair!(lines, sc, i, st.args[2:3], "($a < $b ? $a : $b)", "($a > $b ? $a : $b)")
     elseif st isa Expr && st.head === :call && (T === Nothing || T === Any) && userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end]) !== nothing
         # A call for its effect, or whose result goes unused (Julia then types it `Any`
@@ -1507,8 +1507,10 @@ function broadcastop(f, n, E)
     f === Base.:/ && return :div, :div
     f === Base.:^ && return :pow, "pow"
     f === Base.abs && return :abs, E <: AbstractFloat ? "fabs" : "llabs"
-    f === Base.max && return :max, "fmax"
-    f === Base.min && return :min, "fmin"
+    # Element by element as between two numbers: on floats a NaN is kept (`minN`, `maxN`), and on
+    # integers it is the comparison, where `fmax` would have gone through a `double`.
+    f === Base.max && return :max, E <: AbstractFloat ? :maxN : :greater
+    f === Base.min && return :min, E <: AbstractFloat ? :minN : :lesser
     for (g, name) in ((Base.sqrt, "sqrt"), (Base.cbrt, "cbrt"), (Base.sin, "sin"), (Base.cos, "cos"), (Base.tan, "tan"),
                       (Base.asin, "asin"), (Base.acos, "acos"), (Base.atan, "atan"), (Base.sinh, "sinh"), (Base.cosh, "cosh"),
                       (Base.tanh, "tanh"), (Base.exp, "exp"), (Base.exp2, "exp2"), (Base.expm1, "expm1"), (Base.log, "log"),
@@ -2115,15 +2117,6 @@ function rendered(sc::Scope, i, ex::Expr)
     # `fmax`, not `fmaxf`. A complex argument names its own (`cabs` of a complex gives a real).
     variant() = (k = findfirst(a -> valuetype(sc, a) <: Complex, args); k !== nothing ? valuetype(sc, args[k]) : T <: AbstractFloat ? T : valuetype(sc, args[1]))
     fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$(hdr == "math.h" ? mathname(variant(), name) : name)(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
-    # `max(a, b, c)` is `max(max(a, b), c)`, as Julia folds it.
-    function folded(name)
-        push!(sc.headers, "math.h")
-        acc = expression(sc, args[1])[1]
-        for a in args[2:end]
-            acc = "$(mathname(variant(), name))($acc, $(expression(sc, a)[1]))"
-        end
-        return acc, n == 1 ? expression(sc, args[1])[2] : PRIMARY
-    end
     # A signed and an unsigned integer together: Julia compares and divides them as the numbers
     # they are, and C converts the signed one to unsigned first, so that `-1 < 1u` is false.
     # Harmless where the signed type holds every value of the unsigned one, and for a literal
@@ -2338,8 +2331,16 @@ function rendered(sc::Scope, i, ex::Expr)
     # Math.
     if floating || cplx
         f === Base.abs   && return fn("fabs")
-        f === Base.max   && return folded("fmax")
-        f === Base.min   && return folded("fmin")
+        # `minN`, `maxN`: a NaN is kept, where `fmin` and `fmax` would drop it (`nanhelper!`).
+        if (f === Base.max || f === Base.min) && !cplx
+            push!(sc.headers, "math.h")
+            h = nanhelper!(sc.helpers, f === Base.max ? :max : :min, T)
+            acc = expression(sc, args[1])
+            for a in args[2:end]              # `max(a, b, c)` is `max(max(a, b), c)`
+                acc = ("$h($(acc[1]), $(expression(sc, a)[1]))", PRIMARY)
+            end
+            return acc
+        end
         f === Base.round && n == 1 && return fn("rint")            # Julia rounds to even; so does rint
         f === Base.atan  && n == 2 && return fn("atan2")
         for (g, name) in ((Base.sqrt, "sqrt"), (Base.cbrt, "cbrt"), (Base.sin, "sin"), (Base.cos, "cos"), (Base.tan, "tan"),
