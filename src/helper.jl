@@ -57,7 +57,7 @@ const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det
                          "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
 const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
 # The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
-const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand"])
+const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp"])
 
 """
     helpername(op, types; pointwise=false) -> String
@@ -359,10 +359,26 @@ function integerhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
             ["if (a == 0 || b == 0) {", "    return 0;", "}", "$t m = a * (b / $g(a, b));", "return " * (E <: Signed ? "m < 0 ? -m : m;" : "m;")];
             doc=["least common multiple; never negative", "returns lcm(a, b)"])
     else
+        # In 64 bits whatever the type, so that `s * s` can't wrap; and `s` is held to 2^32 - 1,
+        # the largest root there is, since `(double)n` rounds the largest values up to 2^64.
         helpers[name] = definition(t, name, ["$t n"],
-            ["$u s = ($u)sqrt((double)n);", "while (s * s > ($u)n) {", "    s--;", "}", "while ((s + 1) * (s + 1) <= ($u)n) {", "    s++;", "}", "return ($t)s;"];
+            ["uint64_t s = (uint64_t)sqrt((double)n);", "if (s > 4294967295u) {", "    s = 4294967295u;", "}",
+             "while (s * s > (uint64_t)n) {", "    s--;", "}", "while (s < 4294967295u && (s + 1) * (s + 1) <= (uint64_t)n) {", "    s++;", "}", "return ($t)s;"];
             doc=["integer square root: the floating one, then corrected, since a double holds 53 bits", "returns the largest s with s * s <= n"])
     end
+    return name
+end
+
+# `eps(x)`: the distance from `|x|` to the next float up, which is the type's epsilon scaled
+# by `x`'s exponent. Below the normal range it is the smallest float there is, and at the
+# largest float it is still finite, which is why it is not `nextafter(x, INFINITY) - x`.
+function ulphelper!(helpers::Dict{String, String}, E::Type)
+    name = "ulp" * (E === Float64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t, f, P = ctype(E), E === Float32 ? "f" : "", E === Float32 ? "FLT" : "DBL"
+    body = ["$t a = fabs$f(x);", "if (!isfinite(a)) {", "    return NAN;", "}",
+            "return a >= $(P)_MIN ? ldexp$f($(P)_EPSILON, ilogb$f(a)) : nextafter$f($(E === Float32 ? "0.0f, 1.0f" : "0.0, 1.0"));"]
+    helpers[name] = definition(t, name, ["$t x"], body; doc=["distance from |x| to the next larger $(E === Float32 ? "float" : "double"), as Julia's eps(x)", "returns eps(x)"])
     return name
 end
 
@@ -491,8 +507,9 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
            op == :any     ? [nest(pairs, ["if ($a) {", "    return true;", "}"]); "return false;"] :
            op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
            op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $(eltype(T) <: Complex ? "$(mathname(eltype(T), "real"))($a) * $(mathname(eltype(T), "real"))($a) + $(mathname(eltype(T), "imag"))($a) * $(mathname(eltype(T), "imag"))($a)" : "$a * $a");"]); "return $(E === Float32 ? "sqrtf" : "sqrt")(sum);"] :
-           op == :norm1   ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $(mathname(eltype(T), "fabs"))($a);"]); "return sum;"] :
-           op == :normInf ? ["$(ctype(E)) max = $zero;"; nest(pairs, ["if ($(mathname(eltype(T), "fabs"))($a) > max) {", "    max = $(mathname(eltype(T), "fabs"))($a);", "}"]); "return max;"] :
+           op in (:norm1, :normInf) ? (mag = eltype(T) <: Integer ? "fabs((double)$a)" : "$(mathname(eltype(T), "fabs"))($a)";
+                                       op == :norm1 ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $mag;"]); "return sum;"] :
+                                                      ["$(ctype(E)) max = $zero;"; nest(pairs, ["if ($mag > max) {", "    max = $mag;", "}"]); "return max;"]) :
            op == :mean    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a;"]); "return sum / $(prod(shape(T)));"] :
            op in (:var, :std) ? ["$(ctype(E)) mean = $zero;"; nest(pairs, ["mean += $a;"]); "mean /= $(prod(shape(T)));";
                                  "$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += ($a - mean) * ($a - mean);"]);

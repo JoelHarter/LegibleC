@@ -295,4 +295,37 @@ end
     @test occursin("T[(k - 1) % 2][((k - 1) / 2) % 3][(k - 1) / 6] + T[0][2][1]", src)
     @test occursin("double M[2][3];\n", src) && occursin("M[(k - 1) % 2][(k - 1) / 2] = 7.0;", src) && occursin("M[1][1] = 2.0;", src)
 end
+
+# Found on 2026-09-21 by readers who attacked the code on paper and wrote what they expected to break:
+# each of these compiled and answered wrongly, or did not compile, or was refused for no reason.
+function arraystoreoncetick(c::MVector{2,Int64})
+    c[1] += 1
+    return c[1]
+end
+function arraystoreonce(x::Float64)
+    c = MVector{2,Int64}(0, 0)
+    M = MMatrix{2,2,Float64}(undef)
+    fill!(M, 0.0)
+    M[arraystoreoncetick(c)] = x
+    return M[1] + 10.0 * M[2] + 100.0 * M[3] + 1000.0 * M[4] + 10000.0 * c[1]
+end
+arraytransposedelement(A::SMatrix{3,3,Float64,9}, i::Int64, j::Int64) = (A')[i, j] + 10.0 * transpose(A)[j, i]
+arraynormint(v::SVector{3,Int64}) = norm(v, 1) + 10.0 * norm(v, Inf)
+function arrayintsum(a::SVector{3,Int64}, b::SVector{3,Int64}, c::SVector{3,Float64})
+    d = a + b
+    e = a + b + c
+    return e[1] + e[2] + e[3] + d[2]
+end
+arrayquadratic(v::SVector{3,Float64}, A::SMatrix{3,3,Float64,9}, w::SVector{3,Float64}) = v' * A * w
+arrayscaledrowcol(s::Float64, v::SVector{3,Float64}, w::SVector{3,Float64}) = s * v' * w
+arrayrowcolmatrix(v::SVector{2,Float64}, w::SVector{2,Float64}, A::SMatrix{2,2,Float64,4}) = v' * w * A
+@testset "hunt" begin
+    check("huntarray", [Case(arraystoreonce, 7.0), Case(arraystoreonce, -2.5),
+        Case(arraytransposedelement, SMatrix{3,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0), 1, 2), Case(arraytransposedelement, SMatrix{3,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0), 3, 1), Case(arraytransposedelement, SMatrix{3,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0), 2, 2),
+        Case(arraynormint, SVector(3, -4, 2)), Case(arraynormint, SVector(-1, 0, -9)),
+        Case(arrayintsum, SVector(1, 2, 3), SVector(10, 20, 30), SVector(0.5, 0.25, 0.125))])
+    @test_throws ArgumentError csource("arrayquadratic", arrayquadratic)
+    @test_throws ArgumentError csource("arrayscaledrowcol", arrayscaledrowcol)
+    @test_throws ArgumentError csource("arrayrowcolmatrix", arrayrowcolmatrix)
+end
 end

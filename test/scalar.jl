@@ -158,8 +158,9 @@ recip32(x::Float32) = inv(x)
 angles(d::Float64) = deg2rad(d) + rad2deg(d / 100) + deg2rad(d + 1.0)
 shifts(a::Int64, n::Int64) = (a >>> n) + (a >>> 3)
 ushifts(a::UInt32, n::Int64) = a >>> n
-gap(x::Float64) = eps(x) + eps(2.0x) + eps(x * x + 1.0)          # written twice in the C, so never in place
+gap(x::Float64) = eps(x) + eps(2.0x) + eps(x * x + 1.0)
 gap32(x::Float32) = eps(x)
+gapmax(x::Float64) = eps(x)                                       # finite at the largest float, where the next one up is Inf
 choose(c::Bool, a::Int64, b::Int64) = ifelse(c, a, b) + ifelse(a > b, a - b, b - a)
 divisors(a::Int64, b::Int64) = gcd(a, b) + 1000 * lcm(a, b)
 divisors32(a::Int32, b::Int32) = gcd(a, b) + lcm(a, b)
@@ -188,7 +189,7 @@ end
              Case(recip, 4.0, 8); Case(recip, -0.5, -3); Case(recip32, 4.0f0);
              [Case(angles, d) for d in (0.0, 90.0, 180.0, -37.5)];
              [Case(shifts, a, n) for a in (-16, 1024, -1) for n in (0, 2, 63)]; Case(ushifts, 0xf0000000, 4);
-             [Case(gap, x) for x in (0.0, 1.0, -3.7, 1e300, 5e-324)]; Case(gap32, 1.5f0);
+             [Case(gap, x) for x in (0.0, 1.0, -3.7, 1e300, 5e-324, 2.0^-1040)]; Case(gapmax, floatmax(Float64)); Case(gapmax, -floatmax(Float64)); Case(gap32, 1.5f0);
              [Case(choose, c, a, b) for c in (true, false) for (a, b) in ((3, 9), (9, 3))];
              [Case(divisors, a, b) for (a, b) in ((12, 18), (-12, 18), (12, -18), (0, 5), (5, 0), (0, 0), (17, 5), (-7, -21))];
              Case(divisors32, Int32(12), Int32(-18)); Case(gcdonly, typemin(Int64), -1); Case(gcdonly, 6, typemin(Int64));
@@ -203,7 +204,7 @@ end
     @test occursin("return 1.0 / x + 1.0 / k + 1.0 / (x + 1.0);", src)
     @test occursin("d * (LEGIBLEC_PI / 180)", src) && occursin("* (180 / LEGIBLEC_PI)", src)
     @test occursin("(int64_t)((uint64_t)a >> n)", src)
-    @test occursin("double temp1_x = 2.0 * x;", src) && occursin("nextafter(fabs(temp1_x), INFINITY) - fabs(temp1_x)", src)
+    @test occursin("return ulp(x) + ulp(2.0 * x) + ulp(x * x + 1.0);", src)      # a helper: the gap is still finite at the largest float
     @test occursin("(c ? a : b) + (a > b ? a - b : b - a)", src)
     @test occursin("return INT64_MIN + 1;", src)
     src = csource("guardedtext", guarded, consts)
@@ -227,5 +228,59 @@ nocode(x::Float64, k::Int64) = x * trailing_zeros(k)
     fault = LegibleC.explained(KeyError(:gone), mi, nothing)
     @test fault isa LegibleC.Fault && occursin("the transpiler went wrong in `nocode`, scalar.jl:", fault.msg) && occursin("KeyError", fault.msg)
     @test LegibleC.explained(fault, mi, nothing) === fault
+end
+
+# Found on 2026-09-21 by readers who attacked the code on paper and wrote what they expected to break:
+# each of these compiled and answered wrongly, or did not compile, or was refused for no reason.
+idiommaxthree(a::Int64, b::Int64, c::Int64) = max(a, b, c) + 100 * min(a, b, c)
+idiomminthreefloat(a::Float64, b::Float64, c::Float64) = min(a, b, c)
+idiommaxmixed(x::Float32, y::Float64) = max(x, y)
+idiompowmixed(x::Float32, y::Float64) = x ^ y
+idiomdivfloat(x::Float64, y::Float64) = div(x, y)
+idiommodunsigned(a::UInt64, b::UInt64) = mod(a, b)
+idiomnarrownot(a::UInt8) = (~a) >>> 2
+idiomnarrowshift(a::UInt8, b::UInt8) = (a + b) >>> 1
+idiomstore!(v::MVector{3,Float64}, k::Float64) = (v[1] = k; k)
+function idiomifelseeffect(c::Bool, v::MVector{3,Float64})
+    x = ifelse(c, idiomstore!(v, 7.0), 1.0)
+    return x + v[1]
+end
+idiomisqrtwrap(n::UInt32) = isqrt(n)
+function idiomminmaxself(a::Float64, b::Float64)
+    a, b = minmax(a, b)
+    return a + 10.0 * b
+end
+function idiomminmaxlocal(p::Int64, q::Int64)
+    lo = p * 2
+    hi = q + 1
+    lo, hi = minmax(lo, hi)
+    return hi - 3 * lo
+end
+function lowerhalf(n::Int64)
+    n = n / 2
+    return n + 1
+end
+idiomdivsigned(a::Int64, b::UInt64) = div(a, b)
+idiomsigncompare(a::Int64, b::UInt64) = a < b
+function choicesignmix(c::Bool, a::Int64, u::UInt64)
+    return Float64(c ? a : u)
+end
+@testset "hunt" begin
+    check("huntscalar", [Case(idiommaxthree, 1, 2, 9), Case(idiommaxthree, 5, 4, -3), Case(idiommaxthree, 9, 2, 1),
+        Case(idiomminthreefloat, 3.0, 2.0, 1.0), Case(idiomminthreefloat, 1.0, 2.0, 3.0),
+        Case(idiommaxmixed, 1.0f0, 2.123456789), Case(idiommaxmixed, 3.0f0, 2.123456789), Case(idiommaxmixed, -1.0f0, -0.3333333333333333),
+        Case(idiompowmixed, 1.5f0, 2.123456789), Case(idiompowmixed, 2.0f0, 0.3333333333333333),
+        Case(idiomdivfloat, 7.5, 2.0), Case(idiomdivfloat, -7.5, 2.0), Case(idiomdivfloat, 8.0, 2.0), Case(idiomdivfloat, 1.0, 3.0),
+        Case(idiommodunsigned, 0x8000000000000004, 0x8000000000000005), Case(idiommodunsigned, UInt64(7), UInt64(3)), Case(idiommodunsigned, 0xfffffffffffffffe, 0xffffffffffffffff),
+        Case(idiomnarrownot, UInt8(15)), Case(idiomnarrownot, UInt8(0)), Case(idiomnarrownot, UInt8(255)),
+        Case(idiomnarrowshift, UInt8(200), UInt8(100)), Case(idiomnarrowshift, UInt8(3), UInt8(4)), Case(idiomnarrowshift, UInt8(255), UInt8(255)),
+        Case(idiomifelseeffect, false, MVector(0.5, 0.0, 0.0)), Case(idiomifelseeffect, true, MVector(0.5, 0.0, 0.0)),
+        Case(idiomisqrtwrap, 0xfffe0001), Case(idiomisqrtwrap, 0xfffe0000), Case(idiomisqrtwrap, UInt32(17)),
+        Case(idiomminmaxself, 5.0, 3.0), Case(idiomminmaxself, 1.0, 2.0), Case(idiomminmaxself, -4.0, -9.0),
+        Case(idiomminmaxlocal, 5, 2), Case(idiomminmaxlocal, 1, 7), Case(idiomminmaxlocal, 3, 5),
+        Case(lowerhalf, 5), Case(lowerhalf, -3), Case(lowerhalf, 4)])
+    @test_throws ArgumentError csource("idiomdivsigned", idiomdivsigned)
+    @test_throws ArgumentError csource("idiomsigncompare", idiomsigncompare)
+    @test_throws ArgumentError csource("choicesignmix", choicesignmix)
 end
 end

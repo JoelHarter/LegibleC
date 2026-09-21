@@ -60,6 +60,7 @@ function print!(lines, sc::Scope, args, newline::Bool)
         if a isa Core.SSAValue && sc.ci.code[a.id] isa Expr && sc.ci.code[a.id].head === :call
             f = callee_or_nothing(sc.ci, sc.ci.code[a.id].args[1])
             f === Base.string && return foreach(flatten, sc.ci.code[a.id].args[2:end])
+            f === Base._assert_tostring && return flatten(sc.ci.code[a.id].args[2])       # `@assert c "… \$n"`
             f === Base.repr && length(sc.ci.code[a.id].args) == 2 && return flatten(sc.ci.code[a.id].args[2])
         end
         push!(pieces, a)
@@ -98,6 +99,14 @@ end
 # is outside what the C is checked against; this is for the person who meets it anyway.
 function throw!(lines, sc::Scope, st::Expr)
     code = sc.ci.code
+    f = callee_or_nothing(sc.ci, st.args[1])
+    if !(f in (Core.throw, Base.error))
+        # A function of the author's that never returns: it is called, and C is told that it
+        # doesn't come back (`_Noreturn`, in its own declaration).
+        r = userinstance!(sc, f, st.args[2:end])
+        r === nothing && throw(ArgumentError("`$(nameof(f))` never returns, and couldn't be transpiled to be called (line $(sc.stmtline[sc.current]))"))
+        return emit!(lines, sc, "$(r[3])($(callargs(sc, st.args[2:end])));")
+    end
     parts = Any[GlobalRef(Base, :stderr)]
     if callee_or_nothing(sc.ci, st.args[1]) === Base.error
         push!(parts, "ERROR: ")
@@ -108,7 +117,8 @@ function throw!(lines, sc::Scope, st::Expr)
         E = widen(valuetype(sc, e))
         v = literal(sc, e)                        # one Julia folded whole: `ArgumentError("…")`
         isempty(made) && v isa Exception && hasproperty(v, :msg) && v.msg isa AbstractString && (made = Any[v.msg])
-        made = [a for a in made if literal(sc, a) isa AbstractString || valuetype(sc, a) <: Union{Number, AbstractString} || isarray(valuetype(sc, a))]
+        text(a) = a isa Core.SSAValue && code[a.id] isa Expr && code[a.id].head === :call && callee_or_nothing(sc.ci, code[a.id].args[1]) in (Base.string, Base._assert_tostring)
+        made = [a for a in made if literal(sc, a) isa AbstractString || text(a) || valuetype(sc, a) <: Union{Number, AbstractString} || isarray(valuetype(sc, a))]
         push!(parts, string(nameof(E)) * (isempty(made) ? "" : ": "))
         for (k, a) in enumerate(made)
             k > 1 && push!(parts, ", ")
@@ -162,6 +172,11 @@ end
 function cstring(s::AbstractString; format::Bool=false, keep::Bool=false)
     out = replace(s, "\\" => "\\\\", "\"" => "\\\"", "\n" => "\\n", "\t" => "\\t", "\r" => "\\r")
     format && !keep && (out = replace(out, "%" => "%%"))
+    # `??!` and its kin are trigraphs, which a C compiler may still read as one character:
+    # a question mark after a question mark is escaped.
+    while occursin("??", out)
+        out = replace(out, "??" => "?\\?")
+    end
     return out
 end
 

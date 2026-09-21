@@ -405,16 +405,22 @@ end
 # memory at all — a store, or a call to a function of the author's.
 function boundchanges(sc::Scope, F::For)
     code = sc.ci.code
-    slots, memory = Set{Int}(), Ref(false)
+    slots, memory, written = Set{Int}(), Ref(false), Ref(false)
     function read!(x)
         x isa Core.SlotNumber && return push!(slots, x.id)
+        # A global that isn't `const` can be given a new value by the body, or by anything the body calls.
+        x isa GlobalRef && !Base.isconst(x.mod, x.name) && (memory[] = written[] = true)
         if x isa Core.SSAValue
+            # A value a test chooses, `1:(c ? n : m)`: what it reads is inside it.
+            haskey(sc.choices, x.id) && (c = sc.choices[x.id]; foreach(k -> read!(code[k]), c.test:c.join-1))
+            haskey(sc.alias, x.id) && read!(sc.alias[x.id] isa Tuple ? sc.alias[x.id][2] : sc.alias[x.id])
             st = code[x.id]
             st isa Expr && st.head === :call && !(sc.ci.ssavaluetypes[x.id] isa Core.Const) &&
                 callee_or_nothing(sc.ci, st.args[1]) in (Base.getindex, Base.getproperty, Core.getfield, Base.getfield) && (memory[] = true)
             return read!(st)
         end
-        x isa Expr && foreach(read!, x.args)
+        x isa Core.GotoIfNot && read!(x.cond)
+        x isa Expr && foreach(read!, x.head === :(=) ? x.args[2:end] : x.args)
     end
     read!(F.hi)
     for st in code[F.bodylo:F.bodyhi]
@@ -425,6 +431,7 @@ function boundchanges(sc::Scope, F::For)
         c isa Expr && c.head === :call || continue
         f = callee_or_nothing(sc.ci, c.args[1])
         f in (Base.setindex!, Base.setproperty!, Core.setfield!, Base.setfield!, Base.fill!, Base.materialize!, Base.copyto!) && return true
+        written[] && f === Core.setglobal! && return true
         f isa Function && !(nameof(Base.moduleroot(parentmodule(f))) in known) && return true
     end
     return false
@@ -461,10 +468,12 @@ function forloop!(lines, sc::Scope, F::For)
         k = indices(1; taken=union(sc.names, sc.outer))[1]
         push!(sc.names, k)
         emit!(lines, sc, "for (int64_t $k = 0; $k < $hi; $k++) {")
-        sc.depth += 1
-        emit!(lines, sc, "$T $var = $array[$k];")
-        sc.depth -= 1
-        sc.pending = "$var = $array[$k]"
+        if any(i -> F.var in slotreads(code[i]), F.bodylo:F.bodyhi)       # a body that never reads `x` has no `x`
+            sc.depth += 1
+            emit!(lines, sc, "$T $var = $array[$k];")
+            sc.depth -= 1
+            sc.pending = "$var = $array[$k]"
+        end
         nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
         emit!(lines, sc, "}")
         return F.exit
@@ -500,7 +509,8 @@ end
 function bound(sc::Scope, x)
     x isa Expr && x.head === :length && return string(prod(shape(valuetype(sc, x.args[1]))))
     x isa Expr && x.head === :size && return string(shape(valuetype(sc, x.args[1]))[x.args[2]])
-    return expression(sc, x)[1]
+    text, p = expression(sc, x)
+    return p <= REL ? "($text)" : text          # it stands beside `<=` in the header
 end
 
 function whileloop!(lines, sc::Scope, R::Round)
@@ -553,12 +563,17 @@ function tests(sc::Scope, i::Int)
         end
         return k <= length(code) && code[k] isa Core.GotoIfNot && !haskey(sc.whiles, k) ? k : 0
     end
+    # Does a test that holds go where the first one's jump went: into the body at `label`, or,
+    # from the middle of `a || b || c`, to another jump to that very label? The very label: two
+    # jumps out of a loop's body, a `continue` and a `break`, have the same next live statement
+    # and are not the same place.
+    hop(k, label) = (k = nextlive(sc, k); k <= length(code) && code[k] isa Core.GotoNode ? code[k].label == label : k == nextlive(sc, label))
     while true
         j = nextlive(sc, j)
         if op == "&&" && (k = nexttest(j); k != 0 && code[k].dest == target)
             push!(conds, (code[k].cond, false)); j = k + 1
         elseif code[j] isa Core.GotoNode && code[j].label > j && nextlive(sc, j + 1) == nextlive(sc, target) &&
-               (t2 = nexttest(target); t2 != 0 && nextlive(sc, t2 + 1) == nextlive(sc, code[j].label)) &&
+               (t2 = nexttest(target); t2 != 0 && hop(t2 + 1, code[j].label)) &&
                (op == "||" || length(conds) == 1)
             op = "||"
             push!(conds, (code[t2].cond, false))
@@ -607,7 +622,8 @@ function ifextent(sc::Scope, i, hi, loops)
         if code[j] isa Core.GotoIfNot && code[j].dest == target && !haskey(sc.whiles, j)
             j += 1
         elseif code[j] isa Core.GotoNode && code[j].label > j && nextlive(sc, j + 1) == nextlive(sc, target) &&
-               (t2 = nextlive(sc, target); code[t2] isa Core.GotoIfNot && nextlive(sc, t2 + 1) == nextlive(sc, code[j].label))
+               (t2 = nextlive(sc, target); code[t2] isa Core.GotoIfNot &&
+                (k = nextlive(sc, t2 + 1); code[k] isa Core.GotoNode ? code[k].label == code[j].label : k == nextlive(sc, code[j].label)))
             j = t2 + 1
             target = code[t2].dest
         else
@@ -623,8 +639,14 @@ function ifextent(sc::Scope, i, hi, loops)
 end
 
 # A `throw` or an `error`: typed as never returning, as dead code is, and not dead at all.
-throws(sc::Scope, i) = (st = sc.ci.code[i]; st isa Expr && st.head === :call && widen(sc.ci.ssavaluetypes[i]) === Union{} &&
-                                           callee_or_nothing(sc.ci, st.args[1]) in (Core.throw, Base.error))
+# In a value's place, `y = x > 0 ? sqrt(x) : error("…")`, it arrives as the right side of a store that never happens.
+# So is a call to a function of the author's that never returns, `throw_negative(x)`, the way error paths are kept out of line.
+function throws(sc::Scope, i)
+    st = consumer(sc.ci.code[i])
+    st isa Expr && st.head === :call && widen(sc.ci.ssavaluetypes[i]) === Union{} || return false
+    f = callee_or_nothing(sc.ci, st.args[1])
+    return f in (Core.throw, Base.error) || f isa Function && !(nameof(Base.moduleroot(parentmodule(f))) in known)
+end
 
 # The first statement at or after `i` that will actually be emitted (not inlined into
 # a condition, not dead, not a constant load).
@@ -758,6 +780,14 @@ function mark!(sc::Scope)
         small && !compiletime(ci.ssavaluetypes[i]) || continue
         use isa Expr && use.head === :call && duplicates(sc, u, use, i) && continue
         effect = !choice && (!pure(sc, st) || any(a -> a isa Core.SSAValue && a.id in effectful, st.args[2:end]))
+        # `ifelse(c, f!(v), 1.0)` computes both values in Julia; written in place, C would
+        # compute `f!(v)` only when `c` holds.
+        if effect && use isa Expr && use.head === :call
+            # `sincos(f!(v))` is `sin(…)` and `cos(…)`: what is written twice with no effect only costs, and the compiler sees it.
+            callee_or_nothing(ci, use.args[1]) === Base.sincos && continue
+            r = idiom(callee_or_nothing(ci, use.args[1]), widen(ci.ssavaluetypes[u]), [widen(valuetype(sc, a)) for a in use.args[2:end]])
+            r !== nothing && any(k -> use.args[k+1] == Core.SSAValue(i) && conditional(r, k), 1:length(use.args)-1) && continue
+        end
         all(k -> effect ? silent(sc, k) : inert(sc, k), i+1:u-1) || continue
         push!(sc.inlined, i)
         effect && push!(effectful, i)
@@ -930,6 +960,7 @@ function foldstores!(sc::Scope)
         st isa Expr && st.head === :call && i < length(code) || continue
         t = sc.ci.ssavaluetypes[i]
         t isa Core.Const && (t.val isa Char || t.val isa AbstractString) && continue   # a literal, written where it is used
+        t === Union{} && continue                 # `x > 0 ? sqrt(x) : error("…")`: a throw stays a statement, and the store after it is dead
         next = code[i+1]
         next isa Expr && next.head === :(=) && next.args[2] == Core.SSAValue(i) || continue
         all(u == i + 1 || code[u] isa Core.ReturnNode for u in eachindex(code) if uses(code[u], i)) || continue
@@ -963,9 +994,10 @@ function duplicates(sc::Scope, u, use::Expr, i)
     end
     f === Base.mod && T <: Integer && return true
     f in (Base.max, Base.min) && T <: Integer && return true
-    f === Base.minmax && return true                  # each argument is in the minimum and in the maximum
+    f === Base.minmax && return true                  # each argument is written in the minimum and in the maximum
     # `A[k]` on a matrix writes `k` once for each dimension (`linear`).
     f === Base.getindex && length(use.args) == 3 && isarray(valuetype(sc, use.args[2])) && ndims(valuetype(sc, use.args[2])) > 1 && return use.args[3] == Core.SSAValue(i)
+    f === Base.setindex! && length(use.args) == 4 && isarray(valuetype(sc, use.args[2])) && ndims(valuetype(sc, use.args[2])) > 1 && return use.args[4] == Core.SSAValue(i)
     r = idiom(f, T, [widen(valuetype(sc, a)) for a in use.args[2:end]])
     r === nothing || return any(k -> use.args[k+1] == Core.SSAValue(i) && twice(r, k), 1:length(use.args)-1)
     f === Base.:(==) && (isstruct(valuetype(sc, use.args[2])) || istuple(valuetype(sc, use.args[2]))) && return true
@@ -981,7 +1013,9 @@ inert(sc::Scope, k) = silent(sc, k) || (st = sc.ci.code[k]; st isa Expr && st.he
 # constant, or a statement with no C.
 function silent(sc::Scope, k)
     st = sc.ci.code[k]
-    k in sc.skipped || st === nothing || st isa GlobalRef || st isa Core.NewvarNode || st isa Core.SlotNumber ||
+    # A global that isn't `const` is the exception among reads: a callee can give it a new value,
+    # so a computation with an effect doesn't move past a read of one.
+    k in sc.skipped || st === nothing || st isa GlobalRef && Base.isconst(st.mod, st.name) || st isa Core.NewvarNode || st isa Core.SlotNumber ||
         st isa Core.SSAValue || st isa Number || st isa Expr && st.head in (:meta, :code_coverage_effect, :static_parameter)
 end
 

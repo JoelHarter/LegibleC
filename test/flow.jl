@@ -337,4 +337,154 @@ check("flow", cases; targets=[smaller, sign_, larger, quadrant, bothpos, guard, 
                               bumped, bumpedif, bumpedeach, rebinding, whileand, whileor, whilethree, ifforbreak, ifforbreak2,
                               andor, orand, andtern, valor, nested3, tailor, ternarg, ternsq, heavyside, elseifmix, whilemix, ternloop,
                               ifwhiletrue, constdead, elsecontinue, andlast])
+
+# Found on 2026-09-21 by readers who attacked the code on paper and wrote what they expected to break:
+# each of these compiled and answered wrongly, or did not compile, or was refused for no reason.
+function choiceforbound(c::Bool, n::Int64, m::Int64)
+    s = 0
+    for k in 1:(c ? n : m)
+        s += k
+    end
+    return s
+end
+function choiceboundshrink(c::Bool, n::Int64, m::Int64)
+    s = 0
+    for k in 1:(c ? n : m)
+        n -= 1
+        s += k
+    end
+    return s
+end
+function choicecompound(b::Bool, c::Bool, p::Bool, q::Bool)
+    b = b * c ? p : q
+    return b ? 1 : 2
+end
+function choicetrueside(c::Bool, n::Int64)
+    return (c ? true : n) + 10
+end
+function choicefalseside(c::Bool, x::Float64)
+    return (c ? x : false) * 2.0
+end
+function choicebitcond(n::Int64, m::Int64, x::Float64, y::Float64)
+    w = (n > 0) | (m > 0) ? x : y
+    return w + 1.0
+end
+function choicenesteddup(d::Bool, c::Bool, n::Int64, m::Int64)
+    r = d ? max(c ? n : m, 3) : 0
+    return r + 1
+end
+function choiceorand(a::Bool, b::Bool, c::Bool)
+    ok = (a || b) && c
+    return ok ? 1 : 2
+end
+function choiceorcond(a::Bool, b::Bool, x::Float64, y::Float64)
+    w = (a || b) ? x : y
+    return w + 1.0
+end
+function treeor3(a::Int64, b::Int64, c::Int64)
+    r = 0
+    if a > 0 || b > 0 || c > 0
+        r = 1
+    else
+        r = 2
+    end
+    return r
+end
+function treewhileor3(a::Int64, b::Int64, c::Int64)
+    s = 0
+    while a > 0 || b > 0 || c > 0
+        s += 1
+        a -= 1
+        b -= 2
+        c -= 3
+    end
+    return s
+end
+function treeeachunused(v::SVector{4,Float64})
+    n = 0
+    for x in v
+        n += 1
+    end
+    return n
+end
+treefail(n::Int64) = error("no branch")
+function treeunreach(n::Int64)
+    if n > 0
+        return 1
+    elseif n <= 0
+        return 2
+    end
+    treefail(n)
+end
+@noinline throwhelperbad(x::Float64) = throw(DomainError(x, "negative"))
+function throwhelper(x::Float64)
+    if x >= 0.0
+        y = sqrt(x)
+    else
+        throwhelperbad(x)
+    end
+    return y + 1.0
+end
+function throwternerr(x::Float64)
+    y = x > 0.0 ? sqrt(x) : error("x must be positive")
+    return y + 1.0
+end
+function throwternarg(x::Float64, k::Int64)
+    r = x >= 0.0 ? sqrt(x) : throw(ArgumentError("negative input"))
+    return r * k
+end
+function throwterndom(n::Int64)
+    m = n >= 0 ? n : throw(DomainError(n, "must be nonnegative"))
+    return 2m + 1
+end
+function throwifvalue(n::Int64)
+    w = if n == 1
+        0.5
+    elseif n == 2
+        0.25
+    else
+        error("unknown order")
+    end
+    return w * n
+end
+function throwassertmsg(n::Int64, x::Float64)
+    @assert n > 0 "n must be positive, got $n"
+    return x / n
+end
+function throwtrigraph(x::Float64)
+    x < 0.0 && error("negative input, what??!")
+    return sqrt(x)
+end
+function choiceifand(a::Bool, c::Bool, n::Int64, m::Int64)
+    r = 0
+    if a && mod(c ? n : m, 3) == 1
+        r = 1
+    else
+        r = 2
+    end
+    return r
+end
+@testset "hunt" begin
+    check("huntflow", [Case(choiceforbound, true, 3, 0), Case(choiceforbound, true, 5, 0), Case(choiceforbound, false, 4, 0), Case(choiceforbound, true, 0, 0),
+        Case(choiceboundshrink, true, 6, 0), Case(choiceboundshrink, false, 6, 0), Case(choiceboundshrink, true, 1, 0),
+        Case(choicecompound, false, true, false, true), Case(choicecompound, true, true, false, true), Case(choicecompound, false, false, true, true), Case(choicecompound, true, false, true, false), Case(choicecompound, true, true, true, false),
+        Case(choicetrueside, false, 5), Case(choicetrueside, true, 5), Case(choicetrueside, false, 0), Case(choicetrueside, false, -3),
+        Case(choicefalseside, true, 3.5), Case(choicefalseside, false, 3.5), Case(choicefalseside, true, -2.0), Case(choicefalseside, true, 0.0),
+        Case(choicebitcond, 1, 0, 2.0, 5.0), Case(choicebitcond, 0, 1, 2.0, 5.0), Case(choicebitcond, 0, 0, 2.0, 5.0), Case(choicebitcond, 2, 2, 2.0, 5.0),
+        Case(choicenesteddup, true, true, 7, 1), Case(choicenesteddup, true, false, 7, 1), Case(choicenesteddup, false, true, 7, 1), Case(choicenesteddup, false, false, 7, 9),
+        Case(choiceorand, true, false, true), Case(choiceorand, false, true, true), Case(choiceorand, false, false, true), Case(choiceorand, true, false, false), Case(choiceorand, true, true, true), Case(choiceorand, false, true, false),
+        Case(choiceorcond, true, false, 2.0, 5.0), Case(choiceorcond, false, true, 2.0, 5.0), Case(choiceorcond, false, false, 2.0, 5.0), Case(choiceorcond, true, true, 2.0, 5.0),
+        Case(treeor3, 1, 0, 0), Case(treeor3, 0, 1, 0), Case(treeor3, 0, 0, 1), Case(treeor3, 0, 0, 0),
+        Case(treewhileor3, 3, 1, 1), Case(treewhileor3, 0, 5, 0), Case(treewhileor3, 0, 0, 7), Case(treewhileor3, 0, 0, 0),
+        Case(treeeachunused, SVector(1.0, 2.0, 3.0, 4.0)),
+        Case(treeunreach, 3), Case(treeunreach, 0), Case(treeunreach, -4),
+        Case(throwhelper, 4.0), Case(throwhelper, 0.0),
+        Case(throwternerr, 4.0), Case(throwternerr, 2.25),
+        Case(throwternarg, 9.0, 2), Case(throwternarg, 0.0, 5),
+        Case(throwterndom, 0), Case(throwterndom, 21),
+        Case(throwifvalue, 1), Case(throwifvalue, 2),
+        Case(throwassertmsg, 4, 10.0), Case(throwassertmsg, 1, -2.5),
+        Case(throwtrigraph, 4.0), Case(throwtrigraph, 0.0)])
+    @test_throws ArgumentError csource("choiceifand", choiceifand)
+end
 end

@@ -43,9 +43,13 @@ function findchoices(sc::Scope)
     found = Choice[]
     for (s, at) in stores
         isempty(string(ci.slotnames[s])) && length(at) == 2 && get(reads, s, 0) == 1 || continue
-        T = widen(ci.slottypes[s])
-        isconcretetype(T) && T <: Number || continue
+        # One number type, as Julia has it: two sides of different types (`c ? a : u`, `c ? x : false`)
+        # make a union, which `widen` would settle into one C type by a conversion C does differently.
+        T = ci.slottypes[s]
+        T isa DataType && isconcretetype(T) && T <: Number || continue
         yes, no = at
+        # A side that throws, `x > 0 ? sqrt(x) : error("…")`, stores nothing: it is a statement, not a value.
+        any(k -> ci.ssavaluetypes[k] === Union{}, at) && continue
         jump, join = yes + 1, no + 1
         join <= length(code) && code[join] isa Core.SlotNumber && code[join].id == s || continue
         code[jump] isa Core.GotoNode && code[jump].label == join && jump < no || continue
@@ -53,6 +57,8 @@ function findchoices(sc::Scope)
         isempty(tests) && continue
         # One way in: nothing else comes to the second side or to where they meet.
         any(k -> isjump(code[k]) && !(k in tests) && k != jump && aim(code[k]) in (jump + 1, join), eachindex(code)) && continue
+        # Nor into the first side from before it: `(a || b) && c` as a value jumps from `a` straight to `c`.
+        any(k -> isjump(code[k]) && !(tests[1] <= k <= join) && tests[1] < aim(code[k]) <= join, eachindex(code)) && continue
         push!(found, Choice(tests[1], tests[2:end], yes, jump, no, join))
     end
     return sort(found; by=c -> c.join)
@@ -75,6 +81,21 @@ function holds(sc::Scope, c::Choice, effectful, held)
         v isa Expr && !(v.head === :call && pure(sc, v)) && return false
     end
     inner = [h for h in held if c.test < h.test && h.join < c.join]
+    # One inside it that needs a line of its own needs it inside a side, and an expression has no lines.
+    all(h -> h.join in sc.inlined, inner) || return false
+    # A line of its own has to have somewhere to stand. Followed through whatever it is written
+    # inside, the value must reach an ordinary statement: not a test, which has no line before
+    # it on the way round a `while` or between the parts of an `a && b`.
+    if !(c.join in sc.inlined)
+        u = c.join
+        while true
+            users = [k for k in eachindex(code) if uses(code[k], u)]
+            length(users) == 1 || break
+            u = users[1]
+            u in sc.inlined || haskey(sc.choices, u) && u != c.join || break
+        end
+        (code[u] isa Core.GotoIfNot || any(W -> W.header <= u <= W.test, values(sc.whiles))) && return false
+    end
     for k in [c.test+1:c.yes-1; c.jump+1:c.no-1]
         any(h -> h.test <= k <= h.join, inner) && continue
         k in c.more && continue
@@ -98,7 +119,11 @@ function chosen(sc::Scope, c::Choice)
     cond = isempty(c.more) ? expression(sc, code[c.test].cond) :
            (join((wrap(expression(sc, code[t].cond), LAND) for t in [c.test; c.more]), " && "), LAND)
     # `a || b` stores `a` itself where it holds, which Julia knows to be `true` only when `a` is a variable.
-    (known(c.yes, true) || isempty(c.more) && code[c.yes].args[2] == code[c.test].cond) && return wrap(cond, LOR) * " || " * wrap(side(c.no), LOR), LOR
-    known(c.no, false) && return wrap(cond, LAND) * " && " * wrap(side(c.yes), LAND), LAND
-    return wrap(cond, COND + 1) * " ? " * wrap(side(c.yes), COND + 1) * " : " * wrap(side(c.no), COND + 1), COND
+    bool = sc.ci.slottypes[code[c.yes].args[1].id] === Bool          # `&&` and `||` give 0 or 1 in C: right for a truth value only
+    bool && (known(c.yes, true) || isempty(c.more) && code[c.yes].args[2] == code[c.test].cond) && return wrap(cond, LOR) * " || " * wrap(side(c.no), LOR), LOR
+    bool && known(c.no, false) && return wrap(cond, LAND) * " && " * wrap(side(c.yes), LAND), LAND
+    # The condition is bracketed unless it is a comparison or a single thing: `(a | b) ? x : y`,
+    # `(b * c) ? p : q`, as a person writes it and as clang asks.
+    cond = cond[2] >= UNARY || cond[2] in (REL, EQ) ? cond[1] : "(" * cond[1] * ")"
+    return cond * " ? " * wrap(side(c.yes), COND + 1) * " : " * wrap(side(c.no), COND + 1), COND
 end

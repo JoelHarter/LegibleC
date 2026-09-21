@@ -133,4 +133,63 @@ end
     @test occursin("int64_t before = counter + 1;\n", src) && occursin("bumpcounter(n);", src)
     @test occursin("double prev = 0.0;", src) && occursin("prev += x * k;", src) && !occursin("temp", src)
 end
+
+# Found on 2026-09-21 by readers who attacked the code on paper and wrote what they expected to break:
+# each of these compiled and answered wrongly, or did not compile, or was refused for no reason.
+lowerboundlimit::Int64 = 0
+function lowerbound(n::Int64)
+    global lowerboundlimit = n
+    s = 0
+    for k in 1:lowerboundlimit
+        global lowerboundlimit -= 1
+        s += k
+    end
+    return s + lowerboundlimit
+end
+lowercomptotal::Int64 = 0
+function lowercomppush(n::Int64)
+    global lowercomptotal += n
+    return n
+end
+function lowercompound(n::Int64)
+    global lowercomptotal = 10
+    global lowercomptotal += lowercomppush(n)
+    return lowercomptotal
+end
+lowerreadtally::Int64 = 0
+function lowerreadbump(n::Int64)
+    global lowerreadtally += n
+    return n
+end
+function lowerreadfirst(n::Int64)
+    global lowerreadtally = 10
+    return 1 + lowerreadtally + lowerreadbump(n)^2
+end
+lowerswapp::Float64 = 0.0
+lowerswapq::Float64 = 0.0
+function lowerswap(x::Float64, y::Float64)
+    global lowerswapp = x
+    global lowerswapq = y
+    lowerswapp, lowerswapq = lowerswapq, lowerswapp
+    return lowerswapp - 2.0 * lowerswapq
+end
+arrayglobalticks::Int64 = 0
+function arrayglobaltick()
+    global arrayglobalticks += 1
+    return arrayglobalticks
+end
+function arrayglobalstore(x::Float64)
+    global arrayglobalticks = 0
+    M = MMatrix{2,3,Float64}(undef)
+    fill!(M, 0.0)
+    M[arrayglobaltick()] = x
+    return M[1] + 10.0 * M[2] + 100.0 * M[3] + 1000.0 * M[4] + 10000.0 * arrayglobalticks
+end
+@testset "hunt" begin
+    check("huntglobal", [Case(lowerbound, 6), Case(lowerbound, 1), Case(lowerbound, 0), Case(lowerbound, 9),
+        Case(lowercompound, 3), Case(lowercompound, -4), Case(lowercompound, 0),
+        Case(lowerreadfirst, 3), Case(lowerreadfirst, -2), Case(lowerreadfirst, 0),
+        Case(lowerswap, 1.0, 2.0), Case(lowerswap, 5.0, -1.0), Case(lowerswap, 3.0, 3.0),
+        Case(arrayglobalstore, 3.0), Case(arrayglobalstore, 5.0)])
+end
 end
