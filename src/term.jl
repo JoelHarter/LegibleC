@@ -177,6 +177,7 @@ end
 
 # `-a`, `~a`, `!a`, by the same rule.
 function prefix(sym, a::Term, J)
+    sym == "!" && a.kind === :prefix && a.text == "!" && return a.parts[1]            # `!(!a)` is `a`: Julia's `!` takes a truth value only
     sym == "!" && return Term(:prefix, sym, [a], Bool, Bool, UNARY, limits(Bool))
     sym == "-" && leading(a) && bare(a, UNARY) && return positive(a)                  # `-(-x)` is `x`, exactly
     C = promoted(a.c)

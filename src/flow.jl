@@ -782,8 +782,9 @@ function opposite(sc::Scope, conds, op)
             return string(render(sc, x.id, Expr(:call, GlobalRef(Base, flipped[f]), st.args[2:3]...)))
         end
     end
-    text = condition(sc, conds, op)
-    return "!" * (length(conds) == 1 && occursin(r"^[\w.>\[\]-]+$", text) ? text : "($text)")
+    length(conds) == 1 || return "!(" * condition(sc, conds, op) * ")"
+    t = expression(sc, x)
+    return string(conds[1][2] ? t : prefix("!", t, Bool))          # the opposite of `!a` is `a`
 end
 
 # A condition from its pieces, joined by `&&` or `||`.
