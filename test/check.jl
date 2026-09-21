@@ -153,11 +153,24 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
             @test agree(got, want) || (println("$(nameof(c.f))$(c.args): C gave $got, Julia $want"); false)
         end
     end
-    return read(path, String)
+    return snap(name, read(path, String))
 end
 
 # Transpile and compile only, for a test that checks the text of the C: every file
 # written, headers first and the functions last, as one string.
+# With `LEGIBLEC_SNAP` set to a folder, every C text the tests generate is also written there,
+# numbered in order: for comparing the output of two versions of the transpiler byte for byte,
+# which is how a change meant to alter nothing is shown to have altered nothing.
+const snapped = Ref(0)
+function snap(name, text)
+    dir = get(ENV, "LEGIBLEC_SNAP", "")
+    isempty(dir) && return text
+    mkpath(dir)
+    snapped[] += 1
+    write(joinpath(dir, lpad(snapped[], 4, '0') * "_" * name * ".c"), text)
+    return text
+end
+
 function csource(name, targets...; kw...)
     dir = mktempdir()
     own(g) = g isa Function && !(nameof(Base.moduleroot(parentmodule(g))) in (:Core, :Base, :LinearAlgebra, :StaticArrays))
@@ -172,5 +185,5 @@ function csource(name, targets...; kw...)
         endswith(f, ".c") && run(`cc $flags -c $(joinpath(out, f)) -o $(joinpath(dir, f * ".o"))`)
     end
     ordered = [filter(==("helper.h"), files); filter(f -> endswith(f, ".h") && f != "helper.h", files); filter(f -> endswith(f, ".c") && f != last, files); [last]]
-    return join((read(joinpath(out, f), String) for f in ordered), "\n")
+    return snap(name, join((read(joinpath(out, f), String) for f in ordered), "\n"))
 end

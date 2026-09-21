@@ -35,6 +35,8 @@ struct While
     exit::Int
 end
 
+include("tree.jl")      # what the jumps between them mean: decided there, written here
+
 # Recognise every `for` loop. The idiom, with `r` the range and `s` the hidden state
 # slot, is:  s = iterate(r); %a = s; %b = %a === nothing; %c = not_int(%b);
 # goto exit if not %c; %d = s; var = getfield(%d, 1); %e = getfield(%d, 2); body;
@@ -124,9 +126,11 @@ iscall(x, f) = x isa Expr && x.head === :call && (x.args[1] === f || (x.args[1] 
 # The inferred type of an IR value without a Scope (used before one exists).
 valuetype_ir(ci, x) = x isa Core.SSAValue ? ci.ssavaluetypes[x.id] : x isa Core.SlotNumber ? ci.slottypes[x.id] : typeof(x)
 
-# Emit statements `lo` through `hi` as structured C.
-function block!(lines, sc::Scope, lo::Int, hi::Int)
+# Emit statements `lo` through `hi` as structured C. What each jump is was decided before
+# anything was written (`tree.jl`); nothing is decided here.
+function block!(lines, sc::Scope, lo::Int, hi::Int; except::Int=0)
     code = sc.ci.code
+    tree = sc.tree
     i = lo
     while i <= hi
         # A new Julia line: a blank line first, then — at the top level — this is where
@@ -148,15 +152,18 @@ function block!(lines, sc::Scope, lo::Int, hi::Int)
             i = hi_ + 1
         elseif haskey(sc.fors, i)
             i = forloop!(lines, sc, sc.fors[i])
-        elseif haskey(sc.whiles, i)
-            i = whileloop!(lines, sc, sc.whiles[i])
+        elseif haskey(sc.whiles, i) && i != except
+            i = whileloop!(lines, sc, tree.rounds[i])
         elseif i in sc.skipped
             i += 1
-        elseif code[i] isa Core.GotoIfNot
-            i = ifelse!(lines, sc, i, hi)
-        elseif code[i] isa Core.GotoNode
-            jump!(lines, sc, code[i].label)
+        elseif haskey(tree.ifs, i)
+            i = ifelse!(lines, sc, tree.ifs[i])
+        elseif haskey(tree.exits, i)
+            sc.current = i
+            emit!(lines, sc, tree.exits[i] * ";")
             i += 1
+        elseif isjump(code[i])
+            error("internal: the jump at statement $i (line $(sc.stmtline[i])) was accounted for as $(get(tree.claimed, i, :nothing)) and met while writing; please report it")
         else
             i in sc.skipped || annotate!(lines, sc, sc.stmtline[i])
             i in sc.skipped || statement!(lines, sc, i, code[i])
@@ -164,21 +171,6 @@ function block!(lines, sc::Scope, lo::Int, hi::Int)
         end
     end
     return i
-end
-
-# A jump that isn't part of an `if`: `break` or `continue` of the innermost loop it
-# belongs to.
-function jump!(lines, sc::Scope, label)
-    if !isempty(sc.loops)
-        brk, cont = sc.loops[end]
-        label == brk && return emit!(lines, sc, "break;")
-        label == cont && return emit!(lines, sc, "continue;")
-        # C's `break` leaves one loop. Julia's leaves the whole nest of a `for i in 1:n, j in
-        # 1:m`, which came out as a `break` of the inner loop alone: a wrong answer.
-        any(label == b for (b, _) in sc.loops[1:end-1]) &&
-            throw(ArgumentError("a `break` inside `for i in …, j in …` leaves every loop of the nest in Julia, and C's `break` leaves one (line $(sc.stmtline[sc.current])); write the loops one inside the other and leave with a flag, or put the nest in a function of its own and `return`"))
-    end
-    throw(ArgumentError("unstructured jump to statement $label"))
 end
 
 # Emit the body of a construct one level deeper, with `result` available afresh
@@ -468,13 +460,11 @@ function forloop!(lines, sc::Scope, F::For)
         k = indices(1; taken=union(sc.names, sc.outer))[1]
         push!(sc.names, k)
         emit!(lines, sc, "for (int64_t $k = 0; $k < $hi; $k++) {")
-        push!(sc.loops, (F.exit, F.next))
         sc.depth += 1
         emit!(lines, sc, "$T $var = $array[$k];")
         sc.depth -= 1
         sc.pending = "$var = $array[$k]"
         nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
-        pop!(sc.loops)
         emit!(lines, sc, "}")
         return F.exit
     end
@@ -495,14 +485,12 @@ function forloop!(lines, sc::Scope, F::For)
         emit!(lines, sc, "for ($T $count = $lo; $count $cmp $hi; $count += $(F.step)) {")
     end
     sc.pending = "$var = $lo; $var <= $hi"
-    push!(sc.loops, (F.exit, F.next))
     if count != var
         sc.depth += 1
         emit!(lines, sc, "$T $var = $count;")
         sc.depth -= 1
     end
     nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
-    pop!(sc.loops)
     emit!(lines, sc, "}")
     return F.exit
 end
@@ -514,34 +502,22 @@ function bound(sc::Scope, x)
     return expression(sc, x)[1]
 end
 
-function whileloop!(lines, sc::Scope, W::While)
+function whileloop!(lines, sc::Scope, R::Round)
     code = sc.ci.code
+    W = R.W
     annotate!(lines, sc, sc.stmtline[W.header])
-    # The condition can go in the `while (…)` only if everything in the header folds
-    # into it; otherwise test it at the top of the body.
-    # `while a && b`, `while a || b`: the same merged tests an `if` opens with.
-    conds, op, target, bodylo = tests(sc, W.test)
-    target == W.exit || throw(ArgumentError("a `while` whose condition doesn't lead out of it (line $(sc.stmtline[W.header]))"))
-    compound = length(conds) > 1
-    inline = all(i -> i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef || code[i] isa Core.SlotNumber ||
-                      code[i] isa Core.SSAValue || code[i] isa Core.GotoIfNot || code[i] isa Core.GotoNode || code[i] isa Core.NewvarNode, W.header:bodylo-1)
-    compound && !inline && throw(ArgumentError("a `while a && b` whose condition needs work of its own, array work say, before it can be tested (line $(sc.stmtline[W.header])); test the first part in the `while` and the rest in the body, with `break`"))
-    if inline
-        cond = code[W.test].cond !== true ? condition(sc, conds, op) :
-               compound && op == "&&" ? condition(sc, conds[2:end], op) : "true"     # `while true`
+    if R.inline
+        cond = code[W.test].cond !== true ? condition(sc, R.conds, R.op) :
+               length(R.conds) > 1 && R.op == "&&" ? condition(sc, R.conds[2:end], R.op) : "true"     # `while true`
         emit!(lines, sc, "while ($cond) {")
-        push!(sc.loops, (W.exit, W.backedge))
-        nested!(lines, sc, bodylo, W.backedge - 1; loop=true)
+        nested!(lines, sc, R.bodylo, W.backedge - 1; loop=true)
     else
+        # The condition has statements of its own, which can't stand in a `while (…)`: they
+        # go inside the braces, and the test after them.
         emit!(lines, sc, "while (true) {")
-        push!(sc.loops, (W.exit, W.backedge))
-        enter!(sc, W.header, W.backedge - 1, true)      # the condition's statements are inside the braces too
+        enter!(sc, W.header, W.backedge - 1, true)
         sc.depth += 1
-        # The header's statements, emitted as a block — with this loop taken out of the
-        # table meanwhile, or `block!` would start the loop again at its header.
-        delete!(sc.whiles, W.header)
-        block!(lines, sc, W.header, W.test - 1)
-        sc.whiles[W.header] = W
+        block!(lines, sc, W.header, W.test - 1; except=W.header)
         emit!(lines, sc, "if (!($(condition(sc, [(code[W.test].cond, false)], "&&")))) {")
         emit!(lines, sc, "    break;")
         emit!(lines, sc, "}")
@@ -551,7 +527,6 @@ function whileloop!(lines, sc::Scope, W::While)
         nested!(lines, sc, W.test + 1, W.backedge - 1; braces=false)
         pop!(sc.path)
     end
-    pop!(sc.loops)
     emit!(lines, sc, "}")
     return W.backedge + 1
 end
@@ -595,55 +570,23 @@ end
 
 # An `if`, starting at the GotoIfNot at `i`, within a block that ends at `hi`.
 # Returns the index of the first statement after the whole construct.
-function ifelse!(lines, sc::Scope, i::Int, hi::Int; chained::Bool=false)
-    code = sc.ci.code
-    annotate!(lines, sc, sc.stmtline[i])
-    conds, op, target, j = tests(sc, i)
-    thenlo = j
-    # The then-block runs to the else target. If it ends by jumping past that, there's
-    # an else-block up to the jump's destination.
-    thenhi = target - 1
-    elselo = elsehi = 0
-    after = target
-    last = lastlive(sc, thenlo, thenhi)
-    if last !== nothing && code[last] isa Core.GotoNode && code[last].label > target && code[last].label <= hi + 1 &&
-       !any(code[last].label in l for l in sc.loops)
-        elselo, elsehi = target, code[last].label - 1
-        after = code[last].label
-        push!(sc.skipped, last)
-    elseif last !== nothing && code[last] isa Core.GotoNode && code[last].label == target
-        # `c && (x = 1)` in the middle of a body ends its branch with a jump to the very place
-        # the branch was going. Exactly that place: "the same next live statement" is not
-        # the same thing, since it sees straight through a loop's own machinery.
-        push!(sc.skipped, last)
-    elseif last !== nothing && code[last] isa Core.GotoNode && !isempty(sc.loops) && code[last].label == sc.loops[end][2] &&
-           code[last].label != sc.loops[end][1] && nextlive(sc, code[last].label) == nextlive(sc, target)
-        # A jump to the loop's next iteration from the end of the body — how `x && (n += 1)`
-        # lowers as the last statement of a loop — is where the body was going anyway. Of
-        # the innermost loop only: an inner loop that ends an outer loop's body has its exit
-        # at the outer one's next-pass point, and a jump there is its `break`, not nothing.
-        push!(sc.skipped, last)
-    end
-    cond = condition(sc, conds, op)
-    emit!(lines, sc, (chained ? "} else if (" : "if (") * cond * ") {")
-    nested!(lines, sc, thenlo, thenhi)
-    if elselo > 0
-        first = nextlive(sc, elselo)
-        # An else-block that is exactly one `if` reaching the same end is an `else if`.
-        if first <= elsehi && code[first] isa Core.GotoIfNot && !haskey(sc.whiles, first) && !haskey(sc.fors, first) &&
-           ifextent(sc, first, elsehi) == after
-            ifelse!(lines, sc, first, elsehi; chained=true)
-            return after
-        end
+function ifelse!(lines, sc::Scope, B::Branch; chained::Bool=false)
+    annotate!(lines, sc, sc.stmtline[B.i])
+    emit!(lines, sc, (chained ? "} else if (" : "if (") * condition(sc, B.conds, B.op) * ") {")
+    nested!(lines, sc, B.thenlo, B.thenhi)
+    if B.chain != 0
+        ifelse!(lines, sc, sc.tree.ifs[B.chain]; chained=true)      # an else that is exactly one `if`: `else if`
+        return B.after
+    elseif B.elselo > 0
         emit!(lines, sc, "} else {")
-        nested!(lines, sc, elselo, elsehi)
+        nested!(lines, sc, B.elselo, B.elsehi)
     end
     emit!(lines, sc, "}")
-    return after
+    return B.after
 end
 
 # Where the `if` starting at `i` ends, computed without emitting anything.
-function ifextent(sc::Scope, i, hi)
+function ifextent(sc::Scope, i, hi, loops)
     code = sc.ci.code
     target = code[i].dest
     j = i + 1
@@ -661,7 +604,7 @@ function ifextent(sc::Scope, i, hi)
     end
     last = lastlive(sc, j, target - 1)
     if last !== nothing && code[last] isa Core.GotoNode && code[last].label > target && code[last].label <= hi + 1 &&
-       !any(code[last].label in l for l in sc.loops)
+       !any(code[last].label in l for l in loops)
         return code[last].label
     end
     return target

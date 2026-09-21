@@ -111,7 +111,6 @@ mutable struct Scope
     skipped::Set{Int}                   # statements consumed by a construct; never emitted
     hidden::Set{Int}                    # slots never declared: iterator state, loop variables, aliases
     mutated::Set{Int}                   # array slots written through setindex!
-    loops::Vector{Tuple{Int, Int}}      # enclosing loops: (break target, continue target)
     fors::Dict{Int, Any}
     whiles::Dict{Int, Any}
     prog::Program
@@ -153,6 +152,7 @@ mutable struct Scope
     pending::String
     outer::Set{String}
     lets::Dict{Int, Vector{NTuple{3, Int}}}   # the source's `let` blocks: first statement -> (first, last, the `let` line), outermost first
+    tree::Any                           # the control flow, recovered and checked before anything is written (`tree.jl`)
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
@@ -172,10 +172,10 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
     stmtline = statementlines(mi, length(ci.code))   # from the IR, so it works without the file
     return Scope(ci, names, result, result, false, limit, blocked, 0, Dict{Int, String}(), prog.helpers, prog.headers,
                  Dict{Int, Type}(), slotshapes, Union{}, src, stmtline, src === nothing ? 0 : src.first - 1, copycode,
-                 0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Tuple{Int, Int}[], Dict{Int, Any}(), Dict{Int, Any}(), prog,
+                 0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}())
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing)
 end
 
 include("flow.jl")
@@ -262,6 +262,7 @@ function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templ
     end
     analyze!(sc)
     sc.lets = findlets(sc)
+    sc.tree = recover(sc)
     # `return a` from every exit — or `a = …` as the last line — with `a` a local of the
     # author's living in `out` from the start: then the out parameter is `a` itself.
     s = returnedslot(ci)
