@@ -1970,3 +1970,60 @@ when a failed test must reach an `else`. Correct C for it needs a flag or the
 `else` written twice, and which is a question about what the output should look
 like, so it waits for a decision. The message says how to write the Julia
 meanwhile.
+
+## 2026-09-21 — One way out, one table, and what lowering adds
+
+Four smaller things from the same day, each an answer to "what is the one fix
+here".
+
+**One way out.** Refusals were thrown from about a hundred places, forty of
+them naming "statement 12", a number that means something only inside the
+transpiler, and a mistake of the transpiler's own surfaced as a Julia stack of
+its insides. Everything now leaves through `cfunction`. A refusal keeps its
+message and gains the function, the file and line, and the Julia line itself;
+the statement's number is how the line is found, and is then dropped. Anything
+that is not a refusal is a `Fault`: it says the mistake is the transpiler's,
+names where it was working, and keeps the error underneath and its stack in
+`LegibleC.failure[]`. The first `Fault` it reported was a real one,
+`MMatrix{2,3,Float64}(undef)`, within the hour.
+
+**One table for scalar functions** (`src/idiom.jl`). `isodd`, `inv(x)`,
+`deg2rad`, `>>>`, `eps(x)`, `ifelse` and the like are each one C expression of
+their arguments. A row says what the function applies to and gives the C with
+placeholders. The rule that an operand written twice must not be an expression
+written in place had been repeated by hand for `mod`, `max`, `x^2`; a row
+answers it from its own text. The few that need a small function (`gcd`, `lcm`,
+`isqrt`, `sind`, `cosd`, `tand`) are reached through the same table. Two
+details worth keeping: `gcd` works on unsigned magnitudes so that the type's
+least value, which has no negative, needs no case of its own; and the degree
+functions say their zeros outright, because under `-ffast-math`, which is the
+setting the C is written for, a compiler may turn `(90.0 - a) * k` into
+`90.0 * k - a * k`, and that is 3e-17 at `a == 90.0`.
+
+**A throw stops the program saying why.** `throw`, `error` and `@assert` came
+out as an empty `if`. A throw is typed as never returning, exactly as dead code
+is, and was dropped with it. It is live now, for the walk and the tree alike,
+and is written the way the solvers' helpers already failed: the exception's
+name and what it was made from on `stderr`, then `abort()`. Julia that throws
+is still outside what the C is checked against; this is for the person who
+meets it anyway. An `if` with nothing to do where it holds and something where
+it doesn't, which is how `@assert` arrives, is written as the opposite test,
+turned round only where that is exact: `==` and `!=` always, the ordered
+comparisons on integers, and `!(…)` otherwise, since `!(a < b)` holds for a NaN
+and `a >= b` does not.
+
+**What lowering adds is no part of the C.** `global count += 1` and
+`local prev::Float64` lower alike: a variable of Julia's own making holds the
+value, a test asks whether it is already of the declared type, and a
+conversion waits on the other side. Where Julia has decided the test, it and
+the dead conversion are folded, and the tree accounts for the jumps as
+decided. A hidden variable stored once and read once into a plain store, with
+nothing between that does anything, is another name for what was stored. What
+is left is the store the author wrote: `count += k;`. A scalar global that is
+written is not `const`, and a function that writes one has an effect, so
+nothing is moved past a call to it.
+
+One thing this sharpened and did not settle: a global's first value in C is
+the value it has at the moment it is transpiled. For a constant that is the
+only sensible rule. For a counter it means that transpiling after a run starts
+the C at 15 and not at the `0` in the source. It is on the todo as a decision.
