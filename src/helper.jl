@@ -57,7 +57,7 @@ const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det
                          "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
 const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
 # The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
-const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp", "minN", "maxN"])
+const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp", "minN", "maxN", "shl", "shr", "shru"])
 
 """
     helpername(op, types; pointwise=false) -> String
@@ -369,6 +369,27 @@ function integerhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
     return name
 end
 
+# `x << n`, `x >> n`, `x >>> n` with a count that isn't known to lie within the width. Julia
+# defines every count: once it reaches the width every bit is gone (or, for `>>` on a negative
+# number, every bit is the sign), and a negative count shifts the other way. C defines none of
+# that, and the hardware quietly takes the count modulo the width, so `5 << 64` was 5. Julia
+# itself pays a compare and a select for its rule; so does the helper. A count that is known
+# to be in range, a literal or a loop variable over a literal range, is a plain C shift.
+function shifthelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
+    name = string(op) * (E === Int64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t, u, bits = ctype(E), ctype(unsigned(E)), 8 * sizeof(E)
+    left(n) = "($t)(($u)x << $n)"                                     # through the unsigned type: no overflow to speak of
+    right(n) = op === :shru ? "($t)(($u)x >> $n)" : "($t)(x >> $n)"  # `>>` keeps the sign, `>>>` brings in zeros
+    gone = op === :shr && E <: Signed ? "(x < 0 ? -1 : 0)" : "0"
+    body = op === :shl ? ["if (n < 0) {", "    return n > -$bits ? $(right("-n")) : $(E <: Signed ? "(x < 0 ? -1 : 0)" : "0");", "}", "return n < $bits ? $(left("n")) : 0;"] :
+                         ["if (n < 0) {", "    return n > -$bits ? $(left("-n")) : 0;", "}", "return n < $bits ? $(right("n")) : $gone;"]
+    sym = op === :shl ? "<<" : op === :shr ? ">>" : ">>>"
+    helpers[name] = definition(t, name, ["$t x", "int64_t n"], body;
+                               doc=["x $sym n for any n, as Julia defines it: nothing left once n reaches the width, and the other way for a negative n", "returns x $sym n"])
+    return name
+end
+
 # `min(a, b)` and `max(a, b)` on floats: Julia's give NaN when either is one, and C's `fmin`
 # and `fmax` give the other number. The compiler setting keeps NaN alive on purpose, so the
 # difference is an answer and not rounding. `minN` and `maxN`, N for the NaN they keep: the
@@ -450,6 +471,14 @@ function modhelper!(helpers::Dict{String, String}, E::Type)
     name = "modulo" * (E === Float64 ? "" : abbrev(E))
     haskey(helpers, name) && return name
     t = ctype(E)
+    if E <: Integer
+        # On integers the idiom `((x % y) + y) % y` overflows once `y` is past half the type's
+        # range, and `x % -1` traps at the type's least value. This is Julia's own rule instead.
+        helpers[name] = definition(t, name, ["$t x", "$t y"],
+            [E <: Signed ? ["if (y == -1) {", "    return 0;", "}"] : String[]; "$t r = x % y;"; "return r != 0 && (r < 0) != (y < 0) ? r + y : r;"];
+            doc=["remainder with the divisor's sign, as Julia's mod", "returns mod(x, y)"])
+        return name
+    end
     f = E === Float32 ? "f" : ""
     zero = E === Float32 ? "0.0f" : "0.0"
     body = ["$t r = fmod$f(x, y);",

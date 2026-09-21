@@ -203,7 +203,7 @@ end
     @test occursin("(k % 2 != 0 ? 1 : 0) + ((k + 1) % 2 == 0 ? 10 : 0)", src)
     @test occursin("return 1.0 / x + 1.0 / k + 1.0 / (x + 1.0);", src)
     @test occursin("d * (LEGIBLEC_PI / 180)", src) && occursin("* (180 / LEGIBLEC_PI)", src)
-    @test occursin("(int64_t)((uint64_t)a >> n)", src)
+    @test occursin("shru(a, n) + (int64_t)((uint64_t)a >> 3)", src)      # a count that could be anything goes through Julia's rule; a literal in range is C's shift
     @test occursin("return ulp(x) + ulp(2.0 * x) + ulp(x * x + 1.0);", src)      # a helper: the gap is still finite at the largest float
     @test occursin("(c ? a : b) + (a > b ? a - b : b - a)", src)
     @test occursin("return INT64_MIN + 1;", src)

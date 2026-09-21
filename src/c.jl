@@ -2172,10 +2172,12 @@ function rendered(sc::Scope, i, ex::Expr)
     # they are, and C converts the signed one to unsigned first, so that `-1 < 1u` is false.
     # Harmless where the signed type holds every value of the unsigned one, and for a literal
     # that isn't negative. Refused otherwise: there is no C operator that means what Julia means.
-    function signedness(what)
+    # For `div`, `rem` and `mod` whatever the widths: Julia has methods of their own for a signed
+    # by an unsigned, with a result type and a rule that no one C expression gives.
+    function signedness(what; anywidth::Bool=false)
         Ts = [(a, valuetype(sc, a)) for a in args]
-        any(((a, U),) -> U <: Unsigned && sizeof(U) >= 4 &&
-                         any(((b, S),) -> S <: Signed && sizeof(U) >= sizeof(S) && !(literal(sc, b) isa Integer && literal(sc, b) >= 0), Ts), Ts) &&
+        any(((a, U),) -> U <: Unsigned && (anywidth || sizeof(U) >= 4) &&
+                         any(((b, S),) -> S <: Signed && (anywidth || sizeof(U) >= sizeof(S)) && !(literal(sc, b) isa Integer && literal(sc, b) >= 0), Ts), Ts) &&
             throw(ArgumentError("$what between a signed and an unsigned integer ($(join((string(X) for (_, X) in Ts), ", "))): Julia takes them as the numbers they are, C converts the signed one to unsigned first, and a negative one goes wrong. Convert one side so that both are alike, `Int64(u)` or `UInt64(s)` (statement $i)"))
     end
     floating = T <: AbstractFloat
@@ -2294,7 +2296,28 @@ function rendered(sc::Scope, i, ex::Expr)
         throw(ArgumentError("a product of several arrays that comes to a number, `v' * A * w`, `s * v' * w`: write the array part first and then the number, `dot(v, A * w)`, `s * dot(v, w)` (statement $i)"))
     f === Base.:+ && return n == 1 ? expression(sc, args[1]) : op("+", ADD)
     f === Base.:- && return n == 1 ? unary("-") : op("-", ADD)
-    f === Base.:* && all(a -> valuetype(sc, a) === Bool, args) && return op("&", BAND)       # `b * c` on truth values is `and`; GCC warns of a `*` in a condition
+    f === Base.:* && all(a -> valuetype(sc, a) === Bool, args) && return op("&", BAND)
+    # A truth value times a float: Julia's `false` is a strong zero, `false * Inf` and `false * NaN`
+    # are 0.0, where C's `0 * INFINITY` is NaN. So it is a choice, which is what the author means by it.
+    if f === Base.:* && floating && any(a -> valuetype(sc, a) === Bool, args)
+        text, p = expression(sc, args[1])
+        ty = valuetype(sc, args[1])
+        wrapped(t, q, prec) = q < prec ? "($t)" : t
+        for a in args[2:end]
+            t2, p2 = expression(sc, a)
+            ty2 = valuetype(sc, a)
+            R = promote_type(ty, ty2)
+            if ty === Bool && ty2 <: AbstractFloat
+                text, p = "($(wrapped(text, p, UNARY)) ? $(wrapped(t2, p2, 4)) : $(value(sc, zero(R))))", PRIMARY
+            elseif ty2 === Bool && ty <: AbstractFloat
+                text, p = "($(wrapped(t2, p2, UNARY)) ? $(wrapped(text, p, 4)) : $(value(sc, zero(R))))", PRIMARY
+            else
+                text, p = "$(wrapped(text, p, MUL)) * $(wrapped(t2, p2, MUL + 1))", MUL
+            end
+            ty = R
+        end
+        return text, p
+    end       # `b * c` on truth values is `and`; GCC warns of a `*` in a condition
     f === Base.:* && return op("*", MUL)
     if f === Base.:/
         if all(a -> valuetype(sc, a) <: Integer, args)
@@ -2311,11 +2334,21 @@ function rendered(sc::Scope, i, ex::Expr)
         f = Base.:/
         return render(sc, i, Expr(:call, f, args...))
     end
-    f in (Base.div, Base.rem, Base.mod) && signedness("`$(nameof(f))`")
-    # `div` on floats is the quotient with its fraction dropped; `fld` and `cld` round it down and up.
-    if f in (Base.div, Base.fld, Base.cld) && floating && n == 2
+    f in (Base.div, Base.rem, Base.mod) && signedness("`$(nameof(f))`"; anywidth=true)
+    # `div` on floats is Julia's own formula, `round((x - rem(x, y)) / y)`: the part of `x` that `y`
+    # goes into, divided out. It is NaN where the remainder is, `div(1.0, 0.0)`, which
+    # `trunc(x / y)` is not. `fld` takes the remainder with the divisor's sign, which is `mod`.
+    # On `Float32` Julia has another method: the quotient in `Float64`, its fraction dropped (or
+    # rounded down, for `fld`), and back. `div(1.0f0, 0.0f0)` is `Inf` there, and NaN in `Float64`.
+    if f in (Base.div, Base.fld) && T === Float32 && n == 2 && all(a -> valuetype(sc, a) <: Real, args)
         push!(sc.headers, "math.h")
-        return "$(mathname(T, f === Base.div ? "trunc" : f === Base.fld ? "floor" : "ceil"))($(op("/", MUL)[1]))", PRIMARY
+        return "(float)$(f === Base.div ? "trunc" : "floor")((double)$(operand(sc, args[1], UNARY)) / (double)$(operand(sc, args[2], UNARY)))", UNARY
+    end
+    if f in (Base.div, Base.fld) && floating && n == 2 && all(a -> valuetype(sc, a) <: Real, args)
+        push!(sc.headers, "math.h")
+        x, y = expression(sc, args[1])[1], expression(sc, args[2])[1]
+        left = f === Base.div ? "$(mathname(T, "fmod"))($x, $y)" : "$(modhelper!(sc.helpers, T))($x, $y)"
+        return "$(mathname(T, "rint"))(($(operand(sc, args[1], ADD)) - $left) / $(operand(sc, args[2], MUL; right=true)))", PRIMARY
     end
     f === Base.div && return op("/", MUL)
     f === Base.rem && return floating ? fn("fmod") : op("%", MUL)
@@ -2323,9 +2356,15 @@ function rendered(sc::Scope, i, ex::Expr)
         # On floats, Julia's `mod` takes the divisor's sign where C's `fmod` takes the
         # dividend's: a helper (`modhelper!`).
         floating && (push!(sc.headers, "math.h"); return fn(modhelper!(sc.helpers, T), ""))
-        T <: Unsigned && return op("%", MUL)          # nothing is negative: `mod` is `rem`, and `+ b` could overflow
-        a, b = operand(sc, args[1], MUL), operand(sc, args[2], MUL; right=true)
-        return "(($a % $b) + $b) % $b", MUL
+        (T <: Unsigned || T === Bool) && return op("%", MUL)          # nothing is negative: `mod` is `rem`, and `+ b` could overflow
+        # By a literal well inside the range, `mod(k, 3)`, it is the idiom a person writes. By anything
+        # else the idiom can overflow in `+ b`, so it is the helper that says Julia's rule.
+        d = literal(sc, args[2])
+        if d isa Integer && 0 < abs(big(d)) <= big(typemax(T)) ÷ 2
+            a, b = operand(sc, args[1], MUL), operand(sc, args[2], MUL; right=true)
+            return "(($a % $b) + $b) % $b", MUL
+        end
+        return "$(modhelper!(sc.helpers, T))($(expression(sc, args[1])[1]), $(expression(sc, args[2])[1]))", PRIMARY
     end
     if f === Base.literal_pow
         p = literal(sc, args[3])
@@ -2375,8 +2414,22 @@ function rendered(sc::Scope, i, ex::Expr)
     f === Base.:& && return op("&", BAND)
     f === Base.:| && return op("|", BOR)
     f === Base.xor && return op("^", BXOR)
-    f === Base.:<< && return op("<<", SHIFT)
-    f === Base.:>> && return op(">>", SHIFT)
+    if f in (Base.:<<, Base.:>>, Base.:>>>) && n == 2 && T <: Base.BitInteger64 && valuetype(sc, args[2]) <: Union{Bool, Base.BitInteger64}
+        # A count known to lie within the width is C's own shift. Any other goes through a helper
+        # that says what Julia says for it (`shifthelper!`).
+        bits = 8 * sizeof(T)
+        c = literal(sc, args[2])
+        if c isa Integer ? 0 <= c < bits : counted(sc, args[2], bits)
+            f === Base.:<< && return op("<<", SHIFT)
+            f === Base.:>> && return op(">>", SHIFT)
+            T <: Unsigned && return op(">>", SHIFT)
+            return "($(ctype(T)))(($(ctype(unsigned(T))))$(operand(sc, args[1], UNARY)) >> $(operand(sc, args[2], SHIFT; right=true)))", UNARY
+        end
+        h = shifthelper!(sc.helpers, f === Base.:<< ? :shl : f === Base.:>> ? :shr : :shru, T)
+        count = expression(sc, args[2])[1]
+        valuetype(sc, args[2]) === UInt64 && (count = "$(operand(sc, args[2], REL)) < $bits ? (int64_t)$(operand(sc, args[2], UNARY)) : $bits")   # past `int64_t`, it is past the width too
+        return "$h($(expression(sc, args[1])[1]), $count)", PRIMARY
+    end
     f === Base.:~ && return unary(valuetype(sc, args[1]) === Bool ? "!" : "~")      # C's `~true` is -2, which is true
 
     # Math.
@@ -2403,7 +2456,7 @@ function rendered(sc::Scope, i, ex::Expr)
             f === g && n == length(args) && !(args[1] isa Type) && return fn(name)
         end
     elseif T <: Integer
-        f === Base.abs && T <: Unsigned && return expression(sc, args[1])        # nothing to do
+        f === Base.abs && (T <: Unsigned || T === Bool) && return expression(sc, args[1])        # nothing to do
         f === Base.abs && return T === Int64 ? fn("llabs", "stdlib.h") : T === Int32 ? fn("abs", "stdlib.h") :
                                  (push!(sc.headers, "stdlib.h"); ("($(ctype(T)))abs($(expression(sc, args[1])[1]))", UNARY))
         if f === Base.max || f === Base.min
@@ -2473,6 +2526,20 @@ function rendered(sc::Scope, i, ex::Expr)
 
 
     unknown(sc, f, args, i)
+end
+
+# Is this shift count known to lie in `0:bits-1`? A loop's own variable over a literal range
+# that does is: `for k in 0:62; mask |= 1 << k`.
+function counted(sc::Scope, x, bits)
+    x isa Core.SSAValue && sc.ci.code[x.id] isa Core.SlotNumber && (x = sc.ci.code[x.id])
+    x isa Core.SlotNumber || return false
+    for F in values(sc.fors)
+        F.var == x.id && F.array === nothing || continue
+        lo, hi = literal(sc, F.lo), literal(sc, F.hi)
+        lo isa Integer && hi isa Integer && 0 <= lo && hi < bits || return false
+        return !any(k -> !(k in F.machinery) && assigns(sc.ci.code[k], x.id), F.bodylo:F.bodyhi)
+    end
+    return false
 end
 
 # The refusal of last resort: a call nothing above knew. It names the call as Julia sees it,

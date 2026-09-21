@@ -83,7 +83,11 @@ both languages, read-only.
 | `pi`, `ℯ`, `Inf`, `NaN`, `Inf32`, `NaN32`, numeric literals | yes |
 | `isnan`, `isinf`, `isfinite`, `signbit`; `typemax`, `typemin`, `floatmax`, `floatmin`, `eps` of a type | yes, as the `math.h`, `stdint.h`, `float.h` names |
 | `length(v)`, `size(A, d)` | yes, as the number |
-| integer overflow | Julia wraps, C doesn't define it: not yet reconciled |
+| integer overflow | wraps, as in Julia, under `-fwrapv`, which is part of the compiler setting (`start.md`) |
+| `<<`, `>>`, `>>>` | yes. By a literal count within the width, or a loop variable over such a range, C's own shift. By any other count the helpers `shl`, `shr`, `shru`, which give what Julia gives for every count: nothing left once it reaches the width, and the other way for a negative one |
+| `mod(a, b)` on integers | yes: by a small literal the idiom `((a % b) + b) % b`; by a variable the helper `moduloI64`, since the idiom overflows for a large `b` |
+| `div`, `fld` on floats | yes, by Julia's own formulas, which give NaN or Inf at a zero divisor exactly where Julia does |
+| `b * x` with a `Bool` | yes, as `(b ? x : 0.0)`: Julia's `false` is a strong zero, `false * Inf` is 0.0 |
 
 ## Control flow
 

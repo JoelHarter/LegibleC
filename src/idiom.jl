@@ -28,9 +28,6 @@ const idioms = Idiom[
     # Julia's own definitions: `x * (π / 180)`, `x * (180 / π)`, with π rounded to the type first.
     Idiom(Base.deg2rad, (T, A) -> T === Float64 && A[1] === Float64,        "{a} * ({pi} / 180)", MUL, MUL),
     Idiom(Base.rad2deg, (T, A) -> T === Float64 && A[1] === Float64,        "{a} * (180 / {pi})", MUL, MUL),
-    # `>>>` brings in zeros: C's `>>` on the unsigned type of the same width.
-    Idiom(Base.:>>>,    (T, A) -> A[1] <: Signed && A[1] <: Base.BitInteger64 && A[2] <: Base.BitInteger64, "({T})(({U}){a} >> {b})", SHIFT, UNARY),
-    Idiom(Base.:>>>,    (T, A) -> A[1] <: Unsigned && A[1] <: Base.BitInteger64 && A[2] <: Base.BitInteger64, "{a} >> {b}", SHIFT, SHIFT),
     Idiom(Base.eps,     (T, A) -> A[1] <: Union{Float32, Float64},          "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> ulphelper!(h, E)),
     # Both values are computed in Julia; they are arguments. C computes the one it takes,
     # which is the same thing only for values with no effect: one with an effect is
