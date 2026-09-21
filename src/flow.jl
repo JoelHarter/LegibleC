@@ -35,6 +35,7 @@ struct While
     exit::Int
 end
 
+include("choice.jl")    # a value that a test chooses, written as one expression
 include("tree.jl")      # what the jumps between them mean: decided there, written here
 
 # Recognise every `for` loop. The idiom, with `r` the range and `s` the hidden state
@@ -543,12 +544,14 @@ function tests(sc::Scope, i::Int)
     j = i + 1
     # A variable that is assigned more than once is read through a statement of its own, which
     # writes nothing. Between two tests it belongs to the second: looked past, to find it.
+    # A loop's own test is never one of them: `if a; while true; …` opens with two tests that
+    # fail to the same place, and the second is the loop's.
     function nexttest(k)
         k = nextlive(sc, k)
-        while k <= length(code) && code[k] isa Core.SlotNumber && stable(sc.ci, k, code[k].id)
+        while k <= length(code) && code[k] isa Core.SlotNumber && stable(sc.ci, k, code[k].id) && !haskey(sc.whiles, k)
             k = nextlive(sc, k + 1)
         end
-        return k <= length(code) && code[k] isa Core.GotoIfNot ? k : 0
+        return k <= length(code) && code[k] isa Core.GotoIfNot && !haskey(sc.whiles, k) ? k : 0
     end
     while true
         j = nextlive(sc, j)
@@ -592,7 +595,7 @@ function ifextent(sc::Scope, i, hi, loops)
     j = i + 1
     while true
         j = nextlive(sc, j)
-        if code[j] isa Core.GotoIfNot && code[j].dest == target
+        if code[j] isa Core.GotoIfNot && code[j].dest == target && !haskey(sc.whiles, j)
             j += 1
         elseif code[j] isa Core.GotoNode && code[j].label > j && nextlive(sc, j + 1) == nextlive(sc, target) &&
                (t2 = nextlive(sc, target); code[t2] isa Core.GotoIfNot && nextlive(sc, t2 + 1) == nextlive(sc, code[j].label))
@@ -663,18 +666,47 @@ end
 #     the effect writes would see a different value.
 # Conditions and loop bounds follow the same rule; they were its first consumers.
 function markinlined!(sc::Scope)
+    # A choice is written inside what uses it too, and whether it can be depends on what is
+    # marked, which depends on which choices there are: a value may move past a choice that is
+    # an expression, and not past one that is an `if`. So every one is supposed to hold, and
+    # those that turn out not to are dropped and the marking done again, until none is.
+    candidates = findchoices(sc)
+    while true
+        empty!(sc.inlined)
+        empty!(sc.choices)
+        consumed = setdiff(Set(k for c in candidates for k in c.test:c.join-1), sc.skipped)     # all of it is inside the expression
+        union!(sc.skipped, consumed)
+        foreach(c -> sc.choices[c.join] = c, candidates)
+        effectful = mark!(sc)
+        held = Choice[]
+        for c in candidates
+            holds(sc, c, effectful, held) && push!(held, c)
+        end
+        length(held) == length(candidates) && break
+        setdiff!(sc.skipped, consumed)
+        candidates = held
+    end
+end
+
+function mark!(sc::Scope)
     ci = sc.ci
     code = ci.code
     count = Dict{Int, Int}()
     for st in code
         countuses!(count, st)
     end
+    # `a || b` stores `a` where it holds, and that store is never written: no second use.
+    for c in values(sc.choices)
+        v = code[c.yes].args[2]
+        v isa Core.SSAValue && v == code[c.test].cond && (count[v.id] -= 1)
+    end
     effectful = Set{Int}()
     for (i, st) in enumerate(code)
-        st isa Expr && st.head === :call || continue
+        choice = haskey(sc.choices, i)
+        choice || st isa Expr && st.head === :call || continue
         # `SI.c`, a constant read through its module, is a name: free to repeat, so it
         # is always written where it's read, `SI_c * SI_c`.
-        if callee_or_nothing(ci, st.args[1]) === Base.getproperty && literal(sc, st.args[2]) isa Module
+        if !choice && callee_or_nothing(ci, st.args[1]) === Base.getproperty && literal(sc, st.args[2]) isa Module
             push!(sc.inlined, i)
             continue
         end
@@ -690,15 +722,16 @@ function markinlined!(sc::Scope)
         # `f(q).v` would read a field of a temporary, which C allows and nobody writes.
         whole = use isa Core.ReturnNode ||
                 use isa Expr && use.head === :call && !(callee_or_nothing(ci, use.args[1]) in (Base.getproperty, Core.getfield, Base.getindex))
-        small = T <: Union{Number, Char} || isstruct(T) && !ismutabletype(T) &&
+        small = T <: Union{Number, Char} || !choice && isstruct(T) && !ismutabletype(T) &&
                 (!any(isarray, fieldtypes(T)) || whole && !(callee_or_nothing(ci, st.args[1]) isa Type))
         small && !compiletime(ci.ssavaluetypes[i]) || continue
         use isa Expr && use.head === :call && duplicates(sc, u, use, i) && continue
-        effect = !pure(sc, st) || any(a -> a isa Core.SSAValue && a.id in effectful, st.args[2:end])
+        effect = !choice && (!pure(sc, st) || any(a -> a isa Core.SSAValue && a.id in effectful, st.args[2:end]))
         all(k -> effect ? silent(sc, k) : inert(sc, k), i+1:u-1) || continue
         push!(sc.inlined, i)
         effect && push!(effectful, i)
     end
+    return effectful
 end
 
 # Where an array value can be computed straight into its place, sparing a temp and a
@@ -972,6 +1005,7 @@ countuses!(uses, x) = x isa Core.SSAValue ? (uses[x.id] = get(uses, x.id, 0) + 1
 # The C for an IR value as an expression: `(text, precedence)`. An SSA value that was
 # marked inline is rendered from its call; anything else is its name or literal.
 function expression(sc::Scope, x)
+    x isa Core.SSAValue && x.id in sc.inlined && haskey(sc.choices, x.id) && return chosen(sc, sc.choices[x.id])
     if x isa Core.SSAValue && x.id in sc.inlined
         return render(sc, x.id, sc.ci.code[x.id])
     end

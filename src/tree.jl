@@ -42,8 +42,9 @@ struct Tree
     claimed::Dict{Int, Symbol}           # every jump of the function -> the construct that accounts for it
     regions::Vector{NTuple{2, Int}}      # every range of statements that is entered only at its top
     machinery::Set{Int}                  # statements that are a `for`'s own working: control flow, not nothing
+    chosen::Set{Int}                     # the test of each `a && b`, `a || b`, `c ? x : y` that is written as a value
 end
-Tree() = Tree(Dict{Int, Branch}(), Dict{Int, Round}(), Dict{Int, String}(), Dict{Int, Symbol}(), NTuple{2, Int}[], Set{Int}())
+Tree() = Tree(Dict{Int, Branch}(), Dict{Int, Round}(), Dict{Int, String}(), Dict{Int, Symbol}(), NTuple{2, Int}[], Set{Int}(), Set{Int}())
 
 isjump(st) = st isa Core.GotoNode || st isa Core.GotoIfNot
 aim(st) = st isa Core.GotoNode ? st.label : st.dest
@@ -62,6 +63,9 @@ end
 function inert(tree::Tree, sc::Scope, t)
     st = sc.ci.code[t]
     t in tree.machinery && return false
+    # A choice that is a value is an expression inside whatever reads it. Its shape was matched
+    # exactly (`findchoices`), both sides meet at the read, and control goes on from there.
+    t in tree.chosen && return true
     (st isa Core.GotoIfNot || st isa Core.ReturnNode) && return false
     (st === nothing || st isa GlobalRef || st isa Core.NewvarNode || st isa Core.SlotNumber || st isa Core.SSAValue || st isa Number) && return true
     st isa Expr && st.head in (:meta, :code_coverage_effect) && return true
@@ -110,6 +114,14 @@ function recover(sc::Scope)
             push!(tree.machinery, i)
             isjump(code[i]) && claim!(tree, sc, i, :loop)
         end
+    end
+    for c in values(sc.choices)
+        for t in [c.test; c.more]
+            push!(tree.chosen, t)
+            claim!(tree, sc, t, :choice)
+        end
+        claim!(tree, sc, c.jump, :choice)
+        push!(tree.regions, (c.test, c.join))
     end
     recover!(tree, sc, 1, length(code), NTuple{4, Int}[], length(code) + 1)
     validate(tree, sc)
@@ -177,7 +189,7 @@ function round!(tree::Tree, sc::Scope, W::While, loops, out::Int)
                       code[i] isa Core.SSAValue || isjump(code[i]) || code[i] isa Core.NewvarNode, W.header:bodylo-1)
     compound && !inline && throw(ArgumentError("a `while a && b` whose condition needs work of its own, array work say, before it can be tested (line $(sc.stmtline[W.header])); test the first part in the `while` and the rest in the body, with `break`"))
     tree.rounds[W.header] = Round(W, conds, op, bodylo, inline)
-    for i in W.test:bodylo-1; isjump(code[i]) && claim!(tree, sc, i, :test); end
+    for i in W.test:bodylo-1; isjump(code[i]) && get(tree.claimed, i, :none) !== :choice && claim!(tree, sc, i, :test); end
     claim!(tree, sc, W.backedge, :loop)
     edges(tree, sc, W.test, bodylo, op, place(tree, sc, W.exit), "a `while`'s condition")
     again = place(tree, sc, W.backedge)             # the jump back, and on to the first thing the next pass does
@@ -200,7 +212,7 @@ end
 # the next test, only the last to where the condition fails; one that holds hops to the body.
 function edges(tree::Tree, sc::Scope, first::Int, bodylo::Int, op, failed::Int, what)
     code = sc.ci.code
-    at = [k for k in first:bodylo-1 if code[k] isa Core.GotoIfNot]
+    at = [k for k in first:bodylo-1 if code[k] isa Core.GotoIfNot && !(k in tree.chosen)]
     body = place(tree, sc, bodylo)
     for (n, k) in enumerate(at)
         last = n == length(at)
@@ -212,7 +224,7 @@ end
 function branch!(tree::Tree, sc::Scope, i::Int, hi::Int, loops, onward::Int)
     code = sc.ci.code
     conds, op, target, j = tests(sc, i)
-    for k in i:j-1; isjump(code[k]) && claim!(tree, sc, k, :test); end
+    for k in i:j-1; isjump(code[k]) && get(tree.claimed, k, :none) !== :choice && claim!(tree, sc, k, :test); end
     thenlo = j
     # The then-block runs to the else target. If it ends by jumping past that, there's
     # an else-block up to the jump's destination.

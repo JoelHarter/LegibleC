@@ -1914,3 +1914,59 @@ later names its type) or a name of ours that hadn't been given its rank (a
 tuple's struct, a macro against a struct's member). Loop carrying and `let`
 held on every probe. All twelve are tests now.
 
+
+## 2026-09-21 — The control flow is recovered whole, and checked
+
+**Why.** The bug list had grown to the point of asking which fixes were one
+fix. For control flow the answer was plain. Every wrong loop and every wrong
+`if` the transpiler had produced came from one place: the structure was worked
+out while the C was being written, a jump at a time, with whatever had been
+decided so far held in the emitter's own state and nothing to check a guess
+against. Patching each shape as it was found is the ball of bandages. The
+elegant fix is to make the guess impossible to get wrong silently.
+
+**What.** `recover` (`src/tree.jl`) walks the function once, writes nothing, and
+decides everything: each `if` with its merged tests, branches, `else if` chain
+and end; each `while` with its condition and whether that can stand in the
+`while (…)`; each `break` and `continue`. `block!` writes C from that and decides
+nothing. Three designs were drawn up first and each was attacked on paper
+(`sandbox/treedesign/`); what was built is the smallest of them with the
+second's validator, because the switch could then be proved to change nothing:
+310 generated texts, the demos and the 48 files of `stackmath` came out byte for
+byte the same.
+
+**The check is what matters.** Three things must hold or the function is
+refused by line. Every jump belongs to exactly one construct. Nothing jumps into
+the middle of a branch or a loop. And, the independent one: each way out of each
+test goes where the C written for it would go. `place` answers "where is control
+on reaching this statement" from the lowered code alone, past what does nothing
+and along plain jumps, and the tree's claim is compared with it. A `for`'s own
+working is never "nothing", which is the distinction whose absence produced the
+dropped `break`s of 2026-09-20.
+
+**What it found at once.** Four conditions that compiled and answered wrongly:
+`if a && (b || c) … else` (Julia 2, C 0), `if a && heavy(x) … else` (21 against
+1), `if a || heavy(x)` with its body written twice (5 against 10), and the same
+with an `else`. And a `break` dropped when a branch ended in a loop whose body
+ended in that `break`, because "the last live statement of the branch" looked
+into the loop. A loop is one thing now (`lastlive`).
+
+**Then the values.** The first of those four turned out not to be a
+control-flow question at all. Julia lowers an `a && b`, `a || b` or `c ? x : y`
+whose value is wanted into a hidden variable stored on both sides of a test and
+read once. The transpiler wrote that as it found it, an `if` and an `else` into
+a temp, five lines for what a person writes as `bool ok = a && b;`. C has the
+same three operators with the same order and the same promise to evaluate one
+side only, so the shape is matched exactly and written as one expression where
+it is used (`src/choice.jl`). `if a && (b || c)` is then an ordinary `a && b`:
+the inner part is a value by the time the `if` is looked at. Whether a choice
+can be an expression is decided with the inlining, because each depends on the
+other; the marking is repeated with the failed choices dropped until none fails.
+A value that can't go inside its consumer (read twice, or `(c ? x : y)^2`) is one
+line into a temp.
+
+**Left refused, on purpose.** A condition part that needs a line of its own
+when a failed test must reach an `else`. Correct C for it needs a flag or the
+`else` written twice, and which is a question about what the output should look
+like, so it waits for a decision. The message says how to write the Julia
+meanwhile.

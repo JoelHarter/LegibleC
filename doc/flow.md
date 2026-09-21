@@ -16,9 +16,10 @@ never a `goto`.
 | `elseif` | an else-block that is exactly one `if` ending at the same place | `} else if (c) {` |
 | `a && b` in a condition | two tests failing to the same place | `if (a && b)` |
 | `a \|\| b` in a condition | a test failing *into* another test, with a jump to the body between | `if (a \|\| b)` |
-| `a && b`, `a \|\| b` as a value | the same tests, both branches assigning | `bool r = a && b;` |
+| `a && b`, `a \|\| b`, `c ? x : y` as a value | a hidden variable stored on both sides of a test, read once where they meet | `bool ok = a && b;`, `sqrt(c ? x : y)` — see below |
+| `if a && (b \|\| c)` | the inner part is such a value, then an ordinary test | `if (a && (b \|\| c))` |
 | `x < 0 && return 0.0` | a test and an early return | `if (x < 0.0) { return 0.0; }` |
-| `c ? x : y` | an `if` whose branches both return, or both assign | `if (c) { return x; } return y;` |
+| `return c ? x : y` | an `if` whose branches both return | `if (c) { return x; } return y;` |
 | `while c … end` | a header, a test to the exit, a jump back to the header | `while (c) { … }` |
 | `while true` | the same with a literal `true` | `while (true) { … }` |
 | `for i in a:b` | the `iterate`/`getfield` idiom around a body | `for (int64_t i = a; i <= b; i++)` |
@@ -55,29 +56,84 @@ Not yet: `for x in A` over a matrix's elements, `try`/`catch`, comprehensions,
 closures, `do` blocks, `@goto`.
 
 Implementation: `findfors`, `findwhiles`, `markinlined!`, `block!` in
-`src/flow.jl`.
+`src/flow.jl`; the structure itself in `src/tree.jl`.
 
-## What the recovery gets wrong when it guesses
+## A value that a test chooses
 
-The structure is recovered *while* the C is being written: `block!` meets a jump
-and `ifelse!` works out, there and then, what construct it opens. That is compact,
-and it is where the mistakes have been. An adversarial hunt over loops
-(2026-09-20) found seven wrong answers here and none in the code that was new
-that week, and four of them had one cause: a helper that answers "what is the
-next statement that matters" (`nextlive`) by skipping what is consumed elsewhere,
-used where the question was really "where does control go". It walked past the
-start of a loop that opened a branch, so the body ran once; and it saw a jump out
-of an inner loop and a fall into its next pass as the same place, since a loop's
-own machinery is all skipped, so a `break` was dropped as redundant.
+`a && b`, `a || b` and `c ? x : y` are lowered the same way wherever a value is
+wanted: Julia makes a variable of its own, stores into it on both sides of a
+test, and reads it once where the sides meet. C has the same three operators,
+with the same order of evaluation and the same promise that only the chosen side
+is evaluated. So the value is written as one expression where it is used:
 
-Two rules came out of it. A loop's start is live, whatever its statements are.
-And two jumps go to the same place only when they go to *exactly* the same
-statement; "the same next live statement" is for finding what to write next,
-never for deciding where control goes.
+```c
+bool ok = a && (b || n > 3);
+double w = (k > 2 && a > 0.0) ? a : 2.0 * a;
+return sqrt(c ? x : 2.0 * x);
+```
 
-The better shape, not built yet, is to recover the whole structure first, as a
-tree that can be checked (every jump accounted for, every region entered at its
-top), and write the C from the tree. The blocks that declarations and names are
-decided against ([block.md](block.md)) would then come from that tree rather than
-from a first walk.
+This is also what makes `if a && (b || c)` an ordinary condition. Julia lowers
+the inner part as such a value, so by the time the `if` is looked at it has two
+tests, `a` and a value, like any `a && b`.
 
+It applies only when each side is an expression and nothing more. A side with
+work of its own, an array helper say, keeps its `if` and `else`. Nothing in it
+may have an effect either, since the expression is written a little later than
+where Julia computed it. When the value can't go inside what uses it, because it
+is read twice or because the consumer writes its operand twice (`(c ? x : y)^2`),
+it goes on one line into a temp: `double temp1 = c ? x : y;`.
+
+Whether a choice can be an expression is decided together with what is written
+inline, since it is the same question, and each depends on the other: a value may
+move past a choice that is an expression and not past one that is an `if`. Every
+choice is supposed to hold, the marking is done, the ones that turned out not to
+hold are dropped, and the marking is done again until none is dropped.
+
+Implementation: `src/choice.jl`, and `markinlined!` in `src/flow.jl`.
+
+## The structure is recovered first, and checked
+
+The C used to be written *while* the structure was being worked out: `block!` met
+a jump and decided, there and then, what construct it opened. That was compact,
+and it is where the mistakes were. An adversarial hunt over loops (2026-09-20)
+found seven wrong answers here and none in the code that was new that week, and
+four of them had one cause: a helper that answers "what is the next statement that
+matters" (`nextlive`) by skipping what is consumed elsewhere, used where the
+question was really "where does control go".
+
+Now the whole function's structure is recovered before any C is written
+(`recover` in `src/tree.jl`): every `if` with its merged tests, its branches and
+where it ends, every `while`, every `break` and `continue`. `block!` writes C from
+that and decides nothing. Before it does, the structure is checked three ways,
+and whatever fails is refused by line:
+
+| check | what it catches |
+|---|---|
+| every jump in the function belongs to exactly one construct | a loop the walk went past, a test taken for something else |
+| nothing jumps into the middle of a branch, a loop or a choice | two constructs that overlap |
+| each way out of each test goes where the C written for it would go | a condition whose parts can't be one C condition |
+
+The third check is the independent one. `place` follows the lowered code and
+nothing else: past every statement that does nothing, along every plain jump, to
+the first statement that does something. Two statements are the same place
+exactly when that is equal. For each test of an `if` or a `while`, the place the
+lowered code goes when it holds and when it fails is compared with where the C
+would go: the next test, the body, the `else`, what follows. A loop's own working
+is never "nothing": looking through it is how "falls into the next pass" and
+"leaves the loop" came to look like one place.
+
+What is refused this way today is a condition part that needs a line of its own
+when a failed test must reach an `else`:
+
+```julia
+if a > 0 && mod(a * b, 3) == 1      # `mod` writes `a * b` twice, so it is a temp
+    r = 1
+else
+    r = 2
+end
+```
+
+Nesting the second test inside the first would lose the `else` for it. Writing
+it correctly needs a flag or a repeated `else`, and which is a question of what
+the C should look like that is still open. The message says how to write it
+meanwhile: give the second part a variable of its own first.

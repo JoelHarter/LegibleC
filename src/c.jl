@@ -153,6 +153,7 @@ mutable struct Scope
     outer::Set{String}
     lets::Dict{Int, Vector{NTuple{3, Int}}}   # the source's `let` blocks: first statement -> (first, last, the `let` line), outermost first
     tree::Any                           # the control flow, recovered and checked before anything is written (`tree.jl`)
+    choices::Dict{Int, Any}             # `a && b`, `a || b`, `c ? x : y` as values, by the statement that reads one (`choice.jl`)
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
@@ -175,7 +176,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing)
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}())
 end
 
 include("flow.jl")
@@ -292,7 +293,9 @@ function finish(name, mi::Core.MethodInstance, sc::Scope, head, body)
     body = [l for (k, l) in enumerate(body) if !(isempty(l) && (k == length(body) || startswith(lstrip(body[k+1]), "}")))]
     # Anything not declared along the way (a variable assigned only where the walk
     # doesn't look, such as a loop header) is declared at the top.
-    lines = [slotdecl(sc, i) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden) && !(i in sc.declared)]
+    # Nor one assigned only where control never goes, `if typemax(Float64) == 0.0; y = …; end`:
+    # Julia gives it no type, and nothing that is written mentions it.
+    lines = [slotdecl(sc, i) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden) && !(i in sc.declared) && slottype(sc, i) !== Union{}]
     append!(lines, head)
     # Array parameters the function reassigns are worked on as copies, made here at
     # the top in one block with the reason above it, so the copy doesn't look gratuitous.
@@ -491,6 +494,17 @@ function analyze!(sc::Scope)
         push!(sc.skipped, at[1])
     end
     markinlined!(sc)
+    # A `while`'s test is the first that is its own, not that of a value its condition opens
+    # with: `while (a || b) && n > 0`.
+    past = Dict(c.test => c.join for c in values(sc.choices))
+    for (h, W) in collect(sc.whiles)
+        t = W.test
+        while haskey(past, t)
+            n = findfirst(k -> code[k] isa Core.GotoIfNot, past[t]+1:W.backedge)
+            t = n === nothing ? 0 : past[t] + n
+        end
+        t in (0, W.test) || (sc.whiles[h] = While(W.header, t, W.backedge, W.exit))
+    end
     outplacement!(sc)
 end
 
@@ -911,6 +925,9 @@ function statement!(lines, sc::Scope, i, st)
             isarray(T) && copy!(lines, sc, x, valuetype(sc, slot), t, valuetype(sc, slot))
         end
         isarray(T) && (sc.shapes[i] = valuetype(sc, slot))
+    elseif haskey(sc.choices, i)
+        # `a && b`, `c ? x : y`, used where it can't be written in place: one line, into a temp.
+        emitexpr!(lines, sc, "$(ctype(T)) $(temp!(sc, i, String[])) = ", first(chosen(sc, sc.choices[i])))
     elseif st isa Core.SlotNumber
         # `%i = x`: a read of a variable. Same rule as above.
         x = sc.names[st.id]
@@ -1742,6 +1759,7 @@ function contribution(sc::Scope, x)
         return filter(!isempty, split(global!(sc.prog, owner(x), x.name, v).cname, "_"))
     x isa Core.SSAValue || x isa Core.SlotNumber || return String[]
     x isa Core.SSAValue && !(x.id in sc.inlined) && !haskey(sc.expr, x.id) && return String[]   # a constant load
+    x isa Core.SSAValue && haskey(sc.choices, x.id) && return String[]
     x isa Core.SSAValue && x.id in sc.inlined && return unique(reduce(vcat, (contribution(sc, a) for a in sc.ci.code[x.id].args[2:end]); init=String[]))
     # A field read contributes its path, p.x -> p_x. The `_local` of a variable that gave
     # way is ours, not the author's: a temp computed from `x_local` is named after `x`.

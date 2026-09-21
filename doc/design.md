@@ -57,7 +57,9 @@ transpile time, never C that compiles and does the wrong thing.
 | `LegibleC.jl` | the package's module: dependencies, the export, the two includes below |
 | `transpile.jl` | the `transpile` API, target resolution, the `Program` that spans one output file, the file writer |
 | `c.jl` | the IR walk: `Scope`, `analyze!`, `statement!`, values and temps, constructions, broadcasts, array calls, solves, slices, user calls, `ccall`, structs and tuples |
-| `flow.jl` | recognising `if`/`while`/`for`/`&&`/`||`/`?:` in the lowered jumps, and rendering conditions inline; the C blocks, where each variable is declared (`homes`), what it is called (`names!`), and the source's `let`s |
+| `flow.jl` | finding the loops, rendering conditions inline, and writing the control flow as C; the C blocks, where each variable is declared (`homes`), what it is called (`names!`), and the source's `let`s |
+| `tree.jl` | what the jumps of a function mean, recovered whole before any C is written, and the check that the C written from it goes where the lowered code goes |
+| `choice.jl` | `a && b`, `a \|\| b` and `c ? x : y` as values: one C expression where it is used |
 | `helper.jl` | the helper generators: the axis model (`access`, `contraction`), elementwise and pointwise loops, block placement, `det`, `pivot`/`lu`/`solve`/`inv`, Cholesky, `pinv`, reductions, slices; helper names and parameter names |
 | `prose.jl` | the English comment on each helper |
 | `name.jl` | Julia identifiers to C identifiers, one name at a time; function-name mangling |
