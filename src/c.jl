@@ -552,6 +552,8 @@ function analyze!(sc::Scope)
         if f in (Base.setindex!, Base.fill!, Base.materialize!)
             s = ex.args[2] isa Core.SlotNumber ? ex.args[2].id : slotof(sc, ex.args[2])
             s === nothing || push!(sc.mutated, s)
+            T = valuetype(sc, ex.args[2])
+            T isa Type && isarray(T) && ismutabletype(T) && (p = fieldof(sc, ex.args[2]; mutable=false)) !== nothing && frozen(sc, p, findfirst(==(st), code))
             g = globalof(ex.args[2])
             g === nothing || push!(sc.prog.written, g)
         end

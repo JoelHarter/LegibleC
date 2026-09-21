@@ -375,6 +375,58 @@ function namehanded(v::MVector{3,Float64})           # a second name handed to a
     namebump!(m)
     return v[2]
 end
+mutable struct NameHolder
+    v::MVector{3,Float64}
+    k::Int64
+end
+struct NameFrozen
+    v::MVector{3,Float64}
+    k::Int64
+end
+function namefield(h::NameHolder)                    # a second name for the array a mutable struct holds
+    m = h.v
+    m[1] = 42.0
+    return h.v[1]
+end
+function namefrozen(p::NameFrozen)                   # a struct passed by value, its array with it: the write would reach a copy
+    p.v[1] = 42.0
+    return nothing
+end
+function namefrozenfield(p::NameFrozen)
+    m = p.v
+    m[2] = 7.0
+    return p.v[2]
+end
+function nameregular(v::Vector{Float64})
+    m = v
+    m[2] = 5.0
+    return v[2] + m[1]
+end
+function nameregularmatrix(A::Matrix{Float64})
+    M = A
+    M[2, 1] = -3.0
+    return A[2, 1] + M[1, 2]
+end
+function nameregularswap(n::Int64)
+    x = zeros(3)
+    y = zeros(3)
+    for k in 1:n
+        y[1] = x[1] + 1.0
+        y[3] = x[3] + k
+        x, y = y, x
+    end
+    return x[1] + 10.0 * x[3]
+end
+function namerotate(n::Int64)
+    a = MVector(1.0, 0.0, 0.0)
+    b = MVector(2.0, 0.0, 0.0)
+    c = MVector(3.0, 0.0, 0.0)
+    for k in 1:n
+        a[2] += 1.0
+        a, b, c = b, c, a
+    end
+    return a[1] + 10.0 * b[1] + 100.0 * c[1] + 1000.0 * (a[2] + 2.0 * b[2] + 4.0 * c[2])
+end
 function namestale(v::MVector{3,Float64})            # a new array while another name still holds the old one: refused
     w = zeros(MVector{3,Float64})
     m = w
@@ -392,13 +444,21 @@ end
         Case(nameworkingcaller), Case(namehanded, MVector(1.0, 2.0, 3.0))])
     @test occursin("double aliased(double v[3]) {", src) && occursin("double *const m = v;\n", src)             # written through: the parameter is not `const`
     @test occursin("double *const k = m;", src)
-    @test occursin("double x_data[3], *x = x_data;", src) && occursin("double xnew_data[3], *xnew = xnew_data;", src)
+    @test occursin("double x_data[3];\n    memset(x_data, 0, sizeof(double[3]));\n    double *x = x_data;", src) && occursin("double *xnew = xnew_data;", src)
+    @test occursin("double x_data[3] = {1.0, 2.0, 3.0};\n    double *x = x_data;", src)                                # built in its own storage, as any array is
     @test occursin("double *temp1_x = x;\n        x = xnew;\n        xnew = temp1_x;", src)                       # the swap: three pointers, no copy
     @test occursin("double *temp1_a = a;\n    a = b;\n    b = temp1_a;", src)                                   # two parameters swapped: no declaration at all
     @test occursin("double (*const M)[3] = A;", src)
     @test occursin("double *best = u;", src) && occursin("best = w;", src)
     @test occursin("double a_local[3];", src)                                                                   # the working copy that stays one
     @test_throws ArgumentError csource("namestale", namestale)
+    src = check("namesmore", [Case(namefield, NameHolder(MVector(1.0, 2.0, 3.0), 1)), Case(nameregular, [1.0, 2.0, 3.0]), Case(nameregularmatrix, [1.0 2.0; 3.0 4.0]),
+        Case(nameregularswap, 3), Case(namerotate, 1), Case(namerotate, 2), Case(namerotate, 4)];
+        targets=[namefield, (nameregular, Float64, 3), (nameregularmatrix, Float64, 2, 2), nameregularswap, namerotate])
+    @test occursin("double *const m = h->v;", src) && occursin("double (*const M)[2] = A;", src)
+    @test_throws ArgumentError csource("namefrozen", namefrozen)
+    @test_throws ArgumentError csource("namefrozenfield", namefrozenfield)
+    @test_throws ArgumentError csource("nameunsized", nameregular)                    # a refusal, not a fault
 end
 # One index into a matrix: Julia counts through the whole array down its columns, the C is
 # stored by rows, so the index is taken apart into one for each dimension. It is written

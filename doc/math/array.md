@@ -265,7 +265,7 @@ of three kinds (`src/storage.jl`):
 |---|---|---|
 | storage | it is the only name for what it holds, which is almost every variable | `double v[3];`, as always |
 | second name | given another variable's array, once | `double *const m = v;`, and for a matrix `double (*const M)[3] = A;` |
-| moving name | given other variables' arrays more than once: a swap, one array or another by a test | `double x_data[3], *x = x_data;`, then `x = xnew;` |
+| moving name | given other variables' arrays more than once: a swap, one array or another by a test | the array it starts with is built in storage of its own, `double x_data[3] = {1.0, 2.0, 3.0};`, then `double *x = x_data;`, then `x = xnew;` |
 
 Indexing doesn't change: `m[i]` and `M[i][j]` read the same through a
 pointer. Parameters are pointers already, so two parameters swapped need no
@@ -273,8 +273,10 @@ declaration at all. The usual iteration with two buffers comes out as a C
 programmer writes it:
 
 ```c
-    double x_data[3], *x = x_data;
-    double xnew_data[3], *xnew = xnew_data;
+    double x_data[3];
+    memset(x_data, 0, sizeof(double[3]));
+    double *x = x_data;
+    ...
     for (int64_t k = 1; k <= n; k++) {
         ...
         xnew[i - 1] = s / A[i - 1][i - 1];
@@ -301,6 +303,12 @@ different arrays. C has one storage for the variable, and would write the
 new array over what the other name still reads. A parameter's working copy
 is the exception that was always there: `a = a .+ 1.0` and then
 `a[1] = 0.0` writes the new array, which is the copy.
+
+The array a `mutable struct` holds can be given a second name the same
+way, `double *const m = h->v;`. A struct that isn't `mutable` is passed and
+copied by value in C, its arrays with it, where in Julia every copy shares
+the array. So a write into an array such a struct holds is refused, with
+the advice to declare the struct `mutable`, which is passed by pointer.
 
 Not yet: `view`, a name for part of an array.
 
