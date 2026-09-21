@@ -283,4 +283,81 @@ end
     @test_throws ArgumentError csource("idiomsigncompare", idiomsigncompare)
     @test_throws ArgumentError csource("choicesignmix", choicesignmix)
 end
+
+# What a declared type puts in, and what Julia has already decided: `x::Float64 = 1` converts, which is a
+# cast; `(x * 2.0)::Float64` asserts, which is nothing; `n isa Int64` on an `Int64` is no test at all, and the
+# `else` that can't run is no part of the C. `@fastmath x^2` is still `x * x`.
+asserted(x::Float64) = (x * 2.0)::Float64 + 1.0
+declared(n::Int64)::Float64 = n + 1
+converted(n::Int64, x::Float64) = convert(Float64, n) / 2 + convert(Int64, x * 4.0)
+fastsq(x::Float64) = @fastmath x^2 + 1.0
+function staticn(v::SVector{3,Float64})
+    s = 0.0
+    for k in 1:3
+        s += v[k] * k
+    end
+    return s / 3
+end
+pickT(x::Float64) = x / 2
+absu(a::UInt8, b::Int16) = abs(a) + abs(b)
+bigroot(n::UInt64) = isqrt(n)
+bigroot32(n::UInt32) = isqrt(n)
+function lowerlocalint(x::Float64, n::Int64)
+    local acc::Float64 = 0
+    for k in 1:n
+        acc = acc + x * k
+    end
+    return acc
+end
+lowerintlevel::Float64 = 0.0
+function lowerglobalint(n::Int64)
+    global lowerintlevel = n
+    global lowerintlevel += 0.5
+    return lowerintlevel
+end
+function lowerstaticmean(v::SVector{N,Float64}) where {N}
+    s = 0.0
+    for k in 1:N
+        s += v[k]
+    end
+    return s / N
+end
+lowerstaticn(v::SVector{3,Float64}) = lowerstaticmean(v) + 1.0
+function lowerisabreak(x::Float64, n::Int64)
+    s = 0.0
+    for k in 1:n
+        s += x
+        if s > 2.5
+            s += 100.0
+            x isa Float64 && break
+        end
+    end
+    return s
+end
+function treeisaelse(x::Float64, n::Int64)
+    if n isa Int64
+        y = x + n
+    else
+        y = x
+    end
+    return 2.0 * y
+end
+function treelocalint(n::Int64)
+    local acc::Float64 = 0
+    for k in 1:n
+        acc = acc + k / 2
+    end
+    return acc
+end
+@testset "declared" begin
+    check("declared", [Case(asserted, 1.5), Case(declared, 3), Case(converted, 3, 2.5), Case(fastsq, 3.0), Case(staticn, SVector(1.0, 2.0, 3.0)),
+                 Case(pickT, 3.0), Case(absu, 0xf0, Int16(-300)), Case(bigroot, typemax(UInt64)), Case(bigroot, 0xfffffffe00000001), Case(bigroot, 0xfffffffe00000000),
+                 Case(bigroot32, typemax(UInt32)), Case(bigroot32, 0xfffe0001),
+        Case(lowerlocalint, 1.5, 3), Case(lowerlocalint, 2.0, 0),
+        Case(lowerglobalint, 3), Case(lowerglobalint, -2),
+        Case(lowerstaticn, SVector(1.0, 2.0, 6.0)), Case(lowerstaticn, SVector(-1.0, 0.5, 0.0)),
+        Case(lowerisabreak, 1.0, 5), Case(lowerisabreak, 1.0, 2), Case(lowerisabreak, 3.0, 1),
+        Case(treeisaelse, 1.5, 2), Case(treeisaelse, -3.0, 0),
+        Case(treelocalint, 4), Case(treelocalint, 0)])
+end
 end

@@ -482,13 +482,22 @@ function analyze!(sc::Scope)
     # is lowered with a test before it: is the value already of that type? If not, convert.
     # Where Julia has decided the test, and it holds, the test and the conversion it guards
     # are no part of the C: what is left is the store.
+    # Decided the other way, `x::Float64 = 1`, the conversion is what runs, and it is a cast.
+    dead(k) = code[k] isa Core.Const || widen(ci.ssavaluetypes[k]) === Union{}
     for (g, st) in enumerate(code)
-        st isa Core.GotoIfNot && st.cond isa Core.SSAValue && iscall(code[st.cond.id], Core.isa) || continue
+        st isa Core.GotoIfNot && st.cond isa Core.SSAValue && (c = code[st.cond.id]; c isa Expr && c.head === :call && callee_or_nothing(ci, c.args[1]) === Core.isa) || continue
         t = ci.ssavaluetypes[st.cond.id]
-        t isa Core.Const && t.val === true || continue
+        t isa Core.Const && t.val isa Bool || continue
         push!(sc.skipped, st.cond.id, g)
         push!(sc.folded, g)
-        code[g+1] isa Core.GotoNode && (push!(sc.skipped, g + 1); push!(sc.folded, g + 1))
+        # The jump over the dead conversion goes with it. Any other jump there is the author's,
+        # `x isa Float64 && break`, and stays: it is now what always happens.
+        # So does the jump over a dead `else`, which ends the branch that does run: `if n isa Int64 … else … end`.
+        if t.val
+            e = findlast(k -> !dead(k), g+1:st.dest-1)
+            e === nothing || (e += g)
+            e !== nothing && code[e] isa Core.GotoNode && code[e].label >= st.dest && all(dead, st.dest:code[e].label-1) && (push!(sc.skipped, e); push!(sc.folded, e))
+        end
     end
     for (i, st) in enumerate(code)
         st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Core.get_binding_type && push!(sc.skipped, i)
@@ -2231,7 +2240,7 @@ function rendered(sc::Scope, i, ex::Expr)
         return "(($a % $b) + $b) % $b", MUL
     end
     if f === Base.literal_pow
-        p = ci.ssavaluetypes[args[3].id].val
+        p = literal(sc, args[3])
         p isa Val || throw(ArgumentError("unsupported power (statement $i)"))
         e = typeof(p).parameters[1]
         unit = T === Float32 ? "1.0f" : floating ? "1.0" : "1"
@@ -2246,6 +2255,8 @@ function rendered(sc::Scope, i, ex::Expr)
         e == -1 && return "$unit / $x", MUL
         return "$(powhelper!(sc.helpers, T))($(expression(sc, args[2])[1]), $e)", PRIMARY
     end
+    # `@fastmath x^2` arrives as `pow_fast(x, Val(2))`: the literal power it was written as.
+    f === Base.:^ && n == 2 && literal(sc, args[2]) isa Val && return rendered(sc, i, Expr(:call, Base.literal_pow, Base.:^, args[1], args[2]))
     if f === Base.:^
         floating || cplx || throw(ArgumentError("integer ^ with a non-literal exponent is not supported (statement $i)"))
         return fn("pow")
@@ -2296,7 +2307,9 @@ function rendered(sc::Scope, i, ex::Expr)
             f === g && n == length(args) && !(args[1] isa Type) && return fn(name)
         end
     elseif T <: Integer
-        f === Base.abs && return T === Int64 ? fn("llabs", "stdlib.h") : T === Int32 ? fn("abs", "stdlib.h") : throw(ArgumentError("abs on $T"))
+        f === Base.abs && T <: Unsigned && return expression(sc, args[1])        # nothing to do
+        f === Base.abs && return T === Int64 ? fn("llabs", "stdlib.h") : T === Int32 ? fn("abs", "stdlib.h") :
+                                 (push!(sc.headers, "stdlib.h"); ("($(ctype(T)))abs($(expression(sc, args[1])[1]))", UNARY))
         if f === Base.max || f === Base.min
             signedness("`$(nameof(f))`")
             acc = expression(sc, args[1])[1]
@@ -2314,6 +2327,14 @@ function rendered(sc::Scope, i, ex::Expr)
         end
     end
 
+    # `(x * 2.0)::Float64` is `x * 2.0`: the assertion holds, or Julia would have thrown. And
+    # `convert(Float64, n)`, which a declared type puts in (`x::Float64 = 1`, `f(n)::Float64`),
+    # is the cast: where the value doesn't fit the type exactly, Julia throws.
+    f === Core.typeassert && n == 2 && T <: Number && return expression(sc, args[1])
+    if f === Base.convert && n == 2 && T <: Number && literal(sc, args[1]) isa Type
+        valuetype(sc, args[2]) === T && return expression(sc, args[2])
+        return "($(ctype(T)))" * truth(args[2], UNARY), UNARY
+    end
     # One C expression of its arguments: a row of the table (`idiom.jl`).
     r = idiom(f, T, [widen(valuetype(sc, a)) for a in args])
     r === nothing || return written(sc, r, T, args)
@@ -2848,6 +2869,8 @@ end
 # reach only a function whose dispatch doesn't depend on which member it is.
 function samedispatch(sc::Scope, f, args, spec)
     ci = sc.ci
+    # Julia's own function on Julia's own types is never a function of the user's (`register!`).
+    nameof(Base.moduleroot(parentmodule(f))) in known && !any(T -> T isa Type && isstruct(T), spec) && return
     for (k, a) in enumerate(args)
         s = slotof(sc, a)
         s === nothing && continue
@@ -3082,6 +3105,9 @@ function value(sc::Scope, x)
         haskey(sc.expr, x.id) && return sc.expr[x.id]
         haskey(sc.pair, x.id) && throw(ArgumentError("`sincos` and `minmax` are only available destructured, `s, c = sincos(x)`, `lo, hi = minmax(a, b)` (statement $(x.id))"))
         sc.ci.code[x.id] isa GlobalRef && return value(sc, sc.ci.code[x.id])
+        # The `N` of `where {N}` used as a number: known when transpiled.
+        (st = sc.ci.code[x.id]; st isa Expr && st.head === :static_parameter && sc.ci.ssavaluetypes[x.id] isa Core.Const && sc.ci.ssavaluetypes[x.id].val isa Number) &&
+            return value(sc, sc.ci.ssavaluetypes[x.id].val)
         sc.ci.code[x.id] isa Core.SlotNumber && return sc.names[sc.ci.code[x.id].id]   # a read inside a loop header
         throw(ArgumentError("value of statement $(x.id) is not available in C"))
     end

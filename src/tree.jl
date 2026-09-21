@@ -84,6 +84,8 @@ function place(tree::Tree, sc::Scope, t)
         push!(seen, t)
         if code[t] isa Core.GotoNode
             t = code[t].label
+        elseif code[t] isa Core.GotoIfNot && t in sc.folded && !(t in tree.chosen)
+            t = code[t].dest                    # a test Julia has decided doesn't hold: a plain jump
         elseif inert(tree, sc, t)
             t += 1
         else
@@ -126,7 +128,8 @@ function recover(sc::Scope)
     # A test Julia has decided is no test: control goes the one way, and its jumps are accounted for.
     for t in sc.folded
         claim!(tree, sc, t, :folded)
-        code[t] isa Core.GotoIfNot && push!(tree.chosen, t)
+        held = code[t] isa Core.GotoIfNot && (c = sc.ci.ssavaluetypes[code[t].cond.id]; c isa Core.Const && c.val === true)
+        held && push!(tree.chosen, t)           # one that holds falls through; one that doesn't is a jump (`place`)
     end
     recover!(tree, sc, 1, length(code), NTuple{4, Int}[], length(code) + 1)
     validate(tree, sc)
