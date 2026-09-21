@@ -2459,6 +2459,11 @@ function rendered(sc::Scope, i, ex::Expr)
                     b.c isa DataType && b.c <: Signed && b.kind !== :number && (b = cast(J, b))
                 end
                 test = same ? Term(:binary, sign, [acc, b], Bool, Bool, REL, limits(Bool)) : compared(sign, REL, acc, b, i)
+                if test.kind !== :binary                  # the types alone decide it: `max(u, -1)` on an unsigned `u` is `u`
+                    acc = test.text in ("true", "1") ? acc : b
+                    promoted(acc.c) === promoted(J) || (acc = cast(J, acc))
+                    continue
+                end
                 acc = paren(same ? Term(:choice, "?", [test, acc, b], J, promoted(J), COND, limits(J)) : choice(test, test.parts[1], b, J))
             end
             return acc

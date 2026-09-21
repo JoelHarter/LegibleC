@@ -206,6 +206,17 @@ That one is left as it is, and said in the guide: the exact form is a function's
 at every comparison of an integer with a float.
 """
 function compared(sym, prec, a::Term, b::Term, i)
+    # What the types alone decide, `u >= 0` and `u > -1` on an unsigned `u`, is written as the
+    # truth value it is: a compiler warns of a comparison that can only go one way, and the
+    # cast that makes `u > -1` mean what Julia means makes it one.
+    if a.reach !== nothing && b.reach !== nothing && callfree(a) && callfree(b) && !(a.kind === :number && b.kind === :number)
+        (al, ah), (bl, bh) = a.reach, b.reach
+        apart = ah < bl || al > bh
+        known = sym == "<" ? (ah < bl ? true : al >= bh ? false : nothing) : sym == "<=" ? (ah <= bl ? true : al > bh ? false : nothing) :
+                sym == ">" ? (al > bh ? true : ah <= bl ? false : nothing) : sym == ">=" ? (al >= bh ? true : ah < bl ? false : nothing) :
+                sym == "==" ? (apart ? false : nothing) : apart ? true : nothing
+        known === nothing || return atom(booltype[] === Bool ? string(known) : known ? "1" : "0", Bool)
+    end
     M = common(a.c, b.c)
     if M !== nothing && M <: Integer && !(fits(a.reach, M) && fits(b.reach, M))
         fits(a.reach, Int64) && fits(b.reach, Int64) ||

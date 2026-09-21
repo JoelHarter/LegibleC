@@ -404,6 +404,7 @@ twoabove(u::UInt32) = u > -1                               # C's `-1` is an `int
 twosame(u::UInt32) = u == -1
 twounder(u::UInt32, k::Int32) = k < u                      # a type that holds both: `int64_t`
 twoleast(u::UInt32) = max(u, -1)
+twoover(u::UInt32, m::Int8) = u > m                        # `m` is promoted to `int`, then converted to unsigned: `(int64_t)u > m`
 twomost(u::UInt32, k::Int32) = max(u, k)                   # Julia converts both to `UInt32`, and so does the C, said out loud
 twoquot(a::Int32) = div(a, -1)                             # the least `Int32` by -1 fits Julia's `Int64`, and overflows C's `int`
 twofloat(n::Int32, x::Float32) = (n == x) + 2 * (n < x)    # beside a `float` an integer is exact to 2^24 only
@@ -424,7 +425,7 @@ end
         Case(twomod, Int8(5)), Case(twomod, Int8(-5)), Case(twopick, true), Case(twopick, false),
         Case(twoabove, 0x00000005), Case(twoabove, 0xffffffff), Case(twosame, 0xffffffff), Case(twosame, 0x00000001),
         Case(twounder, 0x00000005, Int32(-1)), Case(twounder, 0xffffffff, Int32(7)), Case(twounder, 0x00000003, Int32(7)),
-        Case(twoleast, 0x00000005), Case(twoleast, 0xffffffff), Case(twomost, 0x00000005, Int32(9)), Case(twomost, 0xfffffff0, Int32(9)),
+        Case(twoleast, 0x00000005), Case(twoleast, 0xffffffff), Case(twoover, 0x00000005, Int8(-1)), Case(twoover, 0x00000005, Int8(9)), Case(twomost, 0x00000005, Int32(9)), Case(twomost, 0xfffffff0, Int32(9)),
         Case(twoquot, typemin(Int32)), Case(twoquot, Int32(7)),
         Case(twofloat, Int32(16777217), 16777216f0), Case(twofloat, Int32(3), 3f0), Case(twofloat, Int32(-16777217), -16777216f0),
         Case(twobits, Int8(-1), 0x03), Case(twobits, Int8(5), 0x03), Case(twonot, 0x00), Case(twonot, 0xff),
@@ -434,8 +435,9 @@ end
     @test occursin("return (int64_t)(a * b) * 1000;", src)
     @test occursin("return (int64_t)(((a % 3) + 3) % 3) * 2000000000;", src)
     @test occursin("return (int64_t)(c ? 1 : 2) * 2000000000;", src)
-    @test occursin("return (int64_t)u > -1;", src) && occursin("return (int64_t)u == -1;", src) && occursin("return k < (int64_t)u;", src)
-    @test occursin("return ((int64_t)u > -1 ? (int64_t)u : -1);", src)
+    @test occursin("bool twoabove(uint32_t u) {\n    // @scalar.jl", src) && occursin("return true;", src) && occursin("return false;", src)   # what the types alone decide
+    @test occursin("return k < (int64_t)u;", src) && occursin("return (int64_t)u > m;", src)
+    @test occursin("int64_t twoleast(uint32_t u) {", src) && occursin("return (int64_t)u;", src)
     @test occursin("return (u > (uint32_t)k ? u : (uint32_t)k);", src)
     @test occursin("return (int64_t)a / -1;", src)
     @test occursin("((double)n == x) + 2 * ((double)n < x)", src)

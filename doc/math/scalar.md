@@ -107,7 +107,8 @@ types and how far the value can reach, and decides this in one place.
 | `a + b` on two `UInt8` wraps at 256 | `int` | the result is cast, which is the wrap: `(uint8_t)(a + b)` |
 | `a + b + n`, two `UInt8` and an `Int64`: the first sum wraps | `int`, then `long` | `(uint8_t)(a + b) + n` |
 | `div(a, -1)` on an `Int32` is an `Int64`, 2147483648 at most | `int`, which that overflows | `(int64_t)a / -1` |
-| `u > -1` on a `UInt32` is true | `-1` becomes 4294967295 | a type that holds both: `(int64_t)u > -1` |
+| `u > m`, a `UInt32` and an `Int8`, compared as the numbers they are | `m` becomes unsigned, and -1 is 4294967295 | a type that holds both: `(int64_t)u > m` |
+| `u > -1` and `u >= 0` on a `UInt32` are true, whatever `u` | the same, once cast | `true`: what the types alone decide is written as the truth value it is, since a compiler warns of a comparison that can only go one way |
 | `n == x`, an `Int32` and a `Float32`, compared exactly | `n` is rounded to a `float`, exact to 2^24 | `(double)n == x` |
 | `k < u`, an `Int64` and a `UInt64` | `k` becomes unsigned | refused: no type holds both |
 | `max(u, k)`, a `UInt32` and an `Int32`: both converted to `UInt32` | the same | `(u > (uint32_t)k ? u : (uint32_t)k)`, said out loud since a compiler warns of the silent one |

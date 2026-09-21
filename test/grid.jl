@@ -53,7 +53,7 @@ two = [(:add, :(a + b), numbers, numbers), (:sub, :(a - b), numbers, numbers), (
 # And the sign of a zero, which the setting lets go (`-fno-signed-zeros` is part of fast math):
 # GCC answers `signbit(-0.0)` with 0.
 allowed(name, combo) = !(startswith(name, "mixed") && any(x -> x isa AbstractFloat && abs(x) == floatmax(typeof(x)), combo)) &&
-                       !(startswith(name, "signbit") && iszero(combo[1]))
+                       !(occursin("signbit", name) && iszero(combo[1]))
 
 # One function of the grid: its Julia, its types, and what Julia answers on every combination of values.
 struct Item
