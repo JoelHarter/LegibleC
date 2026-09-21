@@ -481,8 +481,12 @@ function modhelper!(helpers::Dict{String, String}, E::Type)
     end
     f = E === Float32 ? "f" : ""
     zero = E === Float32 ? "0.0f" : "0.0"
-    body = ["$t r = fmod$f(x, y);",
-            "if (r == $zero) {", "    return copysign$f(r, y);", "}",
+    # Julia 1.13 gave `mod(x, ±Inf)` a rule of its own, `x` for a finite `x`; before it, `1.0 mod -Inf`
+    # was `-Inf`. The helper follows the Julia that is running, which is asked, not remembered.
+    unbounded = mod(1.0, -Inf) == 1.0 ? ["if (isinf(y) && isfinite(x)) {", "    return x;", "}"] : String[]
+    body = [unbounded;
+            "$t r = fmod$f(x, y);";
+            "if (r == $zero) {"; "    return copysign$f(r, y);"; "}";
             "return (r > $zero) != (y > $zero) ? r + y : r;"]
     helpers[name] = definition(t, name, ["$t x", "$t y"], body; doc=["remainder with the divisor's sign, as Julia's mod", "returns mod(x, y)"])
     return name

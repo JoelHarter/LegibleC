@@ -2351,6 +2351,14 @@ function rendered(sc::Scope, i, ex::Expr)
         return "$(mathname(T, "rint"))(($(operand(sc, args[1], ADD)) - $left) / $(operand(sc, args[2], MUL; right=true)))", PRIMARY
     end
     f === Base.div && return op("/", MUL)
+    if f === Base.rem && !floating && T <: Signed && n == 2
+        # `x % -1` at the type's least value is 0 in Julia and a trap on x86, whose divide overflows
+        # there. By a literal other than -1 it can't happen; by anything else it is said.
+        d = literal(sc, args[2])
+        (d isa Integer && d != -1 || !(valuetype(sc, args[2]) <: Signed)) && return op("%", MUL)     # nor by anything that can't be negative
+        a, b = operand(sc, args[1], MUL), operand(sc, args[2], MUL; right=true)
+        return "($(operand(sc, args[2], EQ)) == -1 ? 0 : $a % $b)", PRIMARY
+    end
     f === Base.rem && return floating ? fn("fmod") : op("%", MUL)
     if f === Base.mod
         # On floats, Julia's `mod` takes the divisor's sign where C's `fmod` takes the
@@ -2360,7 +2368,7 @@ function rendered(sc::Scope, i, ex::Expr)
         # By a literal well inside the range, `mod(k, 3)`, it is the idiom a person writes. By anything
         # else the idiom can overflow in `+ b`, so it is the helper that says Julia's rule.
         d = literal(sc, args[2])
-        if d isa Integer && 0 < abs(big(d)) <= big(typemax(T)) ÷ 2
+        if d isa Integer && d != -1 && 0 < abs(big(d)) <= big(typemax(T)) ÷ 2
             a, b = operand(sc, args[1], MUL), operand(sc, args[2], MUL; right=true)
             return "(($a % $b) + $b) % $b", MUL
         end

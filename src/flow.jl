@@ -1003,6 +1003,7 @@ function duplicates(sc::Scope, u, use::Expr, i)
         return use.args[3] == Core.SSAValue(i) && p isa Core.Const && p.val isa Val && typeof(p.val).parameters[1] in (2, 3)
     end
     f === Base.mod && T <: Integer && return true
+    f === Base.rem && T <: Signed && return use.args[3] == Core.SSAValue(i)      # the divisor is asked whether it is -1, and then divides
     f in (Base.max, Base.min) && T <: Integer && return true
     f === Base.minmax && return true                  # each argument is written in the minimum and in the maximum
     # `A[k]` on a matrix writes `k` once for each dimension (`linear`).
