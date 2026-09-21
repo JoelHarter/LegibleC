@@ -2,6 +2,8 @@
 # regenerates stackmath, compiles every file of it, and pushes the C to the stackmath
 # repository when it changed. That push needs STACKMATH_TOKEN, a fine-grained personal
 # access token with contents write on JoelHarter/stackmath, in this repository's secrets.
+# Without the secret the C is still generated and compiled, and the push is left out with
+# a note, so that a red run always means something is wrong.
 name: ci
 on:
   push:
@@ -37,6 +39,8 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.STACKMATH_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
@@ -48,12 +52,17 @@ jobs:
         run: julia aux/stackmath/stackmath.jl
       - name: compile every file
         run: cd aux/stackmath/out && for f in *.c; do cc -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -I. -c "$f" -o /dev/null; done
+      - name: no token, so nothing is published
+        if: env.TOKEN == ''
+        run: echo "::notice::STACKMATH_TOKEN is not set. The C was generated and compiled, and was not pushed to stackmath."
       - uses: actions/checkout@v4
+        if: env.TOKEN != ''
         with:
           repository: JoelHarter/stackmath
           token: ${{ secrets.STACKMATH_TOKEN }}
           path: stackmath
       - name: publish when changed
+        if: env.TOKEN != ''
         run: |
           rm -f stackmath/src/*.c stackmath/src/*.h
           cp aux/stackmath/out/*.c aux/stackmath/out/*.h stackmath/src/
