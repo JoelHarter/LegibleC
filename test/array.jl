@@ -271,4 +271,28 @@ check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 
     @test_throws ArgumentError csource("resized", resized)
     @test_throws ArgumentError csource("aliased", aliased)                # Julia 77, and the C would have said 2
 end
+# One index into a matrix: Julia counts through the whole array down its columns, the C is
+# stored by rows, so the index is taken apart into one for each dimension. It is written
+# once for each, so it is never an expression written in place. `(undef)` is the declaration.
+fixedlinear(A::SMatrix{2,3,Float64,6}) = A[5] + 10.0 * A[2] + 100.0 * A[6]
+movinglinear(A::SMatrix{2,3,Float64,6}, k::Int64) = A[k] + A[k + 1]
+cubelinear(T::SArray{Tuple{2,3,2},Float64,3,12}, k::Int64) = T[k] + T[11]
+function storedlinear(k::Int64)
+    M = MMatrix{2,3,Float64}(undef)
+    fill!(M, 0.0)
+    M[k] = 7.0
+    M[4] = 2.0
+    return M[1, 2] + 10.0 * M[2, 2] + 100.0 * M[k]
+end
+@testset "linear index" begin
+    A23 = SMatrix{2,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    T232 = SArray{Tuple{2,3,2}}(collect(1.0:12.0)...)
+    check("linearindex", [Case(fixedlinear, A23); [Case(movinglinear, A23, k) for k in 1:5];
+                          [Case(cubelinear, T232, k) for k in (1, 2, 3, 7, 12)]; [Case(storedlinear, k) for k in (1, 3, 6)]])
+    src = csource("linearindextext", fixedlinear, movinglinear, cubelinear, storedlinear)
+    @test occursin("return A[0][2] + 10.0 * A[1][0] + 100.0 * A[1][2];", src)
+    @test occursin("int64_t temp1_k = k + 1;", src) && occursin("A[(k - 1) % 2][(k - 1) / 2]", src)
+    @test occursin("T[(k - 1) % 2][((k - 1) / 2) % 3][(k - 1) / 6] + T[0][2][1]", src)
+    @test occursin("double M[2][3];\n", src) && occursin("M[(k - 1) % 2][(k - 1) / 2] = 7.0;", src) && occursin("M[1][1] = 2.0;", src)
+end
 end

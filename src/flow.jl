@@ -964,6 +964,8 @@ function duplicates(sc::Scope, u, use::Expr, i)
     f === Base.mod && T <: Integer && return true
     f in (Base.max, Base.min) && T <: Integer && return true
     f === Base.minmax && return true                  # each argument is in the minimum and in the maximum
+    # `A[k]` on a matrix writes `k` once for each dimension (`linear`).
+    f === Base.getindex && length(use.args) == 3 && isarray(valuetype(sc, use.args[2])) && ndims(valuetype(sc, use.args[2])) > 1 && return use.args[3] == Core.SSAValue(i)
     r = idiom(f, T, [widen(valuetype(sc, a)) for a in use.args[2:end]])
     r === nothing || return any(k -> use.args[k+1] == Core.SSAValue(i) && twice(r, k), 1:length(use.args)-1)
     f === Base.:(==) && (isstruct(valuetype(sc, use.args[2])) || istuple(valuetype(sc, use.args[2]))) && return true

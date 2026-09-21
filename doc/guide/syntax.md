@@ -116,6 +116,8 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | Julia | works |
 |---|---|
 | `v[i]`, `A[i, j]`, `T[i, j, k]` read and write | yes |
+| `A[k]`, one index into a matrix, read and write | yes: Julia counts down the columns, so it is `A[(k - 1) % m][(k - 1) / m]`; a literal `k` is taken apart when transpiled. A range, `A[2:3]`, not yet |
+| `MVector{3,Float64}(undef)`, `MMatrix{2,3,Float64}(undef)` | yes, as the declaration |
 | `A + B`, `A - B`, `-A`, `s * A`, `A * s` | yes |
 | `A * B`, `A * v`, `v' * A`, `v' * w`, `v * w'`, `A * B'`, `A' * B` | yes |
 | `dot(v, w)`, `cross(v, w)`, `det(A)` | yes |

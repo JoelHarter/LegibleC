@@ -1276,8 +1276,14 @@ function concatenate!(lines, sc::Scope, i, f, args, dest; declaration::Bool=fals
                  x isa Core.SSAValue && ci.ssavaluetypes[x.id] isa Core.Const ? collect(ci.ssavaluetypes[x.id].val) : nothing
     if f isa Type
         # `SVector(a, b, c)`, `SMatrix{2,2}(t)`: elements in column-major order.
-        elems = length(args) == 1 && tupleof(args[1]) !== nothing ? tupleof(args[1]) : args
         R = widen(ci.ssavaluetypes[i])
+        if length(args) == 1 && literal(sc, args[1]) === undef
+            # `MVector{3,Float64}(undef)`: room and nothing in it, which in C is the declaration.
+            declaration && emit!(lines, sc, declare(R, dest) * ";")
+            sc.shapes[i] = R
+            return
+        end
+        elems = length(args) == 1 && tupleof(args[1]) !== nothing ? tupleof(args[1]) : args
         all(a -> !isarray(valuetype(sc, a)), elems) || throw(ArgumentError("a static constructor from arrays is not supported (statement $i)"))
         s = shape(R)
         if declaration
@@ -2898,8 +2904,36 @@ end
 function index(sc::Scope, A, idx)
     T = valuetype(sc, A)
     isarray(T) || throw(ArgumentError("indexing into a $T"))
+    length(idx) == 1 && ndims(T) > 1 && !istransposed(T) && valuetype(sc, idx[1]) <: Integer && return value(sc, A) * linear(sc, T, idx[1])
     length(idx) == ndims(T) || throw(ArgumentError("$(length(idx)) indices into a $(ndims(T))-dimensional array"))
     return value(sc, A) * join("[$(subscript(sc, k))]" for k in idx)
+end
+
+# `A[k]` on a matrix: Julia counts through the whole array down its columns, first index
+# fastest, and the C is stored by rows, so the one index is taken apart into one per
+# dimension: `A[(k - 1) % m][(k - 1) / m]`. A literal `k` is taken apart here.
+function linear(sc::Scope, T::Type, k)
+    dims = shape(T)
+    v = literal(sc, k)
+    if v isa Integer
+        subs = String[]
+        k0 = v - 1
+        for m in dims
+            push!(subs, string(k0 % m))
+            k0 ÷= m
+        end
+        return join("[$x]" for x in subs)
+    end
+    k0 = subscript(sc, k)
+    occursin(r"^\w+$", k0) || (k0 = "($k0)")
+    subs = String[]
+    stride = 1
+    for (d, m) in enumerate(dims)
+        x = stride == 1 ? k0 : "$k0 / $stride"
+        push!(subs, d == length(dims) ? x : stride == 1 ? "$x % $m" : "($x) % $m")
+        stride *= m
+    end
+    return join("[$x]" for x in subs)
 end
 
 # A 1-based Julia index as a 0-based C subscript. The shift folds into a literal offset
