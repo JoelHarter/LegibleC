@@ -972,7 +972,7 @@ function outplacement!(sc::Scope)
         # one case that needs no size: every `return` returning the same local
         # variable, whose size is `out`'s by definition.
         s = returnedslot(ci)
-        s !== nothing && s > ci.nargs && !(s in sc.hidden) && isarray(slottype(sc, s)) || return
+        s !== nothing && s > ci.nargs && !(s in sc.hidden) && isarray(slottype(sc, s)) && !haskey(sc.storage, sc.names[s]) || return
         sc.outplaced[s] = 0
         push!(sc.declared, s)
         push!(sc.pointers, sc.names[s])
@@ -980,7 +980,7 @@ function outplacement!(sc::Scope)
     end
     rows, trailing... = shape(sc.rettype)
     # A variable that can be rows of `out`: a local or working copy with the full trailing extents.
-    fits(s) = s !== nothing && s > ci.nargs && !(s in sc.hidden) && isarray(slottype(sc, s)) &&
+    fits(s) = s !== nothing && s > ci.nargs && !(s in sc.hidden) && isarray(slottype(sc, s)) && !haskey(sc.storage, sc.names[s]) &&
               shape(slottype(sc, s)) !== nothing && collect(shape(slottype(sc, s))[2:end]) == collect(trailing)
     wanted = Dict{Int, Int}()                       # slot -> its first row of `out`
     others = Any[]                                  # returned values computed into `out`
@@ -1082,7 +1082,8 @@ outplacedat(sc::Scope, b, row) = (s = slotof(sc, b); s !== nothing && get(sc.out
 # Does the IR value or statement name the C variable anywhere — as a read, an
 # assignment, an argument — itself or through the values it is built from? Any slot
 # with that C name counts; so does an array parameter's working copy of that name.
-touches(sc::Scope, x, name) = x isa Core.SlotNumber ? sc.names[x.id] == name || get(sc.rebound, x.id, 0) != 0 && sc.names[sc.rebound[x.id]] == name :
+touches(sc::Scope, x, name) = x isa Core.SlotNumber ? sc.names[x.id] == name || get(sc.rebound, x.id, 0) != 0 && sc.names[sc.rebound[x.id]] == name ||
+                                                       haskey(sc.storage, name) && held(sc, sc.names[x.id]) == held(sc, name) :
                               x isa Core.SSAValue   ? touches(sc, sc.ci.code[x.id], name) :
                               x isa Expr            ? any(a -> touches(sc, a, name), x.args) :
                               x isa Core.ReturnNode ? isdefined(x, :val) && touches(sc, x.val, name) :

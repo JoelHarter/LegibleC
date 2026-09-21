@@ -161,6 +161,10 @@ mutable struct Scope
     ready::Dict{Int, String}            # a number whose C took lines of its own to prepare (a product of several arrays) -> its text
     gone::Set{Int}                      # stores into variables nothing reads, and what was computed only for them: no C, and no use counted
     flags::Dict{Int, String}            # a nest of loops that a `break` leaves whole: its outermost loop -> the flag, or the label, that does it
+    second::Dict{Int, Int}              # an array variable that is a second name for another's array -> that other (`storage.jl`)
+    moving::Set{Int}                    # array variables that are names moved between arrays: pointers
+    storage::Dict{String, String}       # a C name that may hold the same array as others -> the one name that stands for them all
+    data::Dict{Int, String}             # a moving name that starts out with an array of its own -> that storage's C name
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
@@ -183,13 +187,15 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}(), Dict{Int, String}(), Set{Int}(), Dict{Int, String}())
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}(), Dict{Int, String}(), Set{Int}(), Dict{Int, String}(),
+                 Dict{Int, Int}(), Set{Int}(), Dict{String, String}(), Dict{Int, String}())
 end
 
 include("flow.jl")
 include("io.jl")
 include("move.jl")
 include("product.jl")   # how Julia groups a product of several factors: asked, not copied
+include("storage.jl")   # one array under two names: which variables are storage, and which are names for it
 
 """
     cfunction(name, mi, sig, helpers, headers; templimit=40, source=true) -> (prototype, definition)
@@ -552,8 +558,8 @@ function analyze!(sc::Scope)
         # A mutable array handed to a user function that writes somewhere: it may be
         # written there, so it is not `const` here either.
         f isa Function && !(nameof(Base.moduleroot(parentmodule(f))) in known) || continue
-        slots = [a.id for a in ex.args[2:end] if a isa Core.SlotNumber && ci.slottypes[a.id] isa Type &&
-                 ismutabletype(ci.slottypes[a.id]) && isarray(widen(ci.slottypes[a.id]))]
+        slots = [s for s in (moved(sc, a) for a in ex.args[2:end]) if s !== nothing && ci.slottypes[s] isa Type &&
+                 ismutabletype(ci.slottypes[s]) && isarray(widen(ci.slottypes[s]))]             # read directly or through a statement of its own
         globals = filter(!isnothing, [globalof(a) for a in ex.args[2:end]])
         isempty(slots) && isempty(globals) && continue
         r = userinstance!(sc, f, ex.args[2:end])
@@ -689,6 +695,7 @@ function analyze!(sc::Scope)
         end
         t in (0, W.test) || (sc.whiles[h] = While(W.header, t, W.backedge, W.exit))
     end
+    storage!(sc)
     outplacement!(sc)
 end
 
@@ -844,7 +851,8 @@ separate!(lines, sc::Scope) = isempty(lines) || isempty(last(lines)) || endswith
 slottype(sc::Scope, i) = get(sc.slotshapes, i, widen(sc.ci.slottypes[i]))
 
 # The declaration of a slot: by its type, or by the C struct of the tuple it holds.
-slotdecl(sc::Scope, i) = haskey(sc.slotkinds, i) ? sc.slotkinds[i].cname * " " * sc.names[i] : declare(slottype(sc, i), sc.names[i])
+slotdecl(sc::Scope, i) = haskey(sc.slotkinds, i) ? sc.slotkinds[i].cname * " " * sc.names[i] : haskey(sc.data, i) ? datadecl(sc, i) :
+                          named(sc, i) ? pointer(slottype(sc, i), sc.names[i]) : declare(slottype(sc, i), sc.names[i])
 
 # The layout of the tuple an IR value holds, if it is one of a known layout.
 tuplekind(sc::Scope, x) = x isa Core.SSAValue ? get(sc.kinds, x.id, nothing) : x isa Core.SlotNumber ? get(sc.slotkinds, x.id, nothing) : nothing
@@ -1113,7 +1121,9 @@ function statement!(lines, sc::Scope, i, st)
         fresh && push!(sc.declared, slot.id)
         home = get(sc.home, slot.id, 1)
         here = fresh && sc.path[end] == home
-        if isarray(T)
+        if isarray(T) && named(sc, slot.id)
+            name!(lines, sc, i, slot.id, rhs, here)
+        elseif isarray(T)
             store!(lines, sc, i, x, rhs; declaration=here)
         elseif rhs isa Expr && rhs.head === :call && callee_or_nothing(ci, rhs.args[1]) === Core.tuple && sc.kind !== nothing &&
                returnedslot(ci) == slot.id && !any(a -> isarray(valuetype(sc, a)), rhs.args[2:end])
@@ -1153,8 +1163,12 @@ function statement!(lines, sc::Scope, i, st)
             rhs isa Core.SSAValue && !(rhs.id in sc.inlined) && (sc.expr[rhs.id] = x)
         else
             t = temp!(sc, i, contribution(sc, slot))
-            emit!(lines, sc, isarray(T) ? "$(declare(valuetype(sc, slot), t));" : "$(ctype(T)) $t = $x;")
-            isarray(T) && copy!(lines, sc, x, valuetype(sc, slot), t, valuetype(sc, slot))
+            if isarray(T) && named(sc, slot.id)
+                keep!(lines, sc, t, x, valuetype(sc, slot))
+            else
+                emit!(lines, sc, isarray(T) ? "$(declare(valuetype(sc, slot), t));" : "$(ctype(T)) $t = $x;")
+                isarray(T) && copy!(lines, sc, x, valuetype(sc, slot), t, valuetype(sc, slot))
+            end
         end
         isarray(T) && (sc.shapes[i] = valuetype(sc, slot))
     elseif haskey(sc.choices, i)
@@ -1171,8 +1185,12 @@ function statement!(lines, sc::Scope, i, st)
             sc.expr[i] = x
         else
             t = temp!(sc, i, contribution(sc, st))
-            emit!(lines, sc, isarray(V) ? "$(declare(V, t));" : "$(ctype(T)) $t = $x;")
-            isarray(V) && copy!(lines, sc, x, V, t, V)
+            if isarray(V) && (named(sc, st.id) || st.id <= ci.nargs && haskey(sc.storage, x))
+                keep!(lines, sc, t, x, V)
+            else
+                emit!(lines, sc, isarray(V) ? "$(declare(V, t));" : "$(ctype(T)) $t = $x;")
+                isarray(V) && copy!(lines, sc, x, V, t, V)
+            end
         end
         isarray(V) && (sc.shapes[i] = V)
     elseif st isa Core.SSAValue || st isa Number
@@ -3134,7 +3152,8 @@ function mentions(sc::Scope, x, a)
         (f === Base.broadcasted || f === Core.tuple) && return any(b -> mentions(sc, x, b), sc.ci.code[a.id].args[2:end])
     end
     v = try value(sc, a) catch; return false end
-    return v == x || startswith(v, x * "[") || startswith(v, x * ".")   # the variable, or an element or field of it
+    (v == x || startswith(v, x * "[") || startswith(v, x * ".")) && return true   # the variable, or an element or field of it
+    return haskey(sc.storage, x) && held(sc, v) == held(sc, x)                 # or another name that may hold the same array
 end
 
 # ---- ccall ---------------------------------------------------------------------------

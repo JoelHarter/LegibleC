@@ -252,6 +252,58 @@ reads and writes `x_local` throughout, whether the reassignment is in a loop, a
 branch, or straight-line code. The copy yields the name to the parameter, and
 being the local version of that very name it is `x_local` (`naming.md`).
 
+## One array under two names
+
+In C an array variable is its storage and its name in one: `double v[3];`.
+Julia's mutable arrays keep the two apart. `m = v` is a second name for the
+same array, and a write through either is seen through both.
+`x, xnew = xnew, x` moves two names between two arrays and copies nothing.
+So before any C is written, every mutable array variable is found to be one
+of three kinds (`src/storage.jl`):
+
+| kind | when | the C |
+|---|---|---|
+| storage | it is the only name for what it holds, which is almost every variable | `double v[3];`, as always |
+| second name | given another variable's array, once | `double *const m = v;`, and for a matrix `double (*const M)[3] = A;` |
+| moving name | given other variables' arrays more than once: a swap, one array or another by a test | `double x_data[3], *x = x_data;`, then `x = xnew;` |
+
+Indexing doesn't change: `m[i]` and `M[i][j]` read the same through a
+pointer. Parameters are pointers already, so two parameters swapped need no
+declaration at all. The usual iteration with two buffers comes out as a C
+programmer writes it:
+
+```c
+    double x_data[3], *x = x_data;
+    double xnew_data[3], *xnew = xnew_data;
+    for (int64_t k = 1; k <= n; k++) {
+        ...
+        xnew[i - 1] = s / A[i - 1][i - 1];
+        ...
+        double *temp1_x = x;
+        x = xnew;
+        xnew = temp1_x;
+    }
+```
+
+Only where it matters: a mutable array, and a write somewhere among the
+names. Where nothing is written a copy means the same thing, and an
+immutable array is a value in both languages, so both stay as they were.
+
+A write through one name is a write to what the others hold. A parameter
+written through a second name loses its `const`. And wherever the
+transpiler asks whether two operands may be the same storage, names that
+can come to hold one array count as the same: an operation that reads what
+it overwrites goes through a temp.
+
+One case is refused, by line: a variable given a freshly made array while
+another name may still hold the one it had. In Julia the two are then
+different arrays. C has one storage for the variable, and would write the
+new array over what the other name still reads. A parameter's working copy
+is the exception that was always there: `a = a .+ 1.0` and then
+`a[1] = 0.0` writes the new array, which is the copy.
+
+Not yet: `view`, a name for part of an array.
+
 ## Everything, in one table
 
 The meaning of each follows Julia's definition.

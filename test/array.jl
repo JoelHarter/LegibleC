@@ -188,7 +188,7 @@ function either(v::SVector{3,Float64}, c::Bool)     # `return a` and `a = …` a
     end
     a = v * 3
 end
-function aliased(v::MVector{3,Float64})             # a second name for one mutable array, then a write through it: no C for that yet
+function aliased(v::MVector{3,Float64})             # a second name for one mutable array, then a write through it: a pointer (`names`, below)
     m = v
     m[2] = 77.0
     return v[2]
@@ -269,7 +269,136 @@ check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 
     @test occursin("double m[3][3] = {\n        {4, 8, 1},\n        {5.0, 9, 2},\n        {4, 8, 0},\n    };", src)   # a literal is declared with its initializer, a row per line
     @test occursin("void either(const double v[3], bool c, double a[restrict 3])", src) && occursin("mul_3_s(v, 2.0, a);\n\n        // @", src) && occursin("mul_3_s(v, 3.0, a);\n}", src) && !occursin("double *a = out", src)
     @test_throws ArgumentError csource("resized", resized)
-    @test_throws ArgumentError csource("aliased", aliased)                # Julia 77, and the C would have said 2
+end
+
+# One array under two names (`src/storage.jl`). Julia's mutable arrays keep a name and its
+# storage apart; C's array variable is both at once. A variable that is given another's array
+# is a pointer: a second name if that happens once, a moving name if it happens again.
+function namezero!(v::MVector{3,Float64})
+    m = v
+    m[1] = 0.0
+    return nothing
+end
+function namecaller()                                # the caller sees a write made through a second name of a parameter
+    a = MVector(1.0, 2.0, 3.0)
+    namezero!(a)
+    return a[1] + 10.0 * a[2]
+end
+function namechain(v::MVector{3,Float64})
+    m = v
+    k = m
+    k[3] = 9.0
+    m[2] = 8.0
+    return v[1] + v[2] + v[3]
+end
+function namejacobi(A::SMatrix{3,3,Float64,9}, b::SVector{3,Float64}, n::Int64)   # two buffers, swapped each pass: no copy
+    x = zeros(MVector{3,Float64})
+    xnew = zeros(MVector{3,Float64})
+    for k in 1:n
+        for i in 1:3
+            s = b[i]
+            for j in 1:3
+                j != i && (s -= A[i, j] * x[j])
+            end
+            xnew[i] = s / A[i, i]
+        end
+        x, xnew = xnew, x
+    end
+    return x[1] + 10.0 * x[2] + 100.0 * x[3]
+end
+function nameswap!(a::MVector{3,Float64}, b::MVector{3,Float64})     # parameters are pointers already
+    a, b = b, a
+    a[1] = 0.0
+    return b[1]
+end
+function nameswapcaller()
+    a = MVector(1.0, 2.0, 3.0)
+    b = MVector(4.0, 5.0, 6.0)
+    r = nameswap!(a, b)
+    return r + 10.0 * a[1] + 100.0 * b[1]
+end
+function nameinplace(v::MVector{3,Float64})
+    m = v
+    v .= m .* 2.0
+    m[1] += 1.0
+    return v[1] + v[2] + m[3]
+end
+function namematrix(A::MMatrix{2,3,Float64,6})
+    M = A
+    M[1, 2] = 9.0
+    return A[1, 2] + M[2, 3]
+end
+function nameeither(c::Bool, u::MVector{3,Float64}, w::MVector{3,Float64})
+    best = u
+    if c
+        best = w
+    end
+    best[2] = -1.0
+    return u[2] + 10.0 * w[2]
+end
+function namebyhand(n::Int64)
+    x = MVector(1.0, 2.0, 3.0)
+    y = MVector(4.0, 5.0, 6.0)
+    for k in 1:n
+        y[1] = x[1] + k
+        t = x
+        x = y
+        y = t
+    end
+    return x[1] + 10.0 * y[1]
+end
+function namereturned(n::Int64)
+    x = MVector(1.0, 2.0, 3.0)
+    y = MVector(4.0, 5.0, 6.0)
+    for k in 1:n
+        y[2] = x[2] * 2.0
+        x, y = y, x
+    end
+    return x
+end
+function nameworking(a::MVector{3,Float64})          # a parameter's working copy given a new array stays a copy
+    a = a .+ 1.0
+    a[1] = 0.0
+    return a[1] + a[2]
+end
+function nameworkingcaller()
+    a = MVector(1.0, 2.0, 3.0)
+    r = nameworking(a)
+    return r + 10.0 * a[1]
+end
+function namebump!(v::MVector{3,Float64})
+    v[2] += 100.0
+    return nothing
+end
+function namehanded(v::MVector{3,Float64})           # a second name handed to a function that writes
+    m = v
+    namebump!(m)
+    return v[2]
+end
+function namestale(v::MVector{3,Float64})            # a new array while another name still holds the old one: refused
+    w = zeros(MVector{3,Float64})
+    m = w
+    w = zeros(MVector{3,Float64})
+    w[1] = 1.0
+    return m[1] + w[1]
+end
+@testset "names" begin
+    A = SMatrix{3,3}(4.0, 1.0, 0.0, 1.0, 5.0, 1.0, 0.0, 1.0, 6.0)
+    src = check("names", [Case(aliased, MVector(1.0, 2.0, 3.0)), Case(namecaller), Case(namechain, MVector(1.0, 2.0, 3.0)),
+        Case(namejacobi, A, SVector(1.0, 2.0, 3.0), 1), Case(namejacobi, A, SVector(1.0, 2.0, 3.0), 4), Case(namejacobi, A, SVector(1.0, 2.0, 3.0), 7),
+        Case(nameswapcaller), Case(nameinplace, MVector(1.0, 2.0, 3.0)), Case(namematrix, MMatrix{2,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)),
+        Case(nameeither, true, MVector(1.0, 2.0, 3.0), MVector(4.0, 5.0, 6.0)), Case(nameeither, false, MVector(1.0, 2.0, 3.0), MVector(4.0, 5.0, 6.0)),
+        Case(namebyhand, 1), Case(namebyhand, 2), Case(namebyhand, 5), Case(namereturned, 0), Case(namereturned, 3),
+        Case(nameworkingcaller), Case(namehanded, MVector(1.0, 2.0, 3.0))])
+    @test occursin("double aliased(double v[3]) {", src) && occursin("double *const m = v;\n", src)             # written through: the parameter is not `const`
+    @test occursin("double *const k = m;", src)
+    @test occursin("double x_data[3], *x = x_data;", src) && occursin("double xnew_data[3], *xnew = xnew_data;", src)
+    @test occursin("double *temp1_x = x;\n        x = xnew;\n        xnew = temp1_x;", src)                       # the swap: three pointers, no copy
+    @test occursin("double *temp1_a = a;\n    a = b;\n    b = temp1_a;", src)                                   # two parameters swapped: no declaration at all
+    @test occursin("double (*const M)[3] = A;", src)
+    @test occursin("double *best = u;", src) && occursin("best = w;", src)
+    @test occursin("double a_local[3];", src)                                                                   # the working copy that stays one
+    @test_throws ArgumentError csource("namestale", namestale)
 end
 # One index into a matrix: Julia counts through the whole array down its columns, the C is
 # stored by rows, so the index is taken apart into one for each dimension. It is written

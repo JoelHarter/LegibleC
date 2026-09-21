@@ -27,6 +27,8 @@ The usual causes:
   its size;
 - a non-ASCII character literal, since C's `char` holds one byte;
 - a `dims` keyword that isn't a literal;
+- a mutable array variable given a freshly made array while another name
+  may still hold the one it had: give the new array a name of its own;
 - a signed integer compared with a `UInt64`, or divided by an unsigned
   integer, where no C operator means what Julia means: convert one side.
   Beside a narrower unsigned type the comparison is written with the cast
