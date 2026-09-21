@@ -5,7 +5,10 @@
 # Two options change the spelling of scalars: C23's `_Float64` and `_Float32` in place
 # of `double` and `float`, and an integer type in place of `bool` (see `transpile`).
 const c23floattypes = Ref(false)
-const posix = Ref(false)            # π and ℯ as POSIX `M_PI` and `M_E` rather than our own `LEGIBLEC_PI` and `LEGIBLEC_E`
+const posix = Ref(false)
+# May the C contain a `goto`? Only for the one thing C has no other word for, leaving a whole
+# nest of loops at once (the `goto` option of `transpile`). Off, the nest is left by a flag.
+const gotos = Ref(false)            # π and ℯ as POSIX `M_PI` and `M_E` rather than our own `LEGIBLEC_PI` and `LEGIBLEC_E`
 const booltype = Ref{Type}(Bool)
 
 # (Julia, C, abbreviation)

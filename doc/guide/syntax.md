@@ -99,9 +99,9 @@ both languages, read-only.
 | `for i in eachindex(v)`, `1:length(v)`, `axes(A, d)` | yes |
 | `for i in 1:2, j in 1:3` | yes |
 | `for x in v` over a vector's elements | yes |
-| `break`, `continue`, `return` anywhere | yes |
+| `break`, `continue`, `return` anywhere | yes; a `break` inside `for i in 1:n, j in 1:m` leaves the whole nest, by a flag the outer loops test, or by `goto` if the `goto` option allows one |
 | `if a && (b \|\| c)`, `while (a \|\| b) && n > 0`: any mix of `&&`, `\|\|`, `? :` in a condition | yes |
-| a condition part that needs a line of its own (array work, `mod` of a product) with an `else` to reach | refused by line: give that part a variable first |
+| a condition part that needs lines of its own, `if a && sum(x .* x) > 1.0 … else` | yes: worked out into a truth value first, `bool temp1 = a; if (temp1) { …; temp1 = …; }`; in a `while` joined by `&&`, each part in turn with `break` |
 | `throw(DomainError(x, "…"))`, `error("…")`, `@assert c` | yes: the exception's name and what it was made from on `stderr`, then `abort()`. C has no exceptions, and Julia that throws is outside what the C is checked against |
 | `let a = …, b = …` … `end` | yes, as a bare `{ … }` block; on one line, or used as a value, its variables come out flat |
 | `for x in A` over a matrix, a non-literal step, a range in a variable, `enumerate`, `zip` | not yet |

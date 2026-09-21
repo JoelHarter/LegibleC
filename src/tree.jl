@@ -45,8 +45,10 @@ struct Tree
     regions::Vector{NTuple{2, Int}}      # every range of statements that is entered only at its top
     machinery::Set{Int}                  # statements that are a `for`'s own working: control flow, not nothing
     chosen::Set{Int}                     # the test of each `a && b`, `a || b`, `c ? x : y` that is written as a value
+    far::Dict{Int, Int}                  # a `break` that leaves a whole nest, `for i in …, j in …` -> the nest's outermost loop
+    nests::Dict{Int, Int}                # each loop such a `break` must get out of, but the innermost -> the nest's outermost loop
 end
-Tree() = Tree(Dict{Int, Branch}(), Dict{Int, Round}(), Dict{Int, String}(), Dict{Int, Symbol}(), NTuple{2, Int}[], Set{Int}(), Set{Int}())
+Tree() = Tree(Dict{Int, Branch}(), Dict{Int, Round}(), Dict{Int, String}(), Dict{Int, Symbol}(), NTuple{2, Int}[], Set{Int}(), Set{Int}(), Dict{Int, Int}(), Dict{Int, Int}())
 
 isjump(st) = st isa Core.GotoNode || st isa Core.GotoIfNot
 aim(st) = st isa Core.GotoNode ? st.label : st.dest
@@ -182,8 +184,23 @@ function leave(tree::Tree, sc::Scope, i, label, loops)
         brk, cont, out, again = loops[end]
         label == brk && (agree(tree, sc, i, label, out, "a `break`"); return "break")
         label == cont && (agree(tree, sc, i, label, again, "a `continue`"); return "continue")
-        any(label == l[1] for l in loops[1:end-1]) &&
-            throw(ArgumentError("a `break` inside `for i in …, j in …` leaves every loop of the nest in Julia, and C's `break` leaves one (line $(sc.stmtline[i])); write the loops one inside the other and leave with a flag, or put the nest in a function of its own and `return`"))
+        # `break` inside `for i in …, j in …` leaves every loop of the nest, and C's `break` leaves
+        # one. The loops in between have nothing in them but the next loop, which is checked, so
+        # a flag each of them tests gets out of all of them (or, where it is allowed, a `goto`).
+        d = findfirst(l -> label == l[1], loops[1:end-1])
+        if d !== nothing
+            nest = [findfirst(F -> F.exit == l[1], collect(values(sc.fors))) for l in loops[d:end]]
+            any(isnothing, nest) && throw(ArgumentError("a `break` that leaves a `while` from inside another loop (line $(sc.stmtline[i])); C's `break` leaves one loop. Put the inner loop in a function of its own and `return`"))
+            nest = [collect(values(sc.fors))[k] for k in nest]
+            for (outer, inner) in zip(nest[1:end-1], nest[2:end])
+                all(k -> inert(sc, k), outer.bodylo:inner.start-1) && place(tree, sc, inner.exit) == outer.next ||      # `j in i:n` reads `i` first, which does nothing
+                    throw(ArgumentError("a `break` out of several loops at once, where a loop on the way has more in it than the next loop (line $(sc.stmtline[i])); put the nest in a function of its own and `return`"))
+            end
+            agree(tree, sc, i, label, loops[d][3], "a `break` out of a nest of loops")
+            tree.far[i] = nest[1].start
+            foreach(F -> tree.nests[F.start] = nest[1].start, nest[1:end-1])
+            return "break"
+        end
     end
     throw(ArgumentError("control flow not recognised: a jump at line $(sc.stmtline[i]) that is no `if`, loop, `break` or `continue` (statement $i, to statement $label)"))
 end

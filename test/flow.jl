@@ -317,7 +317,6 @@ append!(cases, [Case(nested3, true, false, 4), Case(nested3, false, true, 4), Ca
     @test occursin("double temp1 = c ? x : x + 1.0;\n    double y = temp1 * temp1;", chosen)   # `^2` writes it twice
     @test occursin("while ((a || b) && n > 0) {", chosen) && occursin("if ((a && b) || (c && n > 0)) {", chosen)
     @test occursin("double w = (k > 2 && a > 0.0) ? a : 2.0 * a;", chosen)
-    @test_throws ArgumentError csource("nestbreak", nestbreak)                                # refused, where it used to leave one loop: 63 for Julia's 11
     loops = csource("flowloops", bumped, whileand, whileor)
     @test occursin("for (int64_t i = 1; i <= n; i++) {\n        int64_t k = i;", loops)                 # the counting is ours, the variable the body's
     @test occursin("while (n > 0 && m > 0) {", loops) && occursin("while (n > 0 || m > 0) {", loops)
@@ -663,5 +662,71 @@ end
     @test occursin("bool temp1 = a;\n    if (temp1) {\n        double temp2[3];", src) && occursin("        temp1 = sum_3(temp2) > 1.0;\n    }\n    if (temp1) {", src)
     @test occursin("    if (!temp1) {\n        double temp2[3];", src)                                   # `||`: the next part only if the first failed
     @test occursin("        if (!a) {\n            break;\n        }\n        double temp1[3];", src)   # `while a && …`: out as soon as one fails
+end
+
+# `break` inside `for i in …, j in …` leaves every loop of the nest, and C's `break` leaves one.
+# By default a flag that the outer loops test gets out of all of them, and the C has no `goto`.
+# With the `goto` option it is `goto done;` and a label after the nest, as many write it by hand.
+function nestpair(n::Int64, m::Int64, limit::Int64)
+    s = 0
+    for i in 1:n, j in 1:m
+        s += i * j
+        s > limit && break
+    end
+    return s
+end
+function nesttriple(n::Int64, limit::Int64)
+    s = 0
+    for i in 1:n, j in 1:n, k in 1:n
+        k == 2 && continue
+        s += i + j + k
+        if s > limit
+            break
+        end
+    end
+    return s + 1000
+end
+function nesttwice(n::Int64)
+    a = 0
+    for i in 1:n, j in 1:n
+        a += 1
+        i * j >= 6 && break
+    end
+    b = 0
+    for i in 1:n, j in i:n
+        b += 10
+        j - i >= 2 && break
+    end
+    return a + b
+end
+function nestinside(n::Int64)
+    total = 0
+    for r in 1:3
+        for i in 1:n, j in 1:n
+            total += 1
+            i + j > r + 2 && break
+        end
+        total += 100
+    end
+    return total
+end
+function nestvec(v::SVector{3,Float64}, w::SVector{3,Float64})
+    s = 0.0
+    for x in v, y in w
+        s += x * y
+        s > 4.0 && break
+    end
+    return s
+end
+@testset "nest" begin
+    cases = [[Case(nestpair, 3, 4, l) for l in (5, 11, 1000)]; [Case(nesttriple, 3, l) for l in (10, 40, 10000)]; Case(nesttwice, 4); Case(nestinside, 3);
+             Case(nestvec, SVector(1.0, 2.0, 3.0), SVector(0.5, 1.5, 2.5)); Case(nestbreak, 4)]
+    check("nest", cases)
+    check("nestgoto", cases; goto=true)
+    flag = csource("nesttext", nesttriple, nesttwice)
+    @test occursin("bool done = false;\n    for (int64_t i = 1; i <= n && !done; i++) {\n        for (int64_t j = 1; j <= n && !done; j++) {\n            for (int64_t k = 1; k <= n; k++) {", flag)
+    @test occursin("done = true;\n                    break;", flag) && occursin("bool done_ = false;", flag) && !occursin("goto", flag)
+    jump = csource("nestgototext", nesttriple, nesttwice; goto=true)
+    @test occursin("goto done;", jump) && occursin("    done:;\n", jump) && occursin("goto done_;", jump) && !occursin("bool done", jump)
 end
 end

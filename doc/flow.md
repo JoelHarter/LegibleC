@@ -31,7 +31,7 @@ never a `goto`.
 | `for k in 1:n` where the body assigns `k` | lasts for the pass; the next pass gets the range's next value | `for (int64_t i = 1; i <= n; i++) { int64_t k = i; …` — the counting is an index of ours, as for `for x in v` |
 | `for x in v` where the body gives `v` a new value | Julia goes on through the array it began with | the loop reads a copy made before it |
 | `while a && b`, `while a \|\| b` | the same merged tests an `if` opens with | `while (a && b)` |
-| `break` inside `for i in 1:n, j in 1:m` | leaves the whole nest | refused: C's `break` leaves one loop |
+| `break` inside `for i in 1:n, j in 1:m` | leaves the whole nest, which C's `break` doesn't | a flag the outer loops test, `i <= n && !done`, set before the inner `break`; with the `goto` option, `goto done;` and a label after the nest |
 | `let a = …` … `end` | no trace in the lowered code; found in the source | a bare block, `{ … }` — see [block.md](block.md) |
 | `break`, `continue` | jumps to the loop's exit or its next-iteration point | `break;`, `continue;` |
 | `return x` anywhere | a `ReturnNode` | `return x;` (`return;` in a void function) |

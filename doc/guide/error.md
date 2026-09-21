@@ -27,9 +27,8 @@ The usual causes:
   its size;
 - a non-ASCII character literal, since C's `char` holds one byte;
 - a `dims` keyword that isn't a literal;
-- control flow whose C would not go where the Julia goes, which today is a
-  condition part that needs a line of its own when a failed test must reach an
-  `else` (`if a && sum(x .* x) > 1.0 … else`): give that part a variable first.
+- a signed integer compared with or divided by an unsigned one of at least its
+  width, where no C operator means what Julia means: convert one side.
 
 ## When the transpiler itself goes wrong
 

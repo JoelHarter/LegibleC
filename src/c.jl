@@ -159,6 +159,7 @@ mutable struct Scope
     alias::Dict{Int, Any}               # a read of a variable of Julia's own making that is just what was stored in it -> that value
     ready::Dict{Int, String}            # a number whose C took lines of its own to prepare (a product of several arrays) -> its text
     gone::Set{Int}                      # stores into variables nothing reads, and what was computed only for them: no C, and no use counted
+    flags::Dict{Int, String}            # a nest of loops that a `break` leaves whole: its outermost loop -> the flag, or the label, that does it
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
@@ -181,7 +182,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}(), Dict{Int, String}(), Set{Int}())
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}(), Dict{Int, String}(), Set{Int}(), Dict{Int, String}())
 end
 
 include("flow.jl")

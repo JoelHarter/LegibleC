@@ -161,7 +161,11 @@ function block!(lines, sc::Scope, lo::Int, hi::Int; except::Int=0)
             i = ifelse!(lines, sc, tree.ifs[i])
         elseif haskey(tree.exits, i)
             sc.current = i
-            emit!(lines, sc, tree.exits[i] * ";")
+            if haskey(tree.far, i)               # out of the whole nest: `goto done;`, or the flag and then out of this loop
+                gotos[] ? emit!(lines, sc, "goto $(sc.flags[tree.far[i]]);") : (emit!(lines, sc, "$(sc.flags[tree.far[i]]) = true;"); emit!(lines, sc, "break;"))
+            else
+                emit!(lines, sc, tree.exits[i] * ";")
+            end
             i += 1
         elseif isjump(code[i])
             error("internal: the jump at statement $i (line $(sc.stmtline[i])) was accounted for as $(get(tree.claimed, i, :nothing)) and met while writing; please report it")
@@ -439,6 +443,15 @@ end
 
 function forloop!(lines, sc::Scope, F::For)
     annotate!(lines, sc, sc.stmtline[F.start])
+    # A nest that a `break` leaves whole. Its outermost loop owns the name: a flag that every
+    # loop of the nest but the innermost tests, `i <= n && !done`, or the label after the nest.
+    nest = get(sc.tree.nests, F.start, 0)
+    if nest == F.start
+        name = free("done", union(sc.names, sc.outer, values(sc.flags)))
+        sc.flags[F.start] = name
+        gotos[] || emit!(lines, sc, "bool $name = false;")
+    end
+    going = nest != 0 && !gotos[] ? " && !$(sc.flags[nest])" : ""
     var = sc.names[F.var]
     T = ctype(widen(sc.ci.slottypes[F.var]))
     lo = bound(sc, F.lo)
@@ -467,7 +480,7 @@ function forloop!(lines, sc::Scope, F::For)
         end
         k = indices(1; taken=union(sc.names, sc.outer))[1]
         push!(sc.names, k)
-        emit!(lines, sc, "for (int64_t $k = 0; $k < $hi; $k++) {")
+        emit!(lines, sc, "for (int64_t $k = 0; $k < $hi$going; $k++) {")
         if any(i -> F.var in slotreads(code[i]), F.bodylo:F.bodyhi)       # a body that never reads `x` has no `x`
             sc.depth += 1
             emit!(lines, sc, "$T $var = $array[$k];")
@@ -476,6 +489,7 @@ function forloop!(lines, sc::Scope, F::For)
         end
         nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
         emit!(lines, sc, "}")
+        nest == F.start && gotos[] && emit!(lines, sc, "$(sc.flags[F.start]):;")      # a label needs a statement after it
         return F.exit
     end
     # The body assigns the loop's own variable. In Julia that lasts for the pass, and the
@@ -488,11 +502,11 @@ function forloop!(lines, sc::Scope, F::For)
         push!(sc.names, count)
     end
     if F.step === nothing
-        emit!(lines, sc, "for ($T $count = $lo; $count <= $hi; $count++) {")
+        emit!(lines, sc, "for ($T $count = $lo; $count <= $hi$going; $count++) {")
     else
         F.step isa Integer || throw(ArgumentError("a range step must be a literal (statement $(F.start))"))
         cmp = F.step > 0 ? "<=" : ">="
-        emit!(lines, sc, "for ($T $count = $lo; $count $cmp $hi; $count += $(F.step)) {")
+        emit!(lines, sc, "for ($T $count = $lo; $count $cmp $hi$going; $count += $(F.step)) {")
     end
     sc.pending = "$var = $lo; $var <= $hi"
     if count != var
@@ -502,6 +516,7 @@ function forloop!(lines, sc::Scope, F::For)
     end
     nested!(lines, sc, F.bodylo, F.bodyhi; loop=true)
     emit!(lines, sc, "}")
+    nest == F.start && gotos[] && emit!(lines, sc, "$(sc.flags[F.start]):;")          # a label needs a statement after it
     return F.exit
 end
 

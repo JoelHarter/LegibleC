@@ -58,6 +58,11 @@ Options:
   continuation line starting with the operator. See `doc/copy.md`.
 - `c23floattypes`: write `Float64` and `Float32` as C23's `_Float64` and `_Float32`
   instead of `double` and `float`, wherever they appear.
+- `goto`: may the C contain a `goto`? It is wanted for one thing only, a `break` that leaves a
+  whole nest of loops, `for i in 1:n, j in 1:m`, which C has no other word for. With
+  `goto=true` that is `goto done;` and a label after the nest, as many C programmers write
+  it by hand. By default it is a flag that the outer loops test, `i <= n && !done`, which is
+  what the coding guidelines for safety-critical C ask for, and there is no `goto` anywhere.
 - `bool`: the C type for Julia's `Bool` — `Bool` itself, for C's `bool`, or one of
   Julia's integer types, `Int32` say, for that integer wherever a `Bool` appears:
   parameters, results, fields, elements, and the names that mention the type. The
@@ -78,6 +83,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
                    precise::Bool=false,
                    width::Integer=100,
                    posix::Bool=false,
+                   goto::Bool=false,
                    tempsuffix::Bool=true,
                    spelling::AbstractDict=Dict{Char, String}(),
                    c23floattypes::Bool=false,
@@ -91,6 +97,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
     LegibleC.c23floattypes[] = c23floattypes
     LegibleC.booltype[] = bool
     LegibleC.posix[] = posix
+    LegibleC.gotos[] = goto
     empty!(LegibleC.irrationals)
     local problem
     try
@@ -108,6 +115,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
         LegibleC.scope[] = Main
         LegibleC.c23floattypes[] = false
         LegibleC.posix[] = false
+        LegibleC.gotos[] = false
         empty!(LegibleC.irrationals)
         LegibleC.booltype[] = Bool
     end
