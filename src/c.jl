@@ -2671,26 +2671,52 @@ end
 function globalsource(g::Global, files)
     found = Any[]
     g.mod isa Module || return found
-    pat = Regex("(^|;)\\s*(const\\s+)?\\Q$(g.name)\\E\\s*(::[^=]*)?=[^=]")
+    home = collect(fullname(g.mod))
+    # The file is parsed, and only what stands at the top level of a module counts: not a
+    # keyword argument `f(x; c = 1)`, not a `c = 1` inside a function. A line inside
+    # `module B` belongs to a global of a module whose name ends in `B`; the deeper match wins.
+    function toplevel!(at, ex, path, line)
+        ex isa Expr || return line
+        if ex.head === :module
+            toplevel!(at, ex.args[3], [path; ex.args[2]], line)
+        elseif ex.head in (:toplevel, :block, :const, :global, :if, :elseif, :macrocall)
+            for a in ex.args
+                a isa LineNumberNode ? (line = a.line) : toplevel!(at, a, path, line)
+            end
+        elseif ex.head === :(=)
+            lhs = ex.args[1]
+            lhs isa Expr && lhs.head === :(::) && (lhs = lhs.args[1])
+            lhs === g.name && push!(at, (line, path))
+            toplevel!(at, ex.args[2], path, line)             # `a = b = 1`
+        end
+        return line
+    end
     function candidates!(path, order)
-        lines = readlines(path)
-        for k in order(lines)
-            occursin(pat, lines[k]) || continue
-            note = split_comment(lines[k])[2]
-            push!(found, (file=basename(path), line=k, text=strip(lines[k]), note=note === nothing || isempty(strip(note)) ? nothing : strip(note)))
+        text = read(path, String)
+        parsed = try Meta.parseall(text; filename=path) catch; return end
+        at = Tuple{Int, Vector{Any}}[]
+        toplevel!(at, parsed, Any[], 1)
+        filter!(((_, mods),) -> length(mods) <= length(home) && mods == home[end-length(mods)+1:end], at)
+        isempty(at) && return
+        deepest = maximum(length(mods) for (_, mods) in at)
+        lines = split(text, '\n')
+        here = sort!(unique(l for (l, mods) in at if length(mods) == deepest && l <= length(lines)))
+        for k in order(here)
+            note = split_comment(String(lines[k]))[2]
+            push!(found, (file=basename(path), line=k, text=String(strip(lines[k])), note=note === nothing || isempty(strip(note)) ? nothing : String(strip(note))))
         end
     end
-    # Every line that could be the one, likeliest first: in the module's own file from the
-    # module's first line on; then in the files the functions came from, last assignment
-    # first. Which of them it is, `globallines` tells by the value.
+    # Every line that could be the one, likeliest first: in the module's own file; then in
+    # the files the functions came from, last assignment first. With several, `globallines`
+    # tells which by the value.
     if isdefined(Base, :moduleloc)
         loc = Base.moduleloc(g.mod)
         path = isempty(string(loc.file)) ? nothing : Base.find_source_file(string(loc.file))
-        path !== nothing && isfile(path) && candidates!(path, lines -> max(loc.line, 1):length(lines))
+        path !== nothing && isfile(path) && candidates!(path, identity)
     end
     for f in unique(files)
         path = Base.find_source_file(string(f))
-        path !== nothing && isfile(path) && candidates!(path, lines -> length(lines):-1:1)
+        path !== nothing && isfile(path) && candidates!(path, reverse)
     end
     return unique(found)
 end

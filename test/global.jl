@@ -126,7 +126,13 @@ function typedlocal(x::Float64)
 end
 @testset "global written" begin
     check("globalwritten", [Case(countup, 4), Case(relevel, 3.0), Case(through, 5), Case(typedlocal, 2.0)])
-    src = csource("globalwrittentext", countup, relevel, through, typedlocal)
+    # The cases above have run, so the globals no longer hold what their defining lines give
+    # them. The author is told, the C says so beside the value, and a value given to
+    # `transpile` starts the global from there instead.
+    src = @test_logs (:warn, r"`counter` holds") (:warn, r"`level` holds") match_mode=:any csource("globalwrittentext", countup, relevel, through, typedlocal)
+    @test occursin(r"int64_t counter = \d+;  // the value when transpiled, not the 0 of the line above", src)
+    fresh = @test_logs min_level=Base.CoreLogging.Warn csource("globalfresh", countup, relevel; counter=0, level=1.5)
+    @test occursin("\nint64_t counter = 0;", fresh) && occursin("\ndouble level = 1.5;", fresh)
     # Not `const`. The value is the one it has when transpiled, as for every global, and by now the cases above have run.
     @test occursin(r"\nint64_t counter = \d+;", src) && occursin(r"\ndouble level = [\d.]+;", src)
     @test occursin("counter = 0;", src) && occursin("counter += k;", src) && occursin("level *= x;", src) && occursin("level -= 1.0;", src)

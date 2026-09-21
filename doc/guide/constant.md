@@ -25,9 +25,15 @@ is a plain global in the `.c` and `extern` in the header. See
 
 A function may give a typed scalar global a new value, `global count += 1`,
 and the C does the same to its global: `count++;`. An array global's elements
-can be written, `tally[2] += k`; the array itself can't be replaced. Every
-global starts from the value it has at the moment it is transpiled, so
-transpile before running anything that changes one, or set it in the code.
+can be written, `tally[2] += k`; the array itself can't be replaced.
+
+Every global starts in C from the value it holds at the moment it is
+transpiled: the C picks up where Julia is, and from there on the same calls
+give the same results in both. For a counter that an earlier run has left at
+15, that means the C starts at 15. The transpiler says so when it happens, as
+a warning and as a comment beside the value, and there are two ways to start
+elsewhere: transpile before running anything that changes it, or give the
+value, `transpile(bump; counter = 0)`.
 
 ## A macro constant is an irrational
 

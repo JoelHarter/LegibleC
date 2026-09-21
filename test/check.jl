@@ -107,7 +107,10 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
     LegibleC.booltype[] = get(kw, :bool, Bool)
     cnames = Dict(zip(fs, identifiers([identifier(string(nameof(f))) for f in fs])))
     headers = ["#include \"$h\"" for h in readdir(dirname(path)) if endswith(h, ".h") && h != "helper.h"]
-    main = ["#include <stdio.h>", "#include <stdbool.h>", "#include <math.h>", "#include <complex.h>", headers..., extra, "int main(void) {"]
+    # `CMPLX` builds a complex input exactly. Clang on Linux doesn't get it from glibc's <complex.h>,
+    # so this `main` guards it the way the generated header does for the C it writes.
+    main = ["#include <stdio.h>", "#include <stdbool.h>", "#include <math.h>", "#include <complex.h>", headers..., extra,
+            LegibleC.mathguards("CMPLX( CMPLXF(")..., "int main(void) {"]
     references = Any[]
     for (k, c) in enumerate(cases)
         passes = String[]

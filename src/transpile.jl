@@ -190,8 +190,15 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
     end
     # A variable given by keyword: its binding is looked for in `scope`; a value with no
     # binding there is a constant.
+    # A global that isn't `const`, given a value here, is that global, starting from that
+    # value: `counter = 0` after a run has left it at 15.
     for (name, value) in pairs(variables)
         bound = isdefined(scope, name) && getfield(scope, name) === value
+        if !bound && isdefined(scope, name) && !isconst(scope, name)
+            T = Core.get_binding_type(scope, name)
+            value = T === Any ? value : convert(T, value)
+            bound = true
+        end
         push!(values, (bound ? scope : nothing, name, value, bound ? nothing : true))
     end
     # Two instances that are the same method at signatures C can't tell apart — a
@@ -368,16 +375,29 @@ filescope(prog::Program) = union(prog.names, keys(prog.helpers), keys(prog.forei
 # is being copied — its trailing `# note` riding along, otherwise after the declaration
 # — and the initializer written from that line's expression where it can be (`symbolic`),
 # so `π` is the macro; from the value otherwise.
-function globallines(g::Global, files, source::Bool, prefix)
+function globallines(g::Global, files, source::Bool, prefix; written::Bool=false, warn::Bool=false)
     # Several lines may assign a name like this one — `c` in a module and in a submodule of
     # it. The one whose expression agrees with the value Julia holds is the one; failing
     # that, the first whose expression can't be checked; never one that disagrees.
     found = [(src, symbolic(g, src.text)) for src in globalsource(g, files)]
     k = something(findfirst(p -> p[2] isa String, found), findfirst(p -> p[2] === nothing, found), 0)
     src, init = k == 0 ? (nothing, nothing) : found[k]
+    # A global starts in C from the value it holds when it is transpiled: where Julia is now.
+    # That is the one rule that always holds, since the same calls then give the same results in
+    # both from here on. For a global the C writes, that value may be one an earlier run left
+    # behind, and the author is told: the one line that assigns it disagrees with it, which is
+    # said beside the value in the C and as a warning, with the two ways to start elsewhere.
+    stale = nothing
+    if written && k == 0 && length(found) == 1 && found[1][2] === false
+        src = found[1][1]
+        rhs = assigned(try Meta.parse(src.text) catch; nothing end, g.name)
+        first = rhs !== nothing && crender(rhs, g.mod) !== nothing ? (try Core.eval(g.mod, rhs) catch; nothing end) : nothing
+        stale = "the value when transpiled" * (first === nothing ? "" : ", not the $(first) of the line above")
+        warn && @warn "`$(g.name)` holds $(g.value) now, which isn't what its defining line gives it ($(src.file):$(src.line): $(src.text)). The C starts from $(g.value), where Julia is now. To start from another value, transpile before running anything that changes `$(g.name)`, or pass `$(g.name) = …` to `transpile`."
+    end
     lines = String[]
     source && src !== nothing && push!(lines, "// @$(src.file):$(src.line): $(src.text)")
-    push!(lines, prefix * globaldecl(g; note=source && src !== nothing ? nothing : src === nothing ? nothing : src.note, text=init))
+    push!(lines, prefix * globaldecl(g; note=stale !== nothing ? stale : source && src !== nothing ? nothing : src === nothing ? nothing : src.note, text=init))
     return lines
 end
 
@@ -591,7 +611,7 @@ function guardname(guard, everything)
 end
 
 function writefiles(dir, prog::Program, base, where, order, names, functions, helper, files, source::Bool, everything)
-    declared(g::Global, prefix) = globallines(g, files, source, prefix)
+    declared(g::Global, prefix) = globallines(g, files, source, prefix; written=(g.mod, g.name) in prog.written, warn=true)
     definition = Dict(zip(names, (f[3] for f in functions)))
     # What each file defines, for the includes: functions and foreign wrappers are looked
     # for as calls, the rest as words.
