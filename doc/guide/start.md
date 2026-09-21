@@ -44,7 +44,7 @@ of `out/body.c`. The folder holds:
 It compiles as a unit, and this is the setting it is written for:
 
 ```
-cc -std=c11 -O2 -ffast-math -fno-finite-math-only -fno-cx-limited-range -ffp-contract=fast -march=native -Wall -Wextra -c out/*.c
+cc -std=c11 -O2 -ffast-math -fno-finite-math-only -fno-cx-limited-range -ffp-contract=fast -fwrapv -march=native -Wall -Wextra -c out/*.c
 ```
 
 Every fast-math shortcut is welcome — reassociation, reciprocals, no
@@ -57,8 +57,17 @@ and Apple's clang has neither — leave it out there). `-std=c11` on
 its own forbids fusing a multiply and an add, so `-ffp-contract=fast` puts
 FMA back, and `-march=native` gives the instruction on x86, where it isn't
 baseline. Leave `-march=native` off for a build that must run on other
-machines. The test suite compiles with these flags. When linking, add
-`-lm` for the math library, which Linux doesn't link on its own.
+machines. `-fwrapv` makes a signed integer that overflows wrap round, as
+Julia's does; without it C leaves that case undefined. The test suite
+compiles with these flags. When linking, add `-lm` for the math library,
+which Linux doesn't link on its own.
+
+The C is written for GCC and for Clang, and the test suite runs under both
+on every change. Between them they cover Linux, macOS, Windows (MinGW's GCC,
+or the Clang that ships with Visual Studio) and the usual embedded
+toolchains. Microsoft's own compiler is accommodated where it can be; what
+it can't do is listed in the todo, and `-fwrapv` is the first entry, since it
+has no such setting.
 
 Argument types must be concrete: `Float64`, `SVector{3,Float64}`,
 `SMatrix{2,3,Float64,6}`, a `struct` of those. A function whose method has

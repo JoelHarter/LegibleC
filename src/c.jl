@@ -2234,6 +2234,7 @@ function rendered(sc::Scope, i, ex::Expr)
         throw(ArgumentError("a product of several arrays that comes to a number, `v' * A * w`, `s * v' * w`: write the array part first and then the number, `dot(v, A * w)`, `s * dot(v, w)` (statement $i)"))
     f === Base.:+ && return n == 1 ? expression(sc, args[1]) : op("+", ADD)
     f === Base.:- && return n == 1 ? unary("-") : op("-", ADD)
+    f === Base.:* && all(a -> valuetype(sc, a) === Bool, args) && return op("&", BAND)       # `b * c` on truth values is `and`; GCC warns of a `*` in a condition
     f === Base.:* && return op("*", MUL)
     if f === Base.:/
         if all(a -> valuetype(sc, a) <: Integer, args)
@@ -3011,6 +3012,8 @@ end
 # that calls C.
 function foreign!(sc::Scope, st::Expr)
     sym = st.args[1]
+    # Julia 1.13 writes the name as a tuple, `(:cbrt,)` or `(:cbrt, "libm")`: the name is its first element.
+    sym isa Expr && sym.head === :tuple && !isempty(sym.args) && (sym = sym.args[1])
     sym isa QuoteNode && (sym = sym.value)
     sym isa Tuple && (sym = sym[1])
     sym isa Symbol || throw(ArgumentError("ccall to a computed function pointer is not supported"))

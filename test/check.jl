@@ -11,8 +11,12 @@ using LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname,
 # The setting the C is written for (doc/guide/start.md), so every test checks it holds up there.
 # `-fno-cx-limited-range` keeps complex division overflow-safe under fast-math, as Julia's
 # is; GCC has it, Apple's clang doesn't, so it is added where the compiler takes it.
-const cxflag = success(pipeline(`cc -fno-cx-limited-range -x c -c /dev/null -o /dev/null`; stderr=devnull)) ? ["-fno-cx-limited-range"] : String[]
-const flags = ["-std=c11", "-O2", "-ffast-math", "-fno-finite-math-only", cxflag..., "-ffp-contract=fast", "-march=native",
+# `-fwrapv` makes signed integer overflow wrap, as Julia's does; C leaves it undefined otherwise.
+# The compiler is `cc`, or whatever `CC` names: the build server runs the suite under GCC and
+# under Clang, the two compilers the C is written for.
+const cc = get(ENV, "CC", "cc")
+const cxflag = success(pipeline(`$cc -fno-cx-limited-range -x c -c /dev/null -o /dev/null`; stderr=devnull)) ? ["-fno-cx-limited-range"] : String[]
+const flags = ["-std=c11", "-O2", "-ffast-math", "-fno-finite-math-only", cxflag..., "-ffp-contract=fast", "-fwrapv", "-march=native",
                "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 
 # One call to check: a function and the values to call it with.
@@ -143,7 +147,7 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
     exe = joinpath(dir, "main")
     out = dirname(path)
     sources = [joinpath(out, f) for f in readdir(out) if endswith(f, ".c")]
-    run(`cc $flags -I$out $(joinpath(dir, "main.c")) $sources -o $exe -lm`)   # -lm: Linux doesn't link libm by itself
+    run(`$cc $flags -I$out $(joinpath(dir, "main.c")) $sources -o $exe -lm`)   # -lm: Linux doesn't link libm by itself
     lines = split(read(`$exe`, String), "\n")
     @testset "$name" begin
         @test length(lines) == length(cases) + 1
@@ -182,7 +186,7 @@ function csource(name, targets...; kw...)
     out = dirname(path)
     files = readdir(out)
     for f in files
-        endswith(f, ".c") && run(`cc $flags -c $(joinpath(out, f)) -o $(joinpath(dir, f * ".o"))`)
+        endswith(f, ".c") && run(`$cc $flags -c $(joinpath(out, f)) -o $(joinpath(dir, f * ".o"))`)
     end
     ordered = [filter(==("helper.h"), files); filter(f -> endswith(f, ".h") && f != "helper.h", files); filter(f -> endswith(f, ".c") && f != last, files); [last]]
     return snap(name, join((read(joinpath(out, f), String) for f in ordered), "\n"))

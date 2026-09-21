@@ -23,7 +23,7 @@ function run(src, calls)
     write(joinpath(dir, "print.c"), replace(src, r"#include \"\w+\.h\"\n" => ""))
     write(joinpath(dir, "main.c"), "#include \"print.c\"\nint main(void) {\n" * join("    " .* calls, "\n") * "\n    return 0;\n}\n")
     exe = joinpath(dir, "main")
-    Base.run(`cc $flags -I$dir $(joinpath(dir, "main.c")) -o $exe`)
+    Base.run(`$(Main.cc) $flags -I$dir $(joinpath(dir, "main.c")) -o $exe`)
     out = read(pipeline(`$exe`; stderr=joinpath(dir, "err.txt")), String)
     return out, read(joinpath(dir, "err.txt"), String)
 end
