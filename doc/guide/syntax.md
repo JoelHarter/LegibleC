@@ -71,6 +71,8 @@ both languages, read-only.
 | `! & \| xor << >> ~` | yes |
 | `&&`, `\|\|`, `c ? x : y` | yes, in conditions and as values |
 | `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc round hypot copysign abs max min atan(y, x)` | yes; the `f` family on `Float32` |
+| `isodd`, `iseven`, `inv(x)`, `deg2rad`, `rad2deg`, `>>>`, `eps(x)`, `ifelse(c, a, b)` | yes, each as the C expression it is: `k % 2 != 0`, `1.0 / x`, `x * (LEGIBLEC_PI / 180)` |
+| `gcd`, `lcm`, `isqrt`; `sind`, `cosd`, `tand` | yes, as a small helper each; the degree functions are exact at the multiples of 90, as Julia's are |
 | `zero(x)`, `one(x)` | yes |
 | `s, c = sincos(x)` | yes, as `sin(x)` and `cos(x)`; only destructured |
 | `Float64(a)`, `Int64(x)`, `round(Int64, x)`, `floor(Int64, x)`, … | yes, as casts |

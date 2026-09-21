@@ -1867,6 +1867,7 @@ assigns(st, slot) = st isa Expr && st.head === :(=) && st.args[1].id == slot
 
 # C precedence levels used by `render`.
 const PRIMARY, UNARY, MUL, ADD, SHIFT, REL, EQ, BAND, BXOR, BOR, LAND, LOR = 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4
+include("idiom.jl")     # scalar functions that are one C expression, a row each
 
 """
     render(sc, i, ex) -> (text, precedence)
@@ -2118,6 +2119,10 @@ function render(sc::Scope, i, ex::Expr)
         end
     end
 
+    # One C expression of its arguments: a row of the table (`idiom.jl`).
+    r = idiom(f, T, [widen(valuetype(sc, a)) for a in args])
+    r === nothing || return written(sc, r, T, args)
+
     # Classification of a floating value: the same names, from math.h.
     f in (Base.isnan, Base.isinf, Base.isfinite, Base.signbit) && n == 1 && return fn(string(nameof(f)))
 
@@ -2348,7 +2353,7 @@ end
 # A scalar expression a static initializer may hold, as C text with its precedence.
 function crender(ex, mod)
     ex isa Bool && return (initializer(ex), PRIMARY)
-    ex isa Integer && return (string(ex), PRIMARY)
+    ex isa Integer && return (integer(ex), PRIMARY)
     ex isa AbstractFloat && return (initializer(ex), PRIMARY)
     if ex isa Symbol
         isdefined(mod, ex) || return nothing
@@ -2427,7 +2432,7 @@ end
 # A Julia value as a C initializer: numbers, characters, strings, arrays in row-major
 # nesting, tuples and structs field by field.
 initializer(x::Bool) = booltype[] === Bool ? (x ? "true" : "false") : (x ? "1" : "0")
-initializer(x::Integer) = string(x)
+initializer(x::Integer) = integer(x)
 initializer(x::AbstractFloat) = isinf(x) ? (x > 0 ? "INFINITY" : "-INFINITY") : isnan(x) ? "NAN" : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(Float64(x))
 initializer(x::AbstractIrrational) = macroname(x)   # `const τ = π` keeps the name; a stored double is digits
 initializer(x::Char) = charliteral(x)
@@ -2836,6 +2841,12 @@ function subscript(sc::Scope, k)
     return (p < ADD ? "($text)" : text) * " - 1"
 end
 
+# An integer as C writes it. C has no negative literals: `-9223372036854775808` is the
+# negation of a number that doesn't fit, which a compiler warns of, so the least 64-bit
+# value is the name `stdint.h` gives it. An unsigned value past the signed range needs its suffix.
+integer(x::Integer) = x isa Int64 && x == typemin(Int64) ? "INT64_MIN" :
+                      x isa Unsigned && x > typemax(Int64) ? string(x) * "u" : string(x)
+
 # C code for an IR value (a name or literal; use `expression` for inlined calls).
 function value(sc::Scope, x)
     if x isa Core.SSAValue
@@ -2856,7 +2867,7 @@ function value(sc::Scope, x)
     x isa Bool            && return booltype[] === Bool ? (x ? "true" : "false") : (x ? "1" : "0")
     x isa Char            && return charliteral(x)
     x isa AbstractString  && return "\"" * cstring(x) * "\""
-    x isa Integer         && return string(x)
+    x isa Integer         && return integer(x)
     x isa AbstractFloat   && return isinf(x) ? (push!(sc.headers, "math.h"); x > 0 ? "INFINITY" : "-INFINITY") :
                                     isnan(x) ? (push!(sc.headers, "math.h"); "NAN") : x isa Float32 ? replace(string(x), "f" => "e") * "f" : repr(x)
     x isa AbstractIrrational && return constant(sc, x)

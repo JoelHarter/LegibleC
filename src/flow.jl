@@ -932,6 +932,8 @@ function duplicates(sc::Scope, u, use::Expr, i)
     end
     f === Base.mod && T <: Integer && return true
     f in (Base.max, Base.min) && T <: Integer && return true
+    r = idiom(f, T, [widen(valuetype(sc, a)) for a in use.args[2:end]])
+    r === nothing || return any(k -> use.args[k+1] == Core.SSAValue(i) && twice(r, k), 1:length(use.args)-1)
     f === Base.:(==) && (isstruct(valuetype(sc, use.args[2])) || istuple(valuetype(sc, use.args[2]))) && return true
     return false
 end

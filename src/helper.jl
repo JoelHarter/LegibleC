@@ -57,7 +57,7 @@ const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det
                          "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
 const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
 # The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
-const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray"])
+const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand"])
 
 """
     helpername(op, types; pointwise=false) -> String
@@ -337,6 +337,69 @@ function powhelper!(helpers::Dict{String, String}, E::Type)
     helpers[name] = definition(t, name, ["$t x", "int n"], body;
                                doc=["integer power of $(E === Float64 ? "a scalar" : E <: AbstractFloat ? "a float" : "an integer"), by squaring",
                                     "returns x^n"])
+    return name
+end
+
+# `gcd`, `lcm`, `isqrt` on integers: Julia's answers for every argument Julia answers for.
+# Where the answer doesn't fit the type (`gcd(typemin(Int64), 0)`) Julia throws, and such a
+# call never reaches C. The work is done on magnitudes as unsigned, so that the one value
+# with no negative, the type's minimum, takes no special care.
+function integerhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
+    name = string(op) * (E === Int64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t, u = ctype(E), ctype(unsigned(E))
+    magnitude(x) = E <: Signed ? "$x < 0 ? -($u)$x : ($u)$x" : x
+    if op === :gcd
+        helpers[name] = definition(t, name, ["$t a", "$t b"],
+            ["$u x = $(magnitude("a"));", "$u y = $(magnitude("b"));", "while (y != 0) {", "    $u r = x % y;", "    x = y;", "    y = r;", "}", "return ($t)x;"];
+            doc=["greatest common divisor, by Euclid's algorithm; never negative", "returns gcd(a, b)"])
+    elseif op === :lcm
+        g = integerhelper!(helpers, :gcd, E)
+        helpers[name] = definition(t, name, ["$t a", "$t b"],
+            ["if (a == 0 || b == 0) {", "    return 0;", "}", "$t m = a * (b / $g(a, b));", "return " * (E <: Signed ? "m < 0 ? -m : m;" : "m;")];
+            doc=["least common multiple; never negative", "returns lcm(a, b)"])
+    else
+        helpers[name] = definition(t, name, ["$t n"],
+            ["$u s = ($u)sqrt((double)n);", "while (s * s > ($u)n) {", "    s--;", "}", "while ((s + 1) * (s + 1) <= ($u)n) {", "    s++;", "}", "return ($t)s;"];
+            doc=["integer square root: the floating one, then corrected, since a double holds 53 bits", "returns the largest s with s * s <= n"])
+    end
+    return name
+end
+
+# `sind`, `cosd`, `tand`: the angle is brought into one turn and then into the octant where
+# the sine or the cosine of a small angle gives the answer, as Julia does it, and for Julia's
+# reason: the multiples of 90 come out exact, `sind(180.0) == 0.0`, where `sin(x * π / 180)`
+# gives 1.2e-16. `fmod` keeps the sign of the angle, as Julia's `rem` does.
+function degreehelper!(helpers::Dict{String, String}, op::Symbol)
+    name = string(op)
+    haskey(helpers, name) && return name
+    k = "(" * macroname(π) * " / 180)"
+    if op === :sind
+        body = ["double r = fmod(x, 360.0);", "double a = fabs(r);",
+                "if (r == 0.0) {", "    return r;", "}",
+                "if (a < 45.0) {", "    return sin(r * $k);", "}",
+                "if (a <= 135.0) {", "    return copysign(cos((90.0 - a) * $k), r);", "}",
+                "if (a == 180.0) {", "    return copysign(0.0, r);", "}",
+                "if (a < 225.0) {", "    return sin((r < 0.0 ? a - 180.0 : 180.0 - a) * $k);", "}",
+                "if (a <= 315.0) {", "    return -copysign(cos((270.0 - a) * $k), r);", "}",
+                "return sin((r - copysign(360.0, r)) * $k);"]
+        doc = ["sine of an angle in degrees, exact at the multiples of 90", "returns sind(x)"]
+    elseif op === :cosd
+        # The zeros are said outright: under `-ffast-math` a compiler may turn `(90.0 - a) * k`
+        # into `90.0 * k - a * k`, which is 3e-17 at `a == 90.0` and not zero.
+        body = ["double a = fabs(fmod(x, 360.0));",
+                "if (a == 90.0 || a == 270.0) {", "    return 0.0;", "}",
+                "if (a <= 45.0) {", "    return cos(a * $k);", "}",
+                "if (a < 135.0) {", "    return sin((90.0 - a) * $k);", "}",
+                "if (a <= 225.0) {", "    return -cos((180.0 - a) * $k);", "}",
+                "if (a < 315.0) {", "    return sin((a - 270.0) * $k);", "}",
+                "return cos((360.0 - a) * $k);"]
+        doc = ["cosine of an angle in degrees, exact at the multiples of 90", "returns cosd(x)"]
+    else
+        body = ["return $(degreehelper!(helpers, :sind))(x) / $(degreehelper!(helpers, :cosd))(x);"]
+        doc = ["tangent of an angle in degrees", "returns tand(x)"]
+    end
+    helpers[name] = definition("double", name, ["double x"], body; doc)
     return name
 end
 

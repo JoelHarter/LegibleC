@@ -27,7 +27,7 @@ end
 cliteral(x::Bool) = x ? "true" : "false"
 cliteral(x::Char) = charliteral(x)
 cliteral(x::AbstractString) = "\"" * replace(x, "\\" => "\\\\", "\"" => "\\\"") * "\""
-cliteral(x::Integer) = string(x)
+cliteral(x::Integer) = LegibleC.integer(x)
 cliteral(x::AbstractFloat) = isinf(x) ? (x > 0 ? "INFINITY" : "-INFINITY") : isnan(x) ? "NAN" : repr(Float64(x))
 cliteral(x::Complex) = "CMPLX($(cliteral(real(x))), $(cliteral(imag(x))))"
 cliteral(x::Union{Adjoint{<:Any, <:AbstractVector}, Transpose{<:Any, <:AbstractVector}}) = cliteral(parent(x))

@@ -149,6 +149,48 @@ check("onetype", [Case(accum, SVector(1.5, 2.5, 3.0)), Case(joined, 2.0, true), 
     msg = sprint(showerror, try csource("signs", signs) catch e; e end)
     @test occursin("`signs` returns values of different types from the same argument types (Float64 at line", msg) && occursin("String at line", msg) && occursin("one return type", msg)
 end
+# Scalar functions that are one C expression of their arguments, each a row of one table
+# (`src/idiom.jl`), and the few that are a small helper reached through it.
+parity(k::Int64) = (isodd(k) ? 1 : 0) + (iseven(k + 1) ? 10 : 0) + (isodd(k * 3) ? 100 : 0)
+parity32(k::Int32) = isodd(k) && !iseven(k)
+recip(x::Float64, k::Int64) = inv(x) + inv(k) + inv(x + 1.0)
+recip32(x::Float32) = inv(x)
+angles(d::Float64) = deg2rad(d) + rad2deg(d / 100) + deg2rad(d + 1.0)
+shifts(a::Int64, n::Int64) = (a >>> n) + (a >>> 3)
+ushifts(a::UInt32, n::Int64) = a >>> n
+gap(x::Float64) = eps(x) + eps(2.0x) + eps(x * x + 1.0)          # written twice in the C, so never in place
+gap32(x::Float32) = eps(x)
+choose(c::Bool, a::Int64, b::Int64) = ifelse(c, a, b) + ifelse(a > b, a - b, b - a)
+divisors(a::Int64, b::Int64) = gcd(a, b) + 1000 * lcm(a, b)
+divisors32(a::Int32, b::Int32) = gcd(a, b) + lcm(a, b)
+gcdonly(a::Int64, b::Int64) = gcd(a, b)                           # the one value with no negative
+roots(n::Int64) = isqrt(n) + isqrt(n + 1)
+degrees(x::Float64) = sind(x) + 10.0 * cosd(x) + 100.0 * tand(x / 4)
+# Julia's are exact at the multiples of 90, which `sin(x * π / 180)` is not.
+exact(x::Float64) = (sind(x) == 0.0 ? 1 : 0) + (cosd(x) == 0.0 ? 10 : 0) + (sind(x) == 1.0 ? 100 : 0) + (cosd(x) == -1.0 ? 1000 : 0)
+least() = typemin(Int64) + 1                                      # C has no negative literals
+@testset "idiom" begin
+    cases = [[Case(parity, k) for k in (-3, -2, 0, 1, 8)]; Case(parity32, Int32(-3)); Case(parity32, Int32(4));
+             Case(recip, 4.0, 8); Case(recip, -0.5, -3); Case(recip32, 4.0f0);
+             [Case(angles, d) for d in (0.0, 90.0, 180.0, -37.5)];
+             [Case(shifts, a, n) for a in (-16, 1024, -1) for n in (0, 2, 63)]; Case(ushifts, 0xf0000000, 4);
+             [Case(gap, x) for x in (0.0, 1.0, -3.7, 1e300, 5e-324)]; Case(gap32, 1.5f0);
+             [Case(choose, c, a, b) for c in (true, false) for (a, b) in ((3, 9), (9, 3))];
+             [Case(divisors, a, b) for (a, b) in ((12, 18), (-12, 18), (12, -18), (0, 5), (5, 0), (0, 0), (17, 5), (-7, -21))];
+             Case(divisors32, Int32(12), Int32(-18)); Case(gcdonly, typemin(Int64), -1); Case(gcdonly, 6, typemin(Int64));
+             [Case(roots, n) for n in (0, 1, 15, 16, 17, 4503599761588224, 9223372030926249000, 9223372036854775806)];
+             [Case(degrees, x) for x in (0.0, 30.0, 45.0, 60.0, 135.0, 180.0, 200.0, 225.0, 300.0, 315.0, 350.0, 720.5, -30.0, -200.0, -300.0, 1e6 + 0.25)];
+             [Case(exact, x) for x in (0.0, 90.0, 180.0, 270.0, 360.0, -90.0, -180.0, 450.0, 30.0)]; Case(least)]
+    check("idiom", cases)
+    src = csource("idiomtext", parity, recip, angles, shifts, gap, choose, least)
+    @test occursin("(k % 2 != 0 ? 1 : 0) + ((k + 1) % 2 == 0 ? 10 : 0)", src)
+    @test occursin("return 1.0 / x + 1.0 / k + 1.0 / (x + 1.0);", src)
+    @test occursin("d * (LEGIBLEC_PI / 180)", src) && occursin("* (180 / LEGIBLEC_PI)", src)
+    @test occursin("(int64_t)((uint64_t)a >> n)", src)
+    @test occursin("double temp1_x = 2.0 * x;", src) && occursin("nextafter(fabs(temp1_x), INFINITY) - fabs(temp1_x)", src)
+    @test occursin("(c ? a : b) + (a > b ? a - b : b - a)", src)
+    @test occursin("return INT64_MIN + 1;", src)
+end
 # Every refusal leaves the same way: what it is, then the function, the file and line, and
 # the Julia line itself. A statement's number, which is the transpiler's, never shows.
 nocode(x::Float64, k::Int64) = x * trailing_zeros(k)
