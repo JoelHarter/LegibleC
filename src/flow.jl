@@ -989,7 +989,7 @@ end
 # (a `ccall`) counts as both.
 const writing = (Base.setindex!, Base.setproperty!, Core.setfield!, Base.push!, Base.pop!, Base.fill!, Base.copyto!, Base.materialize!, Core.setglobal!)
 const printing = (Base.print, Base.println, Printf.format)
-const known = (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf)
+const known = (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf, :Statistics)
 
 # Is this call free of effects? Julia's own functions are, except the ones above; a
 # user function is examined (`effects!`).

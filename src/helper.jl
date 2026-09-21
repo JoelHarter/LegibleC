@@ -53,7 +53,7 @@ end
 # and the identity are written inline). Pointwise helpers need no entry, the `P` says it.
 # The tests insist every helper they meet is recognized, so a new one can't be forgotten.
 const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det", "inv", "invLLT", "pinv", "solve", "rsolve", "solveLLT",
-                         "lu", "llt", "pivot", "tr", "norm", "sum", "prod", "minimum", "maximum", "extrema", "diff", "cumsum", "cumprod",
+                         "lu", "llt", "pivot", "tr", "norm", "norm1", "normInf", "mean", "var", "std", "sum", "prod", "minimum", "maximum", "extrema", "diff", "cumsum", "cumprod",
                          "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
 const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
 # The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
@@ -491,6 +491,12 @@ function reducehelper!(helpers::Dict{String, String}, op::Symbol, T::Type, E::Ty
            op == :any     ? [nest(pairs, ["if ($a) {", "    return true;", "}"]); "return false;"] :
            op == :all     ? [nest(pairs, ["if (!$a) {", "    return false;", "}"]); "return true;"] :
            op == :norm    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $(eltype(T) <: Complex ? "$(mathname(eltype(T), "real"))($a) * $(mathname(eltype(T), "real"))($a) + $(mathname(eltype(T), "imag"))($a) * $(mathname(eltype(T), "imag"))($a)" : "$a * $a");"]); "return $(E === Float32 ? "sqrtf" : "sqrt")(sum);"] :
+           op == :norm1   ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $(mathname(eltype(T), "fabs"))($a);"]); "return sum;"] :
+           op == :normInf ? ["$(ctype(E)) max = $zero;"; nest(pairs, ["if ($(mathname(eltype(T), "fabs"))($a) > max) {", "    max = $(mathname(eltype(T), "fabs"))($a);", "}"]); "return max;"] :
+           op == :mean    ? ["$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += $a;"]); "return sum / $(prod(shape(T)));"] :
+           op in (:var, :std) ? ["$(ctype(E)) mean = $zero;"; nest(pairs, ["mean += $a;"]); "mean /= $(prod(shape(T)));";
+                                 "$(ctype(E)) sum = $zero;"; nest(pairs, ["sum += ($a - mean) * ($a - mean);"]);
+                                 op == :var ? "return sum / $(prod(shape(T)) - 1);" : "return $(E === Float32 ? "sqrtf" : "sqrt")(sum / $(prod(shape(T)) - 1));"] :
            op == :count   ? ["int64_t count = 0;"; nest(pairs, ["if ($a) {", "    count++;", "}"]); "return count;"] :
            op == :tr      ? ["$(ctype(E)) sum = $zero;"; "for (int i = 0; i < $(shape(T)[1]); i++) {"; "    sum += $A[i][i];"; "}"; "return sum;"] :
            # `argmax`, `argmin`: Julia's 1-based index of the first extreme element.

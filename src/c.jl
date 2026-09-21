@@ -2013,6 +2013,16 @@ function render(sc::Scope, i, ex::Expr)
     # `zero(x)`, `one(T)`: the literal of the result's type.
     f in (Base.zero, Base.one) && n == 1 && T <: Number && return value(sc, f === Base.zero ? zero(T) : one(T)), PRIMARY
 
+    # `norm(v, 1)`, `norm(v, Inf)`, `norm(v, 2)` with the order written out; `mean`, `var`, `std`
+    # of a real array, which are `Statistics`' and known by name, the package not being loaded here.
+    statistic = f isa Function && nameof(parentmodule(f)) === :Statistics && nameof(f) in (:mean, :var, :std) ? nameof(f) : nothing
+    if n == 2 && f === LinearAlgebra.norm && isarray(valuetype(sc, args[1])) && literal(sc, args[2]) in (1, 2, Inf) && !(eltype(valuetype(sc, args[1])) <: Complex) ||
+       n == 1 && statistic !== nothing && isarray(valuetype(sc, args[1])) && eltype(valuetype(sc, args[1])) <: AbstractFloat
+        op = statistic !== nothing ? statistic : literal(sc, args[2]) == 1 ? :norm1 : literal(sc, args[2]) == 2 ? :norm : :normInf
+        push!(sc.headers, "math.h")
+        sc.math[i] = statistic !== nothing ? "$op($(value(sc, args[1])))" : "‖$(value(sc, args[1]))‖" * (op == :norm1 ? "₁" : op == :normInf ? "∞" : "")
+        return "$(reducehelper!(sc.helpers, op, valuetype(sc, args[1]), T))($(value(sc, args[1])))", PRIMARY
+    end
     # A reduction: a helper that returns the scalar.
     if f in (Base.sum, Base.prod, Base.maximum, Base.minimum, Base.any, Base.all, LinearAlgebra.norm, Base.count, Base.argmax, Base.argmin, Base.extrema, LinearAlgebra.tr) &&
        n == 1 && isarray(valuetype(sc, args[1]))
@@ -2754,7 +2764,7 @@ end
 function register!(prog::Program, f, spec)
     # Julia's own function on Julia's own types is Julia's; on a struct of the user's it
     # may be the user's method (`Base.:*(a::Quaternion, b::Quaternion)`), so look.
-    nameof(Base.moduleroot(parentmodule(f))) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) &&
+    nameof(Base.moduleroot(parentmodule(f))) in known &&
         !any(T -> T isa Type && isstruct(T), spec) && return nothing
     mi, sig = try
         any(x -> x isa Integer, spec) ? resolve(f, spec) : (m = Base.method_instance(f, Tuple(spec)); m === nothing ? (nothing, nothing) : (m, argtypes(m)))
@@ -2762,7 +2772,7 @@ function register!(prog::Program, f, spec)
         e isa ArgumentError ? (nothing, nothing) : rethrow()
     end
     mi === nothing && return nothing
-    nameof(Base.moduleroot(mi.def.module)) in (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf) && return nothing
+    nameof(Base.moduleroot(mi.def.module)) in known && return nothing
     haskey(prog.calls, mi) && return (mi, sig, prog.calls[mi])
     base = qualified(operatorname(mi.def.name, sig), mi.def.module)
     typed = join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_")

@@ -23,7 +23,9 @@ const unaryword = Dict(:neg => "negation", :abs => "absolute value", :sqrt => "s
                    :sum => "sum", :prod => "product", :maximum => "maximum", :minimum => "minimum",
                    :any => "any", :all => "all", :norm => "norm", :inv => "inverse", :pinv => "pseudoinverse",
                    :not => "logical not", :count => "count of true elements", :tr => "trace", :argmax => "index of the maximum",
-                   :argmin => "index of the minimum", :extrema => "minimum and maximum")
+                   :argmin => "index of the minimum", :extrema => "minimum and maximum",
+                   :norm1 => "1-norm, the sum of the magnitudes", :normInf => "infinity norm, the largest magnitude",
+                   :mean => "mean", :var => "variance, the corrected sample variance as Julia's var", :std => "standard deviation, corrected as Julia's std")
 
 # One operand as a person names it: "scalar", "3-vector", "2×3-matrix", "4×3×2-array",
 # "transposed 3-vector"; the element type in front when the helper's name carries

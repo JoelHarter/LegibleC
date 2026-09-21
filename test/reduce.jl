@@ -1,6 +1,6 @@
 # Reductions to a scalar and slices of an array.
 module Reduce
-using Test, StaticArrays, LinearAlgebra
+using Test, StaticArrays, LinearAlgebra, Statistics
 import Main: Case, check, csource
 
 const V3 = SVector{3,Float64}
@@ -65,5 +65,21 @@ check("reduce", [Case(total, v), Case(product, A), Case(biggest, A), Case(len, v
     @test occursin("cumsum_3(v, out);", src) && occursin("cumsum2_2x3(A, out);", src) && occursin("sum1_3(v, out);", src) && occursin("diff_5(v, out);", src)
     @test occursin("/// 2×3-matrix sum along dimension 1\n/// out = sum(A; dims=1)\nstatic inline void sum1_2x3(const double A[2][3], double out[1][3]) {\n    for (int j = 0; j < 3; j++) {\n        double sum = 0.0;\n        for (int i = 0; i < 2; i++) {\n            sum += A[i][j];\n        }\n        out[0][j] = sum;\n    }\n}", src)
     @test occursin("/// 5-vector differences\n/// out = diff(a)\nstatic inline void diff_5(const double a[5], double out[4]) {\n    for (int i = 0; i < 4; i++) {\n        out[i] = a[i + 1] - a[i];\n    }\n}", src)
+end
+# The norms of order 1 and infinity beside the usual one, and `mean`, `var`, `std`: each a
+# helper that returns the scalar, like `sum`. `var` and `std` are the corrected ones, as Julia's.
+norms(v::SVector{3,Float64}) = norm(v, 1) + 10.0 * norm(v, Inf) + 100.0 * norm(v, 2) + 1000.0 * norm(v)
+matnorms(A::SMatrix{2,2,Float64,4}) = norm(A, 1) + norm(A, Inf)
+spread(v::SVector{4,Float64}) = mean(v) + 10.0 * std(v) + 100.0 * var(v)
+matspread(A::SMatrix{2,2,Float64,4}) = mean(A) + var(A)
+centred(v::SVector{4,Float64}) = (m = mean(v); (v[1] - m) / std(v))
+single(v::SVector{3,Float32}) = mean(v) + norm(v, 1)
+@testset "norms and statistics" begin
+    check("spread", [Case(norms, SVector(1.0, -2.0, 3.5)), Case(norms, SVector(0.0, 0.0, 0.0)), Case(matnorms, SMatrix{2,2}(1.0, -2.0, 3.0, -4.5)),
+                     Case(spread, SVector(1.0, 2.0, 4.0, 8.0)), Case(matspread, SMatrix{2,2}(1.0, -2.0, 3.0, -4.5)),
+                     Case(centred, SVector(1.0, 2.0, 4.0, 8.0)), Case(single, SVector(1.0f0, -2.0f0, 3.5f0))])
+    src = csource("spreadtext", norms, spread)
+    @test occursin("return norm1_3(v) + 10.0 * normInf_3(v) + 100.0 * norm_3(v) + 1000.0 * norm_3(v);", src)
+    @test occursin("return mean_4(v) + 10.0 * std_4(v) + 100.0 * var_4(v);", src)
 end
 end
