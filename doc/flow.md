@@ -58,6 +58,23 @@ closures, `do` blocks, `@goto`.
 Implementation: `findfors`, `findwhiles`, `markinlined!`, `block!` in
 `src/flow.jl`; the structure itself in `src/tree.jl`.
 
+## What Julia has already decided
+
+A test whose answer inference already has, `if usefast()` on a function that
+returns `true`, `x isa Float64` on a `Float64`, `if typemax(Float64) == 0.0`, is
+not written. Julia has dropped the branch that can't run, so the one that runs
+stands alone in the C, and a trait function that costs nothing in Julia costs
+nothing in C. The Julia line still stands above it as a comment. A condition
+with an effect is still computed; a function that was only asked about, and is
+never called, is not brought into the output. A loop's own tests always stay.
+
+The same goes for a variable nothing ever reads, the author's `t = 2x` with no
+`t` after it, or the `val` that `@inbounds s += v[k]` leaves behind: its stores
+are not written, nor is what was computed only for them, unless that has an
+effect. In C it would be a variable declared, set, and warned about.
+
+Implementation: `analyze!` in `src/c.jl` (`sc.folded`, `sc.gone`).
+
 ## A value that a test chooses
 
 `a && b`, `a || b` and `c ? x : y` are lowered the same way wherever a value is

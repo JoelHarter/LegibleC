@@ -746,8 +746,8 @@ function mark!(sc::Scope)
     ci = sc.ci
     code = ci.code
     count = Dict{Int, Int}()
-    for st in code
-        countuses!(count, st)
+    for (k, st) in enumerate(code)
+        k in sc.gone || countuses!(count, st)            # what is not written uses nothing
     end
     # `a || b` stores `a` where it holds, and that store is never written: no second use.
     for c in values(sc.choices)
@@ -756,6 +756,7 @@ function mark!(sc::Scope)
     end
     effectful = Set{Int}()
     for (i, st) in enumerate(code)
+        i in sc.gone && continue                         # not written at all
         choice = haskey(sc.choices, i)
         choice || st isa Expr && st.head === :call || continue
         # `SI.c`, a constant read through its module, is a name: free to repeat, so it
@@ -1036,12 +1037,12 @@ const known = (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf, :Statistics
 
 # Is this call free of effects? Julia's own functions are, except the ones above; a
 # user function is examined (`effects!`).
-function pure(sc::Scope, st::Expr)
+function pure(sc::Scope, st::Expr; bring::Bool=true)
     f = callee_or_nothing(sc.ci, st.args[1])
     f === nothing && return false
     (f in writing || f in printing) && return false
     f isa Type && return true
-    r = userinstance!(sc, f, st.args[2:end])   # the user's method, even of a Julia operator
+    r = userinstance!(sc, f, st.args[2:end]; bring)   # the user's method, even of a Julia operator
     r === nothing || return isempty(effects!(sc.prog, r[1]))
     return nameof(Base.moduleroot(parentmodule(f))) in known
 end

@@ -158,6 +158,7 @@ mutable struct Scope
     folded::Set{Int}                    # jumps of a test Julia has already decided: no C, and no branch
     alias::Dict{Int, Any}               # a read of a variable of Julia's own making that is just what was stored in it -> that value
     ready::Dict{Int, String}            # a number whose C took lines of its own to prepare (a product of several arrays) -> its text
+    gone::Set{Int}                      # stores into variables nothing reads, and what was computed only for them: no C, and no use counted
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
@@ -180,7 +181,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  0, Set{Int}(), Set{Int}(), hidden, Set{Int}(), Dict{Int, Any}(), Dict{Int, Any}(), prog,
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
-                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}(), Dict{Int, String}())
+                 Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}(), Dict{Int, String}(), Set{Int}())
 end
 
 include("flow.jl")
@@ -485,12 +486,21 @@ function analyze!(sc::Scope)
     # Where Julia has decided the test, and it holds, the test and the conversion it guards
     # are no part of the C: what is left is the store.
     # Decided the other way, `x::Float64 = 1`, the conversion is what runs, and it is a cast.
+    #
+    # The same holds for any test Julia has decided, the author's own included: `if usefast()`
+    # on a function that returns `true`, `if typemax(Float64) == 0.0`. Julia has already dropped
+    # the branch that can't run; a test left standing over it would cost at run time what costs
+    # nothing in Julia, and C would see a variable that the dead branch "forgot" to assign. The
+    # condition must have no effect, since it is no longer computed. A loop's own tests stay.
     dead(k) = code[k] isa Core.Const || widen(ci.ssavaluetypes[k]) === Union{}
+    looptest = union(Set(W.test for W in values(sc.whiles)), (Set([F.start:F.bodylo-1; F.next:F.exit-1; collect(F.machinery)]) for F in values(sc.fors))...)
+    effectfree(x) = !(x isa Core.SSAValue) || (c = code[x.id]; !(c isa Expr) || c.head === :call && pure(sc, c; bring=false) && all(effectfree, c.args))
     for (g, st) in enumerate(code)
-        st isa Core.GotoIfNot && st.cond isa Core.SSAValue && (c = code[st.cond.id]; c isa Expr && c.head === :call && callee_or_nothing(ci, c.args[1]) === Core.isa) || continue
+        st isa Core.GotoIfNot && st.cond isa Core.SSAValue && !(g in looptest) || continue
         t = ci.ssavaluetypes[st.cond.id]
-        t isa Core.Const && t.val isa Bool || continue
+        t isa Core.Const && t.val isa Bool && effectfree(st.cond) || continue
         push!(sc.skipped, st.cond.id, g)
+        push!(sc.gone, st.cond.id, g)             # and what was computed only for the condition goes with it (below)
         push!(sc.folded, g)
         # The jump over the dead conversion goes with it. Any other jump there is the author's,
         # `x isa Float64 && break`, and stays: it is now what always happens.
@@ -592,6 +602,44 @@ function analyze!(sc::Scope)
         push!(sc.hidden, s)
         push!(sc.skipped, at[1])
     end
+    # A variable nothing ever reads, `t = 2x` and no `t` after it, or the `val` that
+    # `@inbounds s += v[k]` leaves behind: its stores are not written, nor is what was computed
+    # only for them, so long as none of it has an effect. Julia drops it too; in C it would be
+    # a variable declared, set, and warned about.
+    # Until nothing more goes: `t = 2x; u = t + 1` with no `u` after it takes `t` with it.
+    while true
+        before = length(sc.gone)
+        live = Dict{Int, Int}()
+        for (k, st) in enumerate(code)
+            (dead(k) || k in sc.gone) && continue
+            if st isa Core.SlotNumber
+                any(u -> uses(code[u], k) && !dead(u) && !(u in sc.gone), eachindex(code)) && (live[st.id] = get(live, st.id, 0) + 1)
+            else
+                foreach(v -> live[v] = get(live, v, 0) + 1, slotreads(st))
+            end
+        end
+        for v in ci.nargs+1:length(ci.slotnames)
+            get(live, v, 0) == 0 && !(v in sc.hidden) && !any(F -> F.var == v, values(sc.fors)) && haskey(assigned, v) || continue
+            all(k -> effectfree(code[k].args[2]) && !(code[k].args[2] isa Expr && !(code[k].args[2].head === :call && pure(sc, code[k].args[2]))), assigned[v]) || continue
+            # `f(a) = (d = a + 1)` returns the value of its store: a store something uses is no dead store.
+            any(k -> any(u -> uses(code[u], k) && !dead(u) && !(u in sc.gone), eachindex(code)), assigned[v]) && continue
+            union!(sc.gone, assigned[v])
+            push!(sc.hidden, v)                                # never declared
+        end
+        # What was computed only for them, from the last statement back: a read, a copy, or a call with no effect.
+        for k in length(code):-1:1
+            (k in sc.gone || k in sc.skipped || dead(k)) && continue
+            st = code[k]
+            isempty(sc.gone) && break
+            users = [u for u in eachindex(code) if uses(code[u], k) && !dead(u)]
+            !isempty(users) && all(u -> u in sc.gone, users) || continue
+            # Asked last, and only of what would go: asking whether a call has an effect brings
+            # its function in, and the order functions are met in decides who keeps a bare name.
+            (st isa Core.SlotNumber || st isa Core.SSAValue || st isa GlobalRef || st isa Expr && st.head === :call && pure(sc, st; bring=false)) && push!(sc.gone, k)
+        end
+        length(sc.gone) == before && break
+    end
+    union!(sc.skipped, sc.gone)
     markinlined!(sc)
     # A variable of Julia's own making, stored once and read once with nothing in between
     # that does anything, is another name for what was stored: the lowering of a store into a
@@ -603,7 +651,8 @@ function analyze!(sc::Scope)
         p = assigned[s][1]
         V = code[p].args[2]
         # The value may sit on the store itself: `foldstores!` has put a call used once there.
-        (V isa Number || V isa Core.SSAValue && V.id in sc.inlined && !haskey(sc.choices, V.id) ||
+        name = V isa Core.SlotNumber || V isa Core.SSAValue && code[V.id] isa Core.SlotNumber        # a read of a variable: a name, if it keeps its value till then
+        (V isa Number || name || V isa Core.SSAValue && V.id in sc.inlined && !haskey(sc.choices, V.id) ||
          V isa Expr && V.head === :call && pure(sc, V)) || continue
         live(r) = any(u -> uses(code[u], r) && !(u in sc.skipped), eachindex(code))
         reads = [r for r in eachindex(code) if code[r] isa Core.SlotNumber && code[r].id == s && live(r)]
@@ -613,8 +662,10 @@ function analyze!(sc::Scope)
         length(users) == 1 || continue
         # Into a plain store, of a variable or a global: nothing that writes its operand twice.
         u = code[users[1]]
-        (u isa Expr && u.head === :(=) && u.args[2] == Core.SSAValue(r) || iscall(u, Core.setglobal!)) || continue
-        all(k -> k in sc.skipped || silent(sc, k) || widen(ci.ssavaluetypes[k]) === Union{}, p+1:users[1]-1) || continue
+        (V isa Number || name || u isa Expr && u.head === :(=) && u.args[2] == Core.SSAValue(r) || iscall(u, Core.setglobal!)) || continue   # a literal or a name may be written anywhere, any number of times
+        name && any(k -> assigns(code[k], V isa Core.SlotNumber ? V.id : code[V.id].id), (V isa Core.SlotNumber ? p : V.id)+1:users[1]-1) && continue
+        # A literal or a name can be written past anything; a computation only past what does nothing.
+        V isa Number || name || all(k -> k in sc.skipped || silent(sc, k) || widen(ci.ssavaluetypes[k]) === Union{}, p+1:users[1]-1) || continue
         any(k -> code[k] isa Core.SlotNumber && code[k].id == s && k != r && live(k), eachindex(code)) && continue
         # A folded store leaves a copy of itself behind, `%p`, for a `return` to read: none may.
         all(k -> k == p + 1 && code[k] == Core.SSAValue(p), (k for k in eachindex(code) if uses(code[k], p))) || continue
@@ -2925,7 +2976,7 @@ end
 usercall!(sc::Scope, f, args) = (r = userinstance!(sc, f, args); r === nothing ? nothing : r[3])
 
 # The instance, signature, and C name behind a call to a user function, or nothing.
-function userinstance!(sc::Scope, f, args)
+function userinstance!(sc::Scope, f, args; bring::Bool=true)
     f isa Function || return nothing
     spec = Any[]
     for a in args
@@ -2934,7 +2985,7 @@ function userinstance!(sc::Scope, f, args)
         push!(spec, juliatype(T))
     end
     samedispatch(sc, f, args, spec)
-    return register!(sc.prog, f, spec)
+    return register!(sc.prog, f, spec; bring)
 end
 
 # A variable the one-type rule widened (`onetype!`) is an `Int64` on one path and a
@@ -2967,7 +3018,7 @@ end
 # The instance, signature and C name of user function `f` at the argument spec (types,
 # with a regular array as element type and sizes), registering it to be transpiled if
 # it isn't already. Nothing if it isn't the user's or can't be resolved.
-function register!(prog::Program, f, spec)
+function register!(prog::Program, f, spec; bring::Bool=true)
     # Julia's own function on Julia's own types is Julia's; on a struct of the user's it
     # may be the user's method (`Base.:*(a::Quaternion, b::Quaternion)`), so look.
     nameof(Base.moduleroot(parentmodule(f))) in known &&
@@ -2980,6 +3031,7 @@ function register!(prog::Program, f, spec)
     mi === nothing && return nothing
     nameof(Base.moduleroot(mi.def.module)) in known && return nothing
     haskey(prog.calls, mi) && return (mi, sig, prog.calls[mi])
+    bring || return (mi, sig, "")          # only asked about: a function is brought in by a call that is written
     base = qualified(operatorname(mi.def.name, sig), mi.def.module)
     typed = join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_")
     name = claim!(prog, mi, base, string(mi.def.name), typed)

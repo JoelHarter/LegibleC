@@ -508,4 +508,84 @@ end
     check("gapflow", [Case(gapassertor, 3, 0), Case(gapassertor, 0, 4), Case(gapassertor, 2, 5),
         Case(gaporjump, 12, 5), Case(gaporjump, 4, 9), Case(gaporjump, 0, 0), Case(gaporjump, 30, 7)])
 end
+
+# What Julia has already decided is no part of the C. A test on a function Julia has folded to
+# `true`, or on a constant, is no test: the branch that can't run is already gone, and the one that
+# runs stands alone, as it costs nothing in Julia and should cost nothing in C. A condition with an
+# effect still runs. And a variable nothing ever reads, the author's `t = 2x` or the `val` that
+# `@inbounds s += v[k]` leaves, is not written, nor what was computed only for it.
+usefast() = true
+useslow() = false
+function trait(x::Float64)
+    if usefast()
+        y = x + 1.0
+    else
+        y = x - 1.0
+    end
+    return 2.0 * y
+end
+function traitfalse(x::Float64)
+    if useslow()
+        y = x + 1.0
+    else
+        y = x - 1.0
+    end
+    return 2.0 * y
+end
+function constdead(x::Float64)
+    if typemax(Float64) == 0.0; y = x + 1.0; end
+    return sqrt(x) + 1.0
+end
+traitvalue(x::Float64) = (usefast() ? x : -x) + (useslow() ? 100.0 : 1.0)
+function traitchain(x::Float64, n::Int64)
+    s = 0.0
+    for k in 1:n
+        if useslow()
+            s -= x
+        elseif k > 2
+            s += 2.0 * x
+        else
+            s += x
+        end
+    end
+    return s
+end
+generic(x::T) where {T<:Real} = T === Float64 ? x / 2 : x * 2
+function unused(x::Float64)
+    t = 2.0 * x
+    u = t + 1.0
+    return x + 3.0
+end
+function inboundsexpr(v::SVector{4,Float64})
+    s = 0.0
+    for k in 1:4
+        @inbounds s += v[k]
+    end
+    return s
+end
+counter::Int64 = 0
+bump!() = (global counter += 1; true)
+function effectcond(x::Float64)
+    global counter = 0
+    if bump!()
+        x += 1.0
+    end
+    return x + counter
+end
+function eachunused(v::SVector{4,Float64})
+    n = 0
+    for x in v
+        n += 1
+    end
+    return n
+end
+@testset "decided" begin
+    check("decided", [Case(trait, 3.0), Case(traitfalse, 3.0), Case(constdead, 4.0), Case(traitvalue, 3.0), Case(traitchain, 2.0, 5),
+                      Case(unused, 3.0), Case(inboundsexpr, SVector(1.0, 2.0, 3.0, 4.0)), Case(effectcond, 3.0), Case(eachunused, SVector(1.0, 2.0, 3.0, 4.0))])
+    src = csource("decidedtext", trait, traitvalue, unused, inboundsexpr, effectcond)
+    @test occursin("double y = x + 1.0;\n", src) && !occursin("bool usefast", src)                # the branch that runs, alone, and the function it asked isn't brought in
+    @test occursin("return x + 1.0;", src)                                                     # `(usefast() ? x : -x) + (useslow() ? 100.0 : 1.0)`
+    @test !occursin("double t =", src) && !occursin("double u =", src) && !occursin("double val", src) && occursin("s += v[k - 1];", src)   # nothing unused is declared
+    @test occursin("bump()", src)                                                                     # a condition with an effect still runs
+end
 end
