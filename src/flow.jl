@@ -663,14 +663,17 @@ needslines(sc::Scope, range) = any(k -> nextlive(sc, k) == k && !(sc.ci.code[k] 
 # Returns the index of the first statement after the whole construct.
 function ifelse!(lines, sc::Scope, B::Branch; chained::Bool=false)
     annotate!(lines, sc, sc.stmtline[B.i])
-    cond = any(!isempty, B.pres) ? flagged!(lines, sc, B.conds, B.pres, B.op) : condition(sc, B.conds, B.op)
+    flag = any(!isempty, B.pres)
+    cond = flag ? flagged!(lines, sc, B.conds, B.pres, B.op) : condition(sc, B.conds, B.op)
     emit!(lines, sc, (chained ? "} else if (" : "if (") * cond * ") {")
     header = length(lines)
     nested!(lines, sc, B.thenlo, B.thenhi)
     if length(lines) == header && B.elselo > 0 && B.chain == 0
         # Nothing to do where it holds, and something where it doesn't, which is how
         # `@assert c` arrives: a person tests for the opposite and has no empty branch.
-        lines[header] = replace(lines[header], r"if \(.*\) \{$" => "if (" * opposite(sc, B.conds, B.op) * ") {")
+        # A condition worked out into a flag is already one name, and its opposite is `!` of it:
+        # its parts' temps live inside the flag's own braces and can't be written again here.
+        lines[header] = replace(lines[header], r"if \(.*\) \{$" => "if (" * (flag ? "!" * cond : opposite(sc, B.conds, B.op)) * ") {")
         nested!(lines, sc, B.elselo, B.elsehi)
         emit!(lines, sc, "}")
         return B.after

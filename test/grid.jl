@@ -65,20 +65,26 @@ end
 
 supported(x) = x isa Union{Bool, Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, Float32, Float64}
 
+# One function with what Julia answers on every combination of its inputs, or `nothing` if Julia
+# never answers, or answers with more than one type.
+function item(name, f, types, inputs)
+    answers = Any[]
+    for combo in Iterators.product(reverse(inputs)...)                # the last argument fastest, as the C loops run
+        r = allowed(name, combo) ? (try Base.invokelatest(f, reverse(combo)...) catch; nothing end) : nothing
+        push!(answers, supported(r) ? r : nothing)
+    end
+    kinds = unique(typeof(r) for r in answers if r !== nothing)
+    return length(kinds) == 1 ? Item(name, f, Tuple(types), inputs, answers) : nothing
+end
+
 function items()
     out = Item[]
     add(name, body, types) = begin
         isempty(only) || any(o -> startswith(name, o), only) || return
         args = [Expr(:(::), s, T) for (s, T) in zip((:a, :b), types)]
         f = Core.eval(Grid, Expr(:function, Expr(:call, Symbol(name), args...), body))
-        inputs = Any[values(T) for T in types]
-        answers = Any[]
-        for combo in Iterators.product(reverse(inputs)...)                # the last argument fastest, as the C loops run
-            r = allowed(name, combo) ? (try Base.invokelatest(f, reverse(combo)...) catch; nothing end) : nothing
-            push!(answers, supported(r) ? r : nothing)
-        end
-        kinds = unique(typeof(r) for r in answers if r !== nothing)
-        length(kinds) == 1 && push!(out, Item(name, f, Tuple(types), inputs, answers))
+        it = item(name, f, types, Any[values(T) for T in types])
+        it === nothing || push!(out, it)
     end
     for (name, body, ts) in one_, T in ts
         add("$(name)_$T", body, (T,))
@@ -104,9 +110,8 @@ function agrees(want, got::AbstractString)
     return g == want || isapprox(g, Float64(want); rtol=want isa Float32 ? 2e-6 : 1e-9, atol=want isa Float32 ? 1e-30 : 1e-300)
 end
 
-function run()
+function run(todo, scope::Module)
     dir = mktempdir()
-    todo = items()
     refused, faults, broken, wrong, right = String[], String[], String[], String[], 0
     main = ["#include <stdio.h>", "#include <stdint.h>", "#include <stdbool.h>", "#include <math.h>"]
     body = String[]
@@ -127,7 +132,7 @@ function run()
     end
     log = joinpath(dir, "cc.log")
     function build(batch, tag)
-        path = LegibleC.transpile([(it.f, it.types...) for it in batch]...; outpath=joinpath(dir, "src"), outfile="g$tag", helper="h$tag", source=false, scope=Grid)
+        path = LegibleC.transpile([(it.f, it.types...) for it in batch]...; outpath=joinpath(dir, "src"), outfile="g$tag", helper="h$tag", source=false, scope)
         path isa AbstractString || (path = path[1])
         object = joinpath(dir, "g$tag.o")
         if success(pipeline(`$cc $flags -c $(joinpath(dirname(path), "g$tag.c")) -o $object`; stderr=log, stdout=devnull))
@@ -146,7 +151,7 @@ function run()
     end
     for it in ok
         R = typeof(first(r for r in it.answers if r !== nothing))
-        push!(main, "$(ctype(R)) $(it.name)($(join((ctype(T) * " " * s for (T, s) in zip(it.types, ("a", "b"))), ", ")));")
+        push!(main, "$(ctype(R)) $(it.name)($(join((ctype(T) for T in it.types), ", ")));")
         fmt, cast = printer(R)
         push!(body, "    {")
         for (j, (T, vs)) in enumerate(zip(it.types, it.inputs))
@@ -154,11 +159,11 @@ function run()
         end
         push!(body, "        static const char run[] = {$(join((r === nothing ? "0" : "1" for r in it.answers), ", "))};")
         n = length.(it.inputs)
-        if length(n) == 1
-            push!(body, "        for (int i = 0; i < $(n[1]); i++) if (run[i]) printf(\"$fmt\\n\", $cast$(it.name)(x1[i]));")
-        else
-            push!(body, "        for (int i = 0; i < $(n[1]); i++) for (int j = 0; j < $(n[2]); j++) if (run[i * $(n[2]) + j]) printf(\"$fmt\\n\", $cast$(it.name)(x1[i], x2[j]));")
-        end
+        idx = ["i$j" for j in eachindex(n)]
+        flat = join((idx[j] * join((" * $(n[k])" for k in j+1:length(n))) for j in eachindex(n)), " + ")       # the last argument fastest
+        loops = join(("for (int $(idx[j]) = 0; $(idx[j]) < $(n[j]); $(idx[j])++) " for j in eachindex(n)))
+        call = "$(it.name)($(join(("x$j[$(idx[j])]" for j in eachindex(n)), ", ")))"
+        push!(body, "        $(loops)if (run[$flat]) printf(\"$fmt\\n\", $cast$call);")
         push!(body, "    }")
     end
     write(joinpath(dir, "main.c"), join([main; "int main(void) {"; body; "    return 0;"; "}"], "\n"))
@@ -177,9 +182,9 @@ function run()
     return (; functions=length(todo), refused, faults, broken, wrong, right)
 end
 
-function report()
-    r = run()
-    println("grid: $(r.functions) functions, $(r.right) answers right, $(length(r.wrong)) wrong, $(length(r.broken)) don't compile, $(length(r.faults)) faults, $(length(r.refused)) refused")
+function report(title, todo, scope::Module)
+    r = run(todo, scope)
+    println("$title: $(r.functions) functions, $(r.right) answers right, $(length(r.wrong)) wrong, $(length(r.broken)) don't compile, $(length(r.faults)) faults, $(length(r.refused)) refused")
     # By function first, so that one broken rule with a thousand wrong answers doesn't bury another with three.
     byfunction = Dict{String, Vector{String}}()
     foreach(x -> push!(get!(byfunction, first(split(x, "(")), String[]), x), r.wrong)
@@ -192,7 +197,7 @@ function report()
 end
 
 @testset "grid" begin
-    r = report()
+    r = report("grid", items(), Grid)
     @test isempty(r.wrong)
     @test isempty(r.broken)
     @test isempty(r.faults)
