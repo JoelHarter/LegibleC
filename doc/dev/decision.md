@@ -1897,3 +1897,20 @@ should stop being needed for is *finding the blocks*; that belongs to a
 structure recovered before emission, and `homes` and `names!` take their blocks
 from whoever supplies them.
 
+**The attack, done properly** (2026-09-21). Five agents each *wrote* a probe
+file from one angle (shadowing, loop carrying, file scope, `let`, arrays under
+the new placement), reading the source but running nothing; the files were then
+run here, two at a time, with a harness that tries each function on its own
+and tells a wrong answer from a refusal from Julia itself throwing. That costs
+the machine nothing and keeps what matters, which is eyes that didn't write the
+code: two of the authors named, from reading alone, the exact lines that then
+failed. 231 probes found twelve things. Four were silent, and the one most
+worth remembering was mine: indices and `out` had been taught to keep clear of
+the file-scope names a function mentions, and temps had not, so a global called
+`temp1_n` was captured by the bound's own temp. One rule, applied to three of
+the four kinds of invented name. The others that touched the new work were of
+the same kind, a mention the first walk didn't show (a declaration written
+later names its type) or a name of ours that hadn't been given its rank (a
+tuple's struct, a macro against a struct's member). Loop carrying and `let`
+held on every probe. All twelve are tests now.
+
