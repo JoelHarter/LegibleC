@@ -487,4 +487,25 @@ end
         Case(throwtrigraph, 4.0), Case(throwtrigraph, 0.0)])
     @test_throws ArgumentError csource("choiceifand", choiceifand)
 end
+
+# Found by the critic who looked for what the other readers had not attacked (2026-09-21).
+function gapassertor(n::Int64, m::Int64)
+    @assert n > 0 || m > 0
+    return n + 10 * m
+end
+function gaporjump(n::Int64, m::Int64)
+    s = 0
+    for k in 1:n
+        (k == 2 || k == m) && continue
+        if s > 40 || k > 9
+            break
+        end
+        s += k
+    end
+    return s
+end
+@testset "gap" begin
+    check("gapflow", [Case(gapassertor, 3, 0), Case(gapassertor, 0, 4), Case(gapassertor, 2, 5),
+        Case(gaporjump, 12, 5), Case(gaporjump, 4, 9), Case(gaporjump, 0, 0), Case(gaporjump, 30, 7)])
+end
 end

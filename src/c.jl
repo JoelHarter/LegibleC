@@ -1126,8 +1126,15 @@ end
 # here, into temps.
 function pair!(lines, sc::Scope, i, args, first, second)
     code = sc.ci.code
-    slots = [a isa Core.SlotNumber ? a.id : code[a.id].id for a in args if a isa Core.SlotNumber || a isa Core.SSAValue && code[a.id] isa Core.SlotNumber]
-    if any(k -> any(s -> assigns(code[k], s), slots), i+1:length(code))
+    slots, changeable = Set{Int}(), Ref(false)
+    function read!(x)               # what it is computed from, through whatever is written inside it
+        x isa Core.SlotNumber && return push!(slots, x.id)
+        x isa GlobalRef && !Base.isconst(x.mod, x.name) && (changeable[] = true)      # a global: anything may store into it
+        x isa Core.SSAValue && return read!(code[x.id])
+        x isa Expr && foreach(read!, x.head === :(=) ? x.args[2:end] : x.args)
+    end
+    foreach(read!, args)
+    if changeable[] || any(k -> any(s -> assigns(code[k], s), slots), i+1:length(code))
         E = ctype(widen(sc.ci.ssavaluetypes[i]).parameters[1])
         names = (temp!(sc, nothing, String[]), temp!(sc, nothing, String[]))
         emit!(lines, sc, "$E $(names[1]) = $first;")
@@ -2057,7 +2064,21 @@ function rendered(sc::Scope, i, ex::Expr)
         st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.getfield, Core.getfield, Base.getproperty, Base.getindex)
     end
     truth(x, prec; right=false) = booltype[] !== Bool && valuetype(sc, x) === Bool && stored(x) ? "($(operand(sc, x, EQ)) != 0)" : operand(sc, x, prec; right)
+    # Julia's integer literal is an `Int64`; C's is an `int`. `1 << k` and `ms * 1000` on a
+    # `uint32_t` are 32-bit arithmetic in C and 64-bit in Julia. Where the result is 64 bits
+    # wide and nothing that decides C's type is, the first operand is cast: `(int64_t)1 << k`.
+    # Not where the 32 bits can't be outgrown: `2 * 3`, `c - 'a'`, two `uint8_t`s added.
+    wide(a) = a isa Integer ? !(typemin(Int32) <= a <= typemax(Int32)) : sizeof(valuetype(sc, a)) >= 8
+    reach(a) = a isa Integer ? abs(big(a)) : (V = valuetype(sc, a); V === Bool ? big(1) : V === Char ? big(0x10ffff) : big(2)^(8 * sizeof(V)))
+    outgrown(sym) = sym == "<<" || (sym == "*" ? prod(reach, args) : sum(reach, args)) >= big(2)^31
     function op(sym, prec)
+        if sym in ("+", "-", "*", "<<") && T <: Union{Int64, UInt64} && !any(wide, sym == "<<" ? args[1:1] : args) && outgrown(sym)
+            s = "($(ctype(T)))" * truth(args[1], UNARY)
+            for a in args[2:end]
+                s *= " $sym " * truth(a, prec; right=true)
+            end
+            return s, prec
+        end
         s = truth(args[1], prec)
         for a in args[2:end]
             t = truth(a, prec; right=true)
@@ -2289,7 +2310,7 @@ function rendered(sc::Scope, i, ex::Expr)
     f === Base.xor && return op("^", BXOR)
     f === Base.:<< && return op("<<", SHIFT)
     f === Base.:>> && return op(">>", SHIFT)
-    f === Base.:~ && return unary("~")
+    f === Base.:~ && return unary(valuetype(sc, args[1]) === Bool ? "!" : "~")      # C's `~true` is -2, which is true
 
     # Math.
     if floating || cplx
@@ -2340,7 +2361,9 @@ function rendered(sc::Scope, i, ex::Expr)
     r === nothing || return written(sc, r, T, args)
 
     # Classification of a floating value: the same names, from math.h.
-    f in (Base.isnan, Base.isinf, Base.isfinite, Base.signbit) && n == 1 && return fn(string(nameof(f)))
+    # They are macros that take any floating type: no `f` forms.
+    f in (Base.isnan, Base.isinf, Base.isfinite, Base.signbit) && n == 1 &&
+        return (push!(sc.headers, "math.h"); ("$(nameof(f))($(expression(sc, args[1])[1]))", PRIMARY))
 
     # The limits of a type: the macros C names them by.
     if f in (Base.typemax, Base.typemin, Base.floatmax, Base.floatmin, Base.eps) && (n == 0 || literal(sc, args[1]) isa Type)
@@ -2365,7 +2388,9 @@ function rendered(sc::Scope, i, ex::Expr)
     # Arrays, as scalars: an element, or a size.
     f === Base.getindex && return index(sc, args[1], args[2:end]), PRIMARY
     f === Base.length && return string(prod(shape(valuetype(sc, args[1])))), PRIMARY
-    f === Base.size && n == 2 && return string(shape(valuetype(sc, args[1]))[args[2]]), PRIMARY
+    f === Base.size && n == 2 && !(literal(sc, args[2]) isa Integer) &&
+        throw(ArgumentError("`size(A, d)` with a `d` that isn't a literal: the sizes are known when transpiled, so say which, `size(A, 1)` (statement $i)"))
+    f === Base.size && n == 2 && return string(shape(valuetype(sc, args[1]))[literal(sc, args[2])]), PRIMARY
 
     # One of the user's own functions.
     name = usercall!(sc, f, args)
@@ -3227,8 +3252,8 @@ function onetype!(sc::Scope)
         # Julia's own slots — a `for`'s iterator state, a `#temp#` — aren't C variables.
         (s in sc.hidden || startswith(string(ci.slotnames[s]), "#")) && continue
         members = Base.uniontypes(T)
-        if all(M -> M isa DataType && M <: Number && isconcretetype(M), members)
-            sc.slotshapes[s] = promote_type(members...)     # the override `slottype` reads
+        if all(M -> M isa DataType && M <: Number && isconcretetype(M), members) && !(settle(T) isa Union)
+            sc.slotshapes[s] = settle(T)                    # the override `slottype` reads
             continue
         end
         # Arrays of one shape spelled by different types (a sized `Vector`, an `SVector`)

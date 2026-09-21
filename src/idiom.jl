@@ -45,6 +45,7 @@ const idioms = Idiom[
 ]
 
 function idiom(f, T, A)
+    T isa DataType && all(X -> X isa DataType, A) || return nothing       # a union of number types is no one C type
     k = findfirst(r -> r.f === f && length(A) == count(p -> occursin(p, r.c), ("{a}", "{b}", "{c}")) && r.applies(T, A), idioms)
     return k === nothing ? nothing : idioms[k]
 end
@@ -59,7 +60,10 @@ function written(sc::Scope, r::Idiom, T, args)
     A = valuetype(sc, args[1])
     text = r.c
     for (k, a) in enumerate(args)
-        text = replace(text, "{" * "abc"[k] * "}" => r.operand == 0 ? expression(sc, a)[1] : operand(sc, a, r.operand; right=true))
+        o = r.operand == 0 ? expression(sc, a)[1] : operand(sc, a, r.operand; right=true)
+        # The condition of `? :` is bracketed unless it is a comparison or a single thing, as a choice's is.
+        r.f === Base.ifelse && k == 1 && (e = expression(sc, a); o = e[2] >= UNARY || e[2] in (REL, EQ) ? e[1] : "(" * e[1] * ")")
+        text = replace(text, "{" * "abc"[k] * "}" => o)
     end
     r.helper === nothing || (text = replace(text, "{h}" => r.helper(sc.helpers, A)))
     occursin("{T}", text) && (text = replace(text, "{T}" => ctype(T)))

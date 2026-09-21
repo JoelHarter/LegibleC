@@ -192,4 +192,25 @@ end
         Case(lowerswap, 1.0, 2.0), Case(lowerswap, 5.0, -1.0), Case(lowerswap, 3.0, 3.0),
         Case(arrayglobalstore, 3.0), Case(arrayglobalstore, 5.0)])
 end
+
+# Found by the critic who looked for what the other readers had not attacked (2026-09-21).
+gaplo::Int64 = 0
+gaphi::Int64 = 0
+function gapminmaxglobal(a::Int64, b::Int64)
+    global gaplo, gaphi
+    gaplo = a
+    gaphi = b
+    gaplo, gaphi = minmax(gaplo, gaphi)
+    return 10 * gaplo + gaphi
+end
+gaplevel::Float64 = 1.0
+gapraise(x::Float64) = (global gaplevel += x; x)
+function gapmodread(x::Float64)
+    global gaplevel = 1.0
+    return (@__MODULE__).gaplevel + gapraise(x)^2
+end
+@testset "gap" begin
+    check("gapglobal", [Case(gapminmaxglobal, 5, 3), Case(gapminmaxglobal, 1, 2), Case(gapminmaxglobal, 9, -4),
+        Case(gapmodread, 2.0), Case(gapmodread, -3.0), Case(gapmodread, 0.0)])
+end
 end

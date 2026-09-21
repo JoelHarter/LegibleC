@@ -2027,3 +2027,48 @@ One thing this sharpened and did not settle: a global's first value in C is
 the value it has at the moment it is transpiled. For a constant that is the
 only sensible rule. For a counter it means that transpiling after a run starts
 the C at 15 and not at the `0` in the source. It is on the todo as a decision.
+
+## 2026-09-21 — Asked whether any bugs were left, and the honest answer
+
+**The question.** After the day's work the summary listed what was still
+refused. The author asked whether those were limitations rather than bugs, and
+whether any bugs were outstanding. Answering from memory would have said "two or
+three known ones". The answer that was checked was very different.
+
+**How it was checked.** Seven readers attacked the code on paper: one each for
+the short-circuit values, the tree, what lowering adds, the scalar table,
+throws, and the array work, and a critic who was shown what the six had covered
+and asked for what none had. They read source and wrote Julia they expected to
+break, naming the line they distrusted; none of them ran anything, since a run
+where every agent started Julia once froze the machine. The 89 probes were then
+run here, two processes at a time. About forty failed: a wrong answer, C that
+didn't compile, a mistake inside the transpiler, or a refusal of plain Julia.
+
+**What it says about where bugs live.** Less than half were in the day's new
+code. The rest were old and had survived every test: `max(a, b, c)` dropped its
+third argument; `1 << k` was a 32-bit shift because a C literal is an `int`;
+`(A')[i, j]` read `A[i][j]`; arithmetic on a `UInt8` was never brought back to
+8 bits; a math function's `float` variant was chosen by its first argument; a
+reassigned parameter of another type kept the parameter's C type. The pattern
+is the same each time: the C was checked against Julia on the types and shapes
+the author of the test thought of, and the difference between the languages sat
+one step to the side, in C's integer promotions, its literal types, its
+unsigned conversions. Those are now written down where they bite: results
+narrower than `int` are cast back, a literal is cast where 32 bits can be
+outgrown and nowhere else, and a signed integer compared with or divided by an
+unsigned one is refused, because no C operator means what Julia means there.
+
+**In the new code** the recurring mistake was moving a value without asking what
+could change in between: a choice as a loop bound re-read each pass, a global
+read late past a store, `a, b = minmax(a, b)` reading its own result, `g += f()`
+leaving the order to the compiler. Locals had `stable` for this from the start;
+globals, pairs and choices each needed the same question asked.
+
+**Left open**, and on the todo as such: NaN through `min` and `max`, shifts by
+a count outside `0:63`, the grouping of a mixed-precision product. The first two
+need a decision about what the C should look like.
+
+**The practice to keep.** A reader who didn't write the code, given one area and
+told to name the line, finds in an hour what the suite missed for weeks. A critic
+shown the others' coverage finds what falls between the areas. Every probe that
+failed becomes a test before the fix is committed.

@@ -567,7 +567,8 @@ function tests(sc::Scope, i::Int)
     # from the middle of `a || b || c`, to another jump to that very label? The very label: two
     # jumps out of a loop's body, a `continue` and a `break`, have the same next live statement
     # and are not the same place.
-    hop(k, label) = (k = nextlive(sc, k); k <= length(code) && code[k] isa Core.GotoNode ? code[k].label == label : k == nextlive(sc, label))
+    # The body may itself begin with a jump, `(a || b) && continue`: falling into it comes first.
+    hop(k, label) = (k = nextlive(sc, k); k == nextlive(sc, label) || k <= length(code) && code[k] isa Core.GotoNode && code[k].label == label)
     while true
         j = nextlive(sc, j)
         if op == "&&" && (k = nexttest(j); k != 0 && code[k].dest == target)
@@ -623,7 +624,7 @@ function ifextent(sc::Scope, i, hi, loops)
             j += 1
         elseif code[j] isa Core.GotoNode && code[j].label > j && nextlive(sc, j + 1) == nextlive(sc, target) &&
                (t2 = nextlive(sc, target); code[t2] isa Core.GotoIfNot &&
-                (k = nextlive(sc, t2 + 1); code[k] isa Core.GotoNode ? code[k].label == code[j].label : k == nextlive(sc, code[j].label)))
+                (k = nextlive(sc, t2 + 1); k == nextlive(sc, code[j].label) || code[k] isa Core.GotoNode && code[k].label == code[j].label))
             j = t2 + 1
             target = code[t2].dest
         else
@@ -760,6 +761,8 @@ function mark!(sc::Scope)
         # `SI.c`, a constant read through its module, is a name: free to repeat, so it
         # is always written where it's read, `SI_c * SI_c`.
         if !choice && callee_or_nothing(ci, st.args[1]) === Base.getproperty && literal(sc, st.args[2]) isa Module
+            # One that isn't `const` can be given a new value before it is used: read where Julia reads it, into a temp.
+            (name = literal(sc, st.args[3]); name isa QuoteNode && (name = name.value); name isa Symbol && !Base.isconst(literal(sc, st.args[2]), name)) && continue
             push!(sc.inlined, i)
             continue
         end

@@ -360,4 +360,35 @@ end
         Case(treeisaelse, 1.5, 2), Case(treeisaelse, -3.0, 0),
         Case(treelocalint, 4), Case(treelocalint, 0)])
 end
+
+# Found by the critic who looked for what the other readers had not attacked (2026-09-21).
+gapboolnot(a::Bool, b::Bool) = (~a | b) ? 1 : 2
+gapclassify32(x::Float32) = (isnan(x) ? 1 : 0) + (isfinite(x) ? 4 : 0) + (signbit(x) ? 8 : 0)
+gapifelsebit(n::Int64, m::Int64, x::Float64, y::Float64) = ifelse((n > 0) | (m > 0), x, y) + 1.0
+gapshiftlit(k::Int64) = 1 << k
+function gapsincosexpr(x::Float64)
+    x, c = sincos(2.0x)
+    return x + 10.0c
+end
+gapwidenlit(ms::UInt32) = ms * 1000 + 1
+gapfastpow(x::Float64) = @fastmath x^2 + 1.0
+gapifelsesign(c::Bool, a::Int64, u::UInt64) = Float64(ifelse(c, a, u))
+function gapsignvar(c::Bool, u::UInt64)
+    best = -1
+    if c
+        best = u
+    end
+    return Float64(best)
+end
+@testset "gap" begin
+    check("gapscalar", [Case(gapboolnot, true, false), Case(gapboolnot, false, false), Case(gapboolnot, true, true),
+        Case(gapclassify32, 1.5f0), Case(gapclassify32, -2.0f0), Case(gapclassify32, NaN32), Case(gapclassify32, Inf32),
+        Case(gapifelsebit, 1, 0, 2.0, 5.0), Case(gapifelsebit, 0, 1, 2.0, 5.0), Case(gapifelsebit, 0, 0, 2.0, 5.0),
+        Case(gapshiftlit, 3), Case(gapshiftlit, 31), Case(gapshiftlit, 40), Case(gapshiftlit, 62),
+        Case(gapsincosexpr, 0.7), Case(gapsincosexpr, -1.2), Case(gapsincosexpr, 0.0),
+        Case(gapwidenlit, UInt32(5000000)), Case(gapwidenlit, UInt32(7)), Case(gapwidenlit, 0xffffffff),
+        Case(gapfastpow, 3.0), Case(gapfastpow, -1.5)])
+    @test_throws ArgumentError csource("gapifelsesign", gapifelsesign)
+    @test_throws ArgumentError csource("gapsignvar", gapsignvar)
+end
 end

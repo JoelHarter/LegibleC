@@ -328,4 +328,10 @@ arrayrowcolmatrix(v::SVector{2,Float64}, w::SVector{2,Float64}, A::SMatrix{2,2,F
     @test_throws ArgumentError csource("arrayscaledrowcol", arrayscaledrowcol)
     @test_throws ArgumentError csource("arrayrowcolmatrix", arrayrowcolmatrix)
 end
+
+# Found by the critic who looked for what the other readers had not attacked (2026-09-21).
+gapsizedim(A::SMatrix{2,3,Float64,6}, d::Int64) = 10 * size(A, d) + d
+@testset "gap" begin
+    @test_throws ArgumentError csource("gapsizedim", gapsizedim)
+end
 end
