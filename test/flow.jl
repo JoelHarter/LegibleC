@@ -309,7 +309,6 @@ append!(cases, [Case(nested3, true, false, 4), Case(nested3, false, true, 4), Ca
                 Case(heavyside, true, v3), Case(heavyside, false, v3), Case(ternloop, 5, 1.5), Case(ternloop, 5, -1.0), Case(ternloop, 5, 40.0),
                 Case(ifwhiletrue, true, 3), Case(ifwhiletrue, false, 3), Case(constdead, 4.0)])
 @testset "flow text" begin
-    @test_throws ArgumentError csource("modand", modand)          # Julia 1, and the C said 2
     chosen = csource("chosen", andor, valor, nested3, tailor, ternsq, whilemix, ternloop, elseifmix)
     @test occursin("if (a && (b || c)) {", chosen) && occursin("} else if (n > 0 || (m > 3 && m < 9)) {", chosen)
     @test occursin("bool ok = a && (b || n > 3);", chosen) && occursin("bool no = a || n > 3;", chosen)
@@ -319,8 +318,6 @@ append!(cases, [Case(nested3, true, false, 4), Case(nested3, false, true, 4), Ca
     @test occursin("while ((a || b) && n > 0) {", chosen) && occursin("if ((a && b) || (c && n > 0)) {", chosen)
     @test occursin("double w = (k > 2 && a > 0.0) ? a : 2.0 * a;", chosen)
     @test_throws ArgumentError csource("nestbreak", nestbreak)                                # refused, where it used to leave one loop: 63 for Julia's 11
-    @test_throws ArgumentError csource("andheavy", andheavy)      # Julia 21, and the C said 1
-    @test_throws ArgumentError csource("orheavy", orheavy)        # Julia 5, and the C said 10: the body written twice
     loops = csource("flowloops", bumped, whileand, whileor)
     @test occursin("for (int64_t i = 1; i <= n; i++) {\n        int64_t k = i;", loops)                 # the counting is ours, the variable the body's
     @test occursin("while (n > 0 && m > 0) {", loops) && occursin("while (n > 0 || m > 0) {", loops)
@@ -485,7 +482,6 @@ end
         Case(throwifvalue, 1), Case(throwifvalue, 2),
         Case(throwassertmsg, 4, 10.0), Case(throwassertmsg, 1, -2.5),
         Case(throwtrigraph, 4.0), Case(throwtrigraph, 0.0)])
-    @test_throws ArgumentError csource("choiceifand", choiceifand)
 end
 
 # Found by the critic who looked for what the other readers had not attacked (2026-09-21).
@@ -587,5 +583,85 @@ end
     @test occursin("return x + 1.0;", src)                                                     # `(usefast() ? x : -x) + (useslow() ? 100.0 : 1.0)`
     @test !occursin("double t =", src) && !occursin("double u =", src) && !occursin("double val", src) && occursin("s += v[k - 1];", src)   # nothing unused is declared
     @test occursin("bump()", src)                                                                     # a condition with an effect still runs
+end
+
+# A part of a condition that needs lines of its own, array work say, where a failed test must get
+# somewhere the nested form can't take it: an `else`, or out of a `while`. It is worked out into a
+# truth value first, part by part in Julia's order and stopping where Julia stops; in a `while`
+# whose parts are joined by `&&`, each part in turn and out as soon as one fails. Every one of these
+# was refused, and before that answered wrongly.
+function orheavyelse(a::Bool, x::SVector{3,Float64})
+    if a || sum(x .* x) > 1.0
+        return 1
+    else
+        return 2
+    end
+end
+function three(a::Bool, b::Bool, x::SVector{3,Float64})
+    if a && sum(x .* x) > 1.0 && b
+        r = 1
+    elseif b || sum(x) > 2.5 || a
+        r = 2
+    else
+        r = 3
+    end
+    return r
+end
+function whileheavy(a::Bool, x::SVector{3,Float64}, n::Int64)
+    s = 0
+    while a && sum(x .* x) > s
+        s += 1
+        s >= n && break
+    end
+    return s
+end
+function whileorheavy(a::Bool, x::SVector{3,Float64})
+    s = 0
+    while (a && s < 2) || sum(x .* x) > s + 10
+        s += 1
+    end
+    return s
+end
+function whilechoice(c::Bool, n::Int64, m::Int64)
+    s = 0
+    while mod(c ? n : m, 3) != 0
+        n += 1
+        m += 2
+        s += 1
+        s >= 10 && break
+    end
+    return s
+end
+function guardheavy(a::Bool, x::SVector{3,Float64}, n::Int64)
+    s = 0
+    for k in 1:n
+        (a && sum(x .* x) > k) || continue
+        s += k
+    end
+    return s
+end
+function nestedelse(a::Bool, b::Bool, x::SVector{3,Float64})
+    if a
+        if b && sum(x .* x) > 1.0
+            return 1
+        else
+            return 2
+        end
+    end
+    return 3
+end
+@testset "parts with lines" begin
+    B = (true, false); big3 = SVector(1.0, 2.0, 3.0); small3 = SVector(0.1, 0.2, 0.3)
+    check("heavy", [[Case(modand, a, b) for a in (-1, 1, 2) for b in (1, 2)]; [Case(andheavy, a, x) for a in B for x in (big3, small3)];
+                    [Case(orheavy, a, x) for a in B for x in (big3, small3)]; [Case(orheavyelse, a, x) for a in B for x in (big3, small3)];
+                    [Case(three, a, b, x) for a in B for b in B for x in (big3, small3)];
+                    [Case(choiceifand, a, c, n, m) for a in B for c in B for (n, m) in ((4, 0), (3, 7))];
+                    [Case(whileheavy, a, x, 5) for a in B for x in (big3, small3)]; [Case(whileorheavy, a, x) for a in B for x in (big3, small3)];
+                    Case(whilechoice, true, 1, 0); Case(whilechoice, false, 0, 1); Case(whilechoice, true, 3, 1);
+                    [Case(guardheavy, a, x, 20) for a in B for x in (big3, small3)]; [Case(nestedelse, a, b, x) for a in B for b in B for x in (big3, small3)]])
+    src = csource("heavytext", andheavy, orheavy, whileheavy)
+    @test occursin("bool temp1 = a;\n    if (temp1) {\n        double temp2[3];", src) && occursin("        temp1 = sum_3(temp2) > 1.0;\n    }\n    if (temp1) {", src)
+    @test occursin("    if (!temp1) {\n        double temp2[3];", src)                                   # `||`: the next part only if the first failed
+    @test occursin("        if (!a) {\n            break;\n        }\n        double temp1[3];", src)   # `while a && …`: out as soon as one fails
 end
 end

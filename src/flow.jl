@@ -529,13 +529,23 @@ function whileloop!(lines, sc::Scope, R::Round)
         enter!(sc, W.header, W.backedge - 1, true)
         sc.depth += 1
         block!(lines, sc, W.header, W.test - 1; except=W.header)
-        emit!(lines, sc, "if (!($(condition(sc, [(code[W.test].cond, false)], "&&")))) {")
-        emit!(lines, sc, "    break;")
-        emit!(lines, sc, "}")
+        leave(c) = (emit!(lines, sc, "if ($c) {"); emit!(lines, sc, "    break;"); emit!(lines, sc, "}"))
+        if R.op == "&&"
+            # `while a && heavy(x)`: each part in turn, and out as soon as one fails.
+            n = 0
+            while n < length(R.conds)
+                m = something(findnext(!isempty, R.pres, n + 2), length(R.conds) + 1) - 1
+                n > 0 && block!(lines, sc, first(R.pres[n+1]), last(R.pres[n+1]))
+                leave(opposite(sc, R.conds[n+1:m], "&&"))
+                n = m
+            end
+        else
+            leave("!" * flagged!(lines, sc, R.conds, R.pres, R.op))
+        end
         sc.depth -= 1
         # The same pair of braces as the condition's statements, so the same block: as two,
         # a variable of each could both keep one name, and C saw it declared twice.
-        nested!(lines, sc, W.test + 1, W.backedge - 1; braces=false)
+        nested!(lines, sc, R.bodylo, W.backedge - 1; braces=false)
         pop!(sc.path)
     end
     emit!(lines, sc, "}")
@@ -546,9 +556,12 @@ end
 # further tests that fail to the same place; `a || b` is a test that fails into another
 # test, with a jump straight to the body in between. Returns the pieces, as (IR value,
 # negated), the operator, where a failed test goes, and the first statement after them.
-function tests(sc::Scope, i::Int)
+function tests(sc::Scope, i::Int; hi::Int=length(sc.ci.code), loops=(), loop::Bool=false)
     code = sc.ci.code
     conds = Tuple{Any, Bool}[(code[i].cond, false)]
+    pres = UnitRange{Int}[1:0]              # the statements each part needs before it can be tested; none for the first
+    at = Int[i]                             # the tests themselves
+    hops = Int[]                            # the jumps into the body from the middle of an `||`
     op = "&&"
     target = code[i].dest
     j = i + 1
@@ -569,29 +582,74 @@ function tests(sc::Scope, i::Int)
     # and are not the same place.
     # The body may itself begin with a jump, `(a || b) && continue`: falling into it comes first.
     hop(k, label) = (k = nextlive(sc, k); k == nextlive(sc, label) || k <= length(code) && code[k] isa Core.GotoNode && code[k].label == label)
+    # A part that needs lines of its own, `a && sum(x .* x) > 1.0`: its statements run from `from`
+    # up to a test that `fits`. They must be the working-out of an expression and nothing else
+    # (`expressionlike`), which is what tells them from the first statements of the body.
+    function later(from, upto, fits)
+        for k in from:upto
+            (haskey(sc.fors, k) || haskey(sc.whiles, k)) && return 0
+            any(F -> F.start <= k < F.bodylo || F.next <= k < F.exit || k in F.machinery, values(sc.fors)) && return 0
+            code[k] isa Core.GotoIfNot && fits(k) && return expressionlike(sc, from:k-1) ? k : 0
+        end
+        return 0
+    end
+    # A failed `&&` part that must get somewhere the nested form can't take it: an `else`, or out
+    # of a `while`. With neither, `if a; …; if b; …; end; end` is the same thing and reads better.
+    function mustreach(target)
+        loop && return true
+        e = lastlive(sc, j, target - 1)
+        return e !== nothing && code[e] isa Core.GotoNode && code[e].label > target && code[e].label <= hi + 1 && !any(code[e].label in l for l in loops)
+    end
     while true
         j = nextlive(sc, j)
         if op == "&&" && (k = nexttest(j); k != 0 && code[k].dest == target)
-            push!(conds, (code[k].cond, false)); j = k + 1
+            push!(conds, (code[k].cond, false)); push!(pres, 1:0); push!(at, k); j = k + 1
         elseif code[j] isa Core.GotoNode && code[j].label > j && nextlive(sc, j + 1) == nextlive(sc, target) &&
                (t2 = nexttest(target); t2 != 0 && hop(t2 + 1, code[j].label)) &&
                (op == "||" || length(conds) == 1)
             op = "||"
-            push!(conds, (code[t2].cond, false))
+            push!(conds, (code[t2].cond, false)); push!(pres, 1:0); push!(at, t2); push!(hops, j)
+            j = t2 + 1
+            target = code[t2].dest
+        elseif op == "&&" && j < target && mustreach(target) && (k = later(j, target - 1, k -> code[k].dest == target)) != 0
+            push!(conds, (code[k].cond, false)); push!(pres, j:k-1); push!(at, k); j = k + 1
+        elseif code[j] isa Core.GotoNode && code[j].label > j && nextlive(sc, j + 1) == nextlive(sc, target) && (op == "||" || length(conds) == 1) &&
+               (body = code[j].label; t2 = later(target, body - 1, k -> hop(k + 1, body)); t2 != 0)
+            op = "||"
+            push!(conds, (code[t2].cond, false)); push!(pres, target:t2-1); push!(at, t2); push!(hops, j)
             j = t2 + 1
             target = code[t2].dest
         else
             break
         end
     end
-    return conds, op, target, j
+    return (; conds, op, target, j, pres, at, hops)
 end
+
+# Are these statements the working-out of an expression: calls, reads, stores into variables of
+# Julia's own making, and jumps that stay among them (a value a test chooses)? A store into a
+# variable of the author's, a loop, a `return`, or a jump out is a statement of the author's.
+function expressionlike(sc::Scope, range)
+    code = sc.ci.code
+    for k in range
+        st = code[k]
+        (haskey(sc.fors, k) || haskey(sc.whiles, k) || st isa Core.ReturnNode) && return false
+        any(F -> F.start <= k < F.bodylo || F.next <= k < F.exit || k in F.machinery, values(sc.fors)) && return false     # a loop's own working
+        st isa Expr && st.head === :(=) && !isempty(string(sc.ci.slotnames[st.args[1].id])) && return false
+        isjump(st) && !(k < aim(st) <= last(range) + 1) && return false                       # forward, and among them
+    end
+    return true
+end
+
+# Does a part's working-out need lines of its own, or is all of it written inside the condition?
+needslines(sc::Scope, range) = any(k -> nextlive(sc, k) == k && !(sc.ci.code[k] isa Core.SlotNumber && stable(sc.ci, k, sc.ci.code[k].id)), range)
 
 # An `if`, starting at the GotoIfNot at `i`, within a block that ends at `hi`.
 # Returns the index of the first statement after the whole construct.
 function ifelse!(lines, sc::Scope, B::Branch; chained::Bool=false)
     annotate!(lines, sc, sc.stmtline[B.i])
-    emit!(lines, sc, (chained ? "} else if (" : "if (") * condition(sc, B.conds, B.op) * ") {")
+    cond = any(!isempty, B.pres) ? flagged!(lines, sc, B.conds, B.pres, B.op) : condition(sc, B.conds, B.op)
+    emit!(lines, sc, (chained ? "} else if (" : "if (") * cond * ") {")
     header = length(lines)
     nested!(lines, sc, B.thenlo, B.thenhi)
     if length(lines) == header && B.elselo > 0 && B.chain == 0
@@ -616,27 +674,13 @@ end
 # Where the `if` starting at `i` ends, computed without emitting anything.
 function ifextent(sc::Scope, i, hi, loops)
     code = sc.ci.code
-    target = code[i].dest
-    j = i + 1
-    while true
-        j = nextlive(sc, j)
-        if code[j] isa Core.GotoIfNot && code[j].dest == target && !haskey(sc.whiles, j)
-            j += 1
-        elseif code[j] isa Core.GotoNode && code[j].label > j && nextlive(sc, j + 1) == nextlive(sc, target) &&
-               (t2 = nextlive(sc, target); code[t2] isa Core.GotoIfNot &&
-                (k = nextlive(sc, t2 + 1); k == nextlive(sc, code[j].label) || code[k] isa Core.GotoNode && code[k].label == code[j].label))
-            j = t2 + 1
-            target = code[t2].dest
-        else
-            break
-        end
-    end
-    last = lastlive(sc, j, target - 1)
-    if last !== nothing && code[last] isa Core.GotoNode && code[last].label > target && code[last].label <= hi + 1 &&
+    C = tests(sc, i; hi, loops)
+    last = lastlive(sc, C.j, C.target - 1)
+    if last !== nothing && code[last] isa Core.GotoNode && code[last].label > C.target && code[last].label <= hi + 1 &&
        !any(code[last].label in l for l in loops)
         return code[last].label
     end
-    return target
+    return C.target
 end
 
 # A `throw` or an `error`: typed as never returning, as dead code is, and not dead at all.
@@ -676,6 +720,36 @@ function lastlive(sc::Scope, lo, hi)
     return nothing
 end
 
+# A condition one of whose parts needs lines of its own, `a && sum(x .* x) > 1.0`: worked out
+# into a truth value first, part by part in Julia's order and stopping where Julia stops, which
+# is what the author would write by hand. Returns the name to test.
+#
+#     bool temp1 = a;
+#     if (temp1) {
+#         double temp2[3];
+#         mulP_3_3(x, x, temp2);
+#         temp1 = sum_3(temp2) > 1.0;
+#     }
+function flagged!(lines, sc::Scope, conds, pres, op)
+    flag = temp!(sc, nothing, String[])
+    # The parts up to the first with lines of its own are one expression, as they always were.
+    n = something(findfirst(!isempty, pres), length(conds) + 1) - 1
+    emit!(lines, sc, "bool $flag = $(condition(sc, conds[1:n], op));")
+    while n < length(conds)
+        m = something(findnext(!isempty, pres, n + 2), length(conds) + 1) - 1     # this part, and the ones after it that need no lines
+        emit!(lines, sc, "if ($(op == "&&" ? flag : "!" * flag)) {")
+        enter!(sc, first(pres[n+1]), last(pres[n+1]), false)
+        sc.depth += 1
+        block!(lines, sc, first(pres[n+1]), last(pres[n+1]))
+        emit!(lines, sc, "$flag = $(condition(sc, conds[n+1:m], op));")
+        sc.depth -= 1
+        pop!(sc.path)
+        emit!(lines, sc, "}")
+        n = m
+    end
+    return flag
+end
+
 # The condition that holds exactly when this one doesn't. One comparison is turned round
 # where that is exact: `==` and `!=` always, the ordered ones on integers only, since for
 # floats `!(a < b)` holds for a NaN and `a >= b` doesn't. Anything else is `!(…)`.
@@ -701,7 +775,7 @@ function condition(sc::Scope, conds, op)
     for (x, negated) in conds
         text, p = expression(sc, x)
         negated && (text = "!" * (p < 14 ? "($text)" : text); p = 14)
-        push!(parts, p < prec || (prec == LOR && p == LAND) ? "($text)" : text)
+        push!(parts, length(conds) > 1 && (p < prec || (prec == LOR && p == LAND)) ? "($text)" : text)      # one part alone needs no brackets
     end
     return join(parts, " $op ")
 end

@@ -15,6 +15,7 @@
 struct Branch
     i::Int
     conds::Vector{Tuple{Any, Bool}}
+    pres::Vector{UnitRange{Int}}    # the statements a part of the condition needs on lines of its own, before it is tested
     op::String
     thenlo::Int
     thenhi::Int
@@ -30,6 +31,7 @@ end
 struct Round
     W::While
     conds::Vector{Tuple{Any, Bool}}
+    pres::Vector{UnitRange{Int}}
     op::String
     bodylo::Int
     inline::Bool
@@ -189,17 +191,17 @@ end
 function round!(tree::Tree, sc::Scope, W::While, loops, out::Int)
     code = sc.ci.code
     # `while a && b`, `while a || b`: the same merged tests an `if` opens with.
-    conds, op, target, bodylo = tests(sc, W.test)
-    target == W.exit || throw(ArgumentError("a `while` whose condition doesn't lead out of it (line $(sc.stmtline[W.header]))"))
-    compound = length(conds) > 1
+    C = tests(sc, W.test; hi=W.backedge - 1, loops, loop=true)
+    C.target == W.exit || throw(ArgumentError("a `while` whose condition doesn't lead out of it (line $(sc.stmtline[W.header]))"))
+    bodylo = C.j
+    heavy = [needslines(sc, r) for r in C.pres]
     # The condition can go in the `while (…)` only if everything in the header folds into it.
-    inline = all(i -> i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef || code[i] isa Core.SlotNumber ||
-                      code[i] isa Core.SSAValue || isjump(code[i]) || code[i] isa Core.NewvarNode, W.header:bodylo-1)
-    compound && !inline && throw(ArgumentError("a `while a && b` whose condition needs work of its own, array work say, before it can be tested (line $(sc.stmtline[W.header])); test the first part in the `while` and the rest in the body, with `break`"))
-    tree.rounds[W.header] = Round(W, conds, op, bodylo, inline)
-    for i in W.test:bodylo-1; isjump(code[i]) && get(tree.claimed, i, :none) !== :choice && claim!(tree, sc, i, :test); end
+    inline = !any(heavy) && all(i -> i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef || code[i] isa Core.SlotNumber ||
+                                     code[i] isa Core.SSAValue || isjump(code[i]) || code[i] isa Core.NewvarNode, W.header:bodylo-1)
+    tree.rounds[W.header] = Round(W, C.conds, [h ? r : (1:0) for (h, r) in zip(heavy, C.pres)], C.op, bodylo, inline)
+    for i in [C.at; C.hops]; get(tree.claimed, i, :none) !== :choice && claim!(tree, sc, i, :test); end
     claim!(tree, sc, W.backedge, :loop)
-    edges(tree, sc, W.test, bodylo, op, place(tree, sc, W.exit), "a `while`'s condition")
+    edges(tree, sc, C, bodylo, place(tree, sc, W.exit), "a `while`'s condition")
     again = place(tree, sc, W.backedge)             # the jump back, and on to the first thing the next pass does
     inside = [loops; (W.exit, W.backedge, out, again)]
     if inline
@@ -209,7 +211,10 @@ function round!(tree::Tree, sc::Scope, W::While, loops, out::Int)
         # The condition's statements go inside the braces, and the loop begins with them.
         push!(tree.regions, (W.header, W.backedge - 1))
         recover!(tree, sc, W.header, W.test - 1, inside, W.test; except=W.header)
-        recover!(tree, sc, W.test + 1, W.backedge - 1, inside, again)
+        for (m, r) in enumerate(C.pres)
+            heavy[m] && recover!(tree, sc, first(r), last(r), inside, C.at[m])
+        end
+        recover!(tree, sc, bodylo, W.backedge - 1, inside, again)
     end
     return W.backedge + 1
 end
@@ -218,21 +223,31 @@ end
 # `a && b` every test that fails goes where the whole condition fails to, and one that holds
 # goes on to the next test, the last into the body. In `a || b` a test that fails goes on to
 # the next test, only the last to where the condition fails; one that holds hops to the body.
-function edges(tree::Tree, sc::Scope, first::Int, bodylo::Int, op, failed::Int, what)
+function edges(tree::Tree, sc::Scope, C, bodylo::Int, failed::Int, what)
     code = sc.ci.code
-    at = [k for k in first:bodylo-1 if code[k] isa Core.GotoIfNot && !(k in tree.chosen)]
+    at = C.at
     body = place(tree, sc, bodylo)
+    # Where the next part begins: its own lines if it has any, else its test.
+    start(n) = needslines(sc, C.pres[n]) ? place(tree, sc, first(C.pres[n])) : at[n]
     for (n, k) in enumerate(at)
         last = n == length(at)
-        agree(tree, sc, k, code[k].dest, op == "&&" || last ? failed : at[n+1], what)
-        agree(tree, sc, k, k + 1, op == "&&" && !last ? at[n+1] : body, what)
+        agree(tree, sc, k, code[k].dest, C.op == "&&" || last ? failed : start(n + 1), what)
+        agree(tree, sc, k, k + 1, C.op == "&&" && !last ? start(n + 1) : body, what)
     end
 end
 
 function branch!(tree::Tree, sc::Scope, i::Int, hi::Int, loops, onward::Int)
     code = sc.ci.code
-    conds, op, target, j = tests(sc, i)
-    for k in i:j-1; isjump(code[k]) && get(tree.claimed, k, :none) !== :choice && claim!(tree, sc, k, :test); end
+    C = tests(sc, i; hi, loops)
+    conds, op, target, j = C.conds, C.op, C.target, C.j
+    for k in [C.at; C.hops]; get(tree.claimed, k, :none) !== :choice && claim!(tree, sc, k, :test); end
+    # A part of the condition with lines of its own is a little block of its own, run before its test.
+    heavy = [needslines(sc, r) for r in C.pres]
+    for (m, r) in enumerate(C.pres)
+        heavy[m] || continue
+        push!(tree.regions, (r.start, r.stop))
+        recover!(tree, sc, r.start, r.stop, loops, C.at[m])
+    end
     thenlo = j
     # The then-block runs to the else target. If it ends by jumping past that, there's
     # an else-block up to the jump's destination.
@@ -264,19 +279,20 @@ function branch!(tree::Tree, sc::Scope, i::Int, hi::Int, loops, onward::Int)
     end
     # What the C will do, against where the lowered code really goes.
     out = after <= hi ? place(tree, sc, after) : onward
-    edges(tree, sc, i, thenlo, op, elselo > 0 ? place(tree, sc, elselo) : out, "an `if`'s condition")
+    edges(tree, sc, C, thenlo, elselo > 0 ? place(tree, sc, elselo) : out, "an `if`'s condition")
     last !== nothing && get(tree.claimed, last, :none) in (:else, :join) &&
         agree(tree, sc, last, code[last].label, out, "the end of an `if`'s branch")
     chain = 0
     if elselo > 0
         first = nextlive(sc, elselo)
         # An else-block that is exactly one `if` reaching the same end is an `else if`.
+        # Unless its condition needs lines of its own, which an `else if (…)` has no room for.
         if first <= elsehi && code[first] isa Core.GotoIfNot && !haskey(sc.whiles, first) && !haskey(sc.fors, first) &&
-           ifextent(sc, first, elsehi, loops) == after
+           ifextent(sc, first, elsehi, loops) == after && !any(r -> needslines(sc, r), tests(sc, first; hi=elsehi, loops).pres)
             chain = first
         end
     end
-    tree.ifs[i] = Branch(i, conds, op, thenlo, thenhi, elselo, elsehi, after, chain)
+    tree.ifs[i] = Branch(i, conds, [h ? r : (1:0) for (h, r) in zip(heavy, C.pres)], op, thenlo, thenhi, elselo, elsehi, after, chain)
     push!(tree.regions, (thenlo, thenhi))
     recover!(tree, sc, thenlo, thenhi, loops, out)
     if chain != 0

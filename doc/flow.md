@@ -139,18 +139,37 @@ would go: the next test, the body, the `else`, what follows. A loop's own workin
 is never "nothing": looking through it is how "falls into the next pass" and
 "leaves the loop" came to look like one place.
 
-What is refused this way today is a condition part that needs a line of its own
-when a failed test must reach an `else`:
+## A part of a condition that needs lines of its own
 
-```julia
-if a > 0 && mod(a * b, 3) == 1      # `mod` writes `a * b` twice, so it is a temp
-    r = 1
-else
-    r = 2
-end
+`if a && sum(x .* x) > 1.0 … else … end`: the second part is array work, which
+has no place inside a C condition. Without the `else`, nesting says it: `if (a) {
+…; if (…) { … } }`. With an `else`, a failed second test must reach it, and
+nesting would lose it. So the condition is worked out into a truth value first,
+part by part in Julia's order, stopping where Julia stops:
+
+```c
+bool temp1 = a;
+if (temp1) {
+    double temp2[3];
+    mulP_3_3(x, x, temp2);
+    temp1 = sum_3(temp2) > 1.0;
+}
+if (temp1) {
+    r = 10.0;
+} else {
+    r = 20.0;
+}
 ```
 
-Nesting the second test inside the first would lose the `else` for it. Writing
-it correctly needs a flag or a repeated `else`, and which is a question of what
-the C should look like that is still open. The message says how to write it
-meanwhile: give the second part a variable of its own first.
+For `||` the next part runs only if the ones before it failed, `if (!temp1) { … }`.
+In a `while` whose parts are joined by `&&` there is no need for the name: each
+part in turn, and `break` as soon as one fails. Parts that need no lines stay
+together in one expression, as they always were.
+
+The parts are found by the same walk that merges `a && b` (`tests` in
+`src/flow.jl`). What tells a part's working-out from the first statements of the
+body is that it is nothing but the working-out of an expression: calls, reads,
+stores into variables of Julia's own making, and jumps that stay among them. A
+store into a variable of the author's, a loop or a `return` is the body. The
+nested form is kept wherever it goes where the lowered code goes, so this is
+written only where nothing else would be right.

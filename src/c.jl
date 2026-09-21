@@ -676,7 +676,9 @@ function analyze!(sc::Scope)
     end
     # A `while`'s test is the first that is its own, not that of a value its condition opens
     # with: `while (a || b) && n > 0`.
-    past = Dict(c.test => c.join for c in values(sc.choices))
+    # Whether the value is written as an expression or keeps its `if` and `else`: either way its
+    # test is not the loop's (`while mod(c ? n : m, 3) != 0`).
+    past = Dict(c.test => c.join for c in findchoices(sc))
     for (h, W) in collect(sc.whiles)
         t = W.test
         while haskey(past, t)
