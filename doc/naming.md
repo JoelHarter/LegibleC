@@ -60,7 +60,11 @@ the same way, after the mangling below.
 
 An array parameter that Julia reassigns keeps its name for the parameter;
 the working copy is `x_local` (`math/array.md`, *Assignment and aliasing*). A
-scalar parameter is simply reassigned.
+scalar parameter is simply reassigned. A mutable array variable that moves
+between arrays, `x, xnew = xnew, x`, is a pointer under the author's name,
+and the array it starts with is `x_data`, a name of the transpiler's that
+gives way to the author's like any other (`math/array.md`, *One array under
+two names*).
 
 A name that starts with `_` has its leading underscores moved to the end
 (`_x` → `x_`, `__Foo` → `Foo__`), because C reserves every such name at file

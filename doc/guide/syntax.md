@@ -144,6 +144,9 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `[1.0 2.0; 3.0 4.0]`, `[1.0, 2.0]`, `SVector(…)`, `@SMatrix […]`, `SA[…]` | yes |
 | `[A B; C D]`, `[u; v]`, `[u v]`, `[A; B;; C; D]`, `[A;; B]`, `[B;; C;;; D;; E]`, with scalars among the blocks, ragged rows and columns | yes, any dimension |
 | `B = A`, `B = A'`, `A = A * A` | yes (copies, and a temp when the destination is an operand) |
+| `m = v` on a mutable array and then a write through either; `x, xnew = xnew, x` on two buffers; `a, b = b, a` on two parameters; `best = c ? u : w` | yes: a second name is `double *const m = v;`, a name that moves is a pointer, and nothing is copied. Refused: a new array given to a variable while another name may still hold the one it had |
+| a write into an array held by a struct, `h.v[1] = x`, `m = h.v; m[1] = x` | through a `mutable struct`, yes. Through a struct that isn't `mutable`, refused: C copies it by value, its arrays with it |
+| `view(v, 2:4)`, `y .= A * x` | not yet |
 | `.==`, `.<`, `.<=`, `.>`, `.>=`, `.!=`, `.&`, `.\|`, `.!`, `ifelse.` | yes, a `Bool` array |
 | a range in a variable, `A[:, 1] .= 0` | not yet |
 | runtime-sized `Array` arguments | not yet — every array has a size at transpile time; see `../dev/map.md` §3.4 for the VLA design |
