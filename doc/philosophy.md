@@ -63,3 +63,10 @@ character, what a type's fields are — the transpiler asks Julia rather than
 keeping a copy. Every decision is then made in one place — one rule to get
 right, one to read, one to trust — and the Julia we accept grows by the
 rule, not by the case.
+
+A mistake is answered the same way. A wrong answer is traced to the rule that
+let it through, and that rule is repaired, or the rule that was missing is
+written. A patch for the one case makes that case pass and leaves its
+neighbours waiting. When fixes begin to pile up around one place, that is the
+sign of a missing rule, and finding it is the fix. The transpiler stays a
+well-made machine, each part doing one job, and never a ball of bandages.
