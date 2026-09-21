@@ -202,6 +202,22 @@ function renamed(v::MVector{3,Float64})             # a second name nobody write
     m = v
     return m[1] + v[2]
 end
+const K3 = SMatrix{3,3}(1.0, 4.0, 7.0, 2.0, 5.0, 8.0, 3.0, 6.0, 10.0)
+function flipself(a::SMatrix{3,3,Float64,9}, n::Int64)   # `a = a'` onto its own storage would read what it has written: through a temp
+    for k in 1:n
+        a = a'
+        a = a .+ Float64(k) .* K3
+    end
+    return a
+end
+function literalend(k::Int64)                       # `end` as a plain index, and inside arithmetic, on a regular array
+    m = [4.0 8.0 1.0; 5.0 9.0 2.0; 6.0 7.0 3.0]
+    r = m[end, :]
+    c = m[2:end, end]
+    b = m[1:end-1, 2:end]
+    return r[k] + 10.0 * c[end] + 100.0 * b[end, 1] + 1000.0 * b[1, end]
+end
+lastof(v::SVector{3,Float64}) = v[end] + v[end-1] * 10.0
 function resized()                                  # one size per variable, as one type
     a = [1.0; 2.0]
     a = [1.0; 2.0; 3.0]
@@ -236,7 +252,9 @@ check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 
                     Case(scaled, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), true), Case(scaled, SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0), false),
                     Case(turned, SVector(1.0, 2.0, 3.0), SMatrix{3,3}(1.0:9...)), Case(stacked, SMatrix{2,3}(1.0:6...), SVector(7.0, 8.0, 9.0)),
                     Case(bottom), Case(tail, SVector(1.0, 2.0, 3.0, 4.0, 5.0)), Case(sliced), Case(either, SVector(1.0, 2.0, 3.0), true), Case(either, SVector(1.0, 2.0, 3.0), false),
-                    Case(copied, MVector(1.0, 2.0, 3.0)), Case(renamed, MVector(1.0, 2.0, 3.0))])
+                    Case(copied, MVector(1.0, 2.0, 3.0)), Case(renamed, MVector(1.0, 2.0, 3.0)),
+                    Case(flipself, SMatrix{3,3}(2.0, -1.0, 0.5, 3.0, 1.5, -2.0, 0.25, 4.0, 1.0), 2),
+                    Case(literalend, 2), Case(lastof, SVector(1.0, 2.0, 3.0))])
 @testset "outplaced" begin
     src = csource("outplaced", state, whole, grown, swapped, scaled, turned, stacked, sliced, either)
     fn(name) = (i = findfirst("void $name(", src)[1]; src[i:findnext("\n}", src, i)[end]])

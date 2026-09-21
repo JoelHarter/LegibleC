@@ -38,6 +38,7 @@ mutable struct Program
     fixed::Dict{Any, String}
     avoid::Set{String}
     written::Set{Any}                                              # globals some function writes into, as (module, name): not `const` in C
+    yielded::Set{String}                                           # names of the author's that a name of ours (a macro, a tuple's struct) keeps clear of
 end
 
 # A global variable in the output: its C name, the Julia binding it came from (module and
@@ -62,7 +63,7 @@ Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
             suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}(),
-            Any[], Dict{Any, String}(), Set{String}(), Set{Any}())
+            Any[], Dict{Any, String}(), Set{String}(), Set{Any}(), Set{String}())
 
 # The irrationals the current `transpile` call has met, by the macro each is written as:
 # `"LEGIBLEC_PI" => π`. The helper header defines the ones the output uses.
@@ -203,7 +204,7 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
     # A variable the walk never declared — assigned only where it doesn't look — is declared
     # at the top of the function (`finish`), so the top is where it lives, for its name too.
     for s in ci.nargs+1:length(ci.slotnames)
-        s in first.declared || s in first.hidden || (first.home[s] = 1)
+        s in first.declared || s in first.hidden || (first.home[s] = 1; push!(first.emitted, (1, try slotdecl(first, s) catch; "" end)))
     end
     sc = ready(name, mi, sig, prog, rettype, templimit, source, first)
     sc.home = first.home
@@ -457,11 +458,18 @@ function analyze!(sc::Scope)
     # the slot simply *is* the parameter, reassigned in place. An array parameter is the
     # caller's memory, so the slot is a working copy, `x_local`, made at the top of the
     # function (`cfunction`) — as Julia does, with a comment saying why.
+    # Only Julia's own copy, which it makes on entry and after which the parameter is never
+    # named again. `let x = x` and then `x += 1` has the same two statements, and there the
+    # parameter is read again afterwards (or again on the next pass, in a loop): taking the
+    # new `x` for the parameter itself wrote into the parameter. Julia 911, C 1215.
+    entry(k) = all(j -> code[j] isa Core.NewvarNode || code[j] isa Expr && code[j].head === :(=) && code[j].args[2] isa Core.SlotNumber &&
+                        2 <= code[j].args[2].id <= ci.nargs, 1:k)
     for (s, at) in assigned
         length(at) >= 2 && s > ci.nargs || continue
         rhs = code[at[1]].args[2]
         rhs isa Core.SSAValue && code[rhs.id] isa Core.SlotNumber && (rhs = code[rhs.id])
         rhs isa Core.SlotNumber && 2 <= rhs.id <= ci.nargs && ci.slotnames[s] == ci.slotnames[rhs.id] || continue
+        entry(at[1]) && !any(j -> rhs.id in slotreads(code[j]) || rhs.id in slotwrites(code[j]), at[1]+1:length(code)) || continue
         push!(sc.skipped, at[1])
         if isarray(slottype(sc, s))
             sc.rebound[s] = rhs.id
@@ -887,6 +895,9 @@ function statement!(lines, sc::Scope, i, st)
             s = slot.id
             d = sc.blocks[home].depth
             push!(sc.inserts, (sc.starts[d+1], 0, () -> "    "^d * slotdecl(sc, s) * ";"))
+            # It is written later, but it names its type — `Gain q;` — and that is a mention
+            # like any other, for a local spelled like the struct to keep clear of.
+            push!(sc.emitted, (sc.path[end], try slotdecl(sc, s) catch; "" end))
         end
         if stable(ci, i, slot.id)
             sc.expr[i] = x
@@ -958,7 +969,17 @@ function store!(lines, sc::Scope, i, x, rhs; declaration::Bool=false)
                 shape(R) === nothing && (R = A)
                 declaration && emit!(lines, sc, declare(R, x) * ";")
                 start = length(lines) + 1
-                copy!(lines, sc, value(sc, rhs.args[2]), A, x, R)
+                if mentions(sc, x, rhs.args[2]) && axis(A) != axis(R)
+                    # `a = a'`: the copy swaps axes, and onto its own storage it would read
+                    # elements it has already written. Through a temp, like any operation
+                    # that reads what it writes.
+                    t = temp!(sc, nothing, contribution(sc, rhs.args[2]))
+                    emit!(lines, sc, declare(R, t) * ";")
+                    copy!(lines, sc, value(sc, rhs.args[2]), A, t, R)
+                    copy!(lines, sc, t, R, x, R)
+                else
+                    copy!(lines, sc, value(sc, rhs.args[2]), A, x, R)
+                end
                 step!(lines, sc, "$x = $(value(sc, rhs.args[2]))$(tmark(A))"; from=start)
                 sc.shapes[i] = R
             end
@@ -1064,6 +1085,10 @@ function literal(sc::Scope, x)
     v = nothing
     if f in (Base.lastindex, Base.firstindex, Base.length, Base.size)
         v = sizeknown(sc, x.id, f, st.args[2:end])
+    elseif f in (Base.:+, Base.:-, Base.:*, Base.div) && length(st.args) == 3
+        # Arithmetic on sizes the transpiler knows, as an index has it: `1:end-1`, `end ÷ 2`.
+        a, b = literal(sc, st.args[2]), literal(sc, st.args[3])
+        a isa Integer && b isa Integer && (v = f(a, b))
     elseif f === Colon() && length(st.args) in (3, 4)
         ends = [literal(sc, a) for a in st.args[2:end]]
         all(e -> e isa Integer, ends) && (v = length(ends) == 2 ? (ends[1]:ends[2]) : (ends[1]:ends[2]:ends[3]))
@@ -1618,7 +1643,7 @@ function returnkind!(prog::Program, mi::Core.MethodInstance, cname::AbstractStri
         end
     end
     kind = inherited !== nothing && names === nothing ? inherited :
-           names !== nothing ? Kind(identifier(cname) * "_t", identifiers(names)) : fallback
+           names !== nothing ? Kind(free(identifier(cname) * "_t", union(prog.names, Set(structname(T) for (T, _) in prog.structs), prog.yielded, reserved)), identifiers(names)) : fallback
     if kind.cname != fallback.cname && !any(p -> p.first == kind.cname, prog.tupledefs) && inherited === nothing
         for F in R.parameters
             structdef!(prog, F)
@@ -1655,13 +1680,17 @@ nothing. See `doc/naming.md`.
 `i` may be `nothing` for a temp that doesn't stand for any SSA value.
 """
 function temp!(sc::Scope, i, parts)
-    sc.counter += 1
-    while sc.counter in sc.blocked
+    local name
+    while true
         sc.counter += 1
+        sc.counter in sc.blocked && continue
+        base = "temp$(sc.counter)"
+        name = isempty(parts) || !sc.prog.suffix ? base : base * "_" * join(parts, "_")
+        length(name) > sc.limit && (name = base)
+        # A global of the author's called `temp1_n` that this function reads: a temp of that
+        # name would capture every later read of it. The number moves on.
+        name in sc.outer || base in sc.outer || break
     end
-    base = "temp$(sc.counter)"
-    name = isempty(parts) || !sc.prog.suffix ? base : base * "_" * join(parts, "_")
-    length(name) > sc.limit && (name = base)
     i === nothing || (sc.expr[i] = name)
     return name
 end
@@ -1773,6 +1802,11 @@ function render(sc::Scope, i, ex::Expr)
     ci = sc.ci
     f = callee(ci, ex.args[1])
     args = ex.args[2:end]
+    # A size the transpiler knows, written where it is used: `v[end]`, `A[end, 1]`.
+    if f in (Base.lastindex, Base.firstindex, Base.length, Base.size)
+        v = literal(sc, Core.SSAValue(i))
+        v isa Integer && return (string(v), PRIMARY)
+    end
     T = widen(ci.ssavaluetypes[i])
     n = length(args)
     # `a + -b` is written `a - b`, and `a - -b` is `a + b`: exact, since a negation
@@ -2196,11 +2230,12 @@ function symbolic(g::Global, text)
     leaves = Any[]
     marked = marklayout(rhs, leaves)
     layout = try Core.eval(g.mod, marked) catch; return nothing end
-    layout isa AbstractArray && size(layout) == size(v) && all(x -> x isa Real && isinteger(x), layout) || return nothing
+    layout isa AbstractArray && all(x -> x isa Real && isinteger(x), layout) || return nothing
+    size(layout) == size(v) || return false                  # a literal of another shape: not the line this value came from
     grid = Array{String}(undef, size(v))
     for k in eachindex(v)
         s = leafsymbolic(leaves[Int(layout[k])], g.mod, v[k])
-        s === false && return nothing
+        s === false && return false
         grid[k] = something(s, initializer(v[k]))
     end
     return braces(grid)
@@ -2279,26 +2314,30 @@ end
 # files the program's functions came from, where the last top-level `name = …` is the
 # one whose value the transpiler saw.
 function globalsource(g::Global, files)
-    g.mod isa Module || return nothing
+    found = Any[]
+    g.mod isa Module || return found
     pat = Regex("(^|;)\\s*(const\\s+)?\\Q$(g.name)\\E\\s*(::[^=]*)?=[^=]")
-    found(path, k) = (code, note) = split_comment(readlines(path)[k]) |> x -> (file=basename(path), line=k, text=strip(readlines(path)[k]), note=x[2] === nothing || isempty(strip(x[2])) ? nothing : strip(x[2]))
+    function candidates!(path, order)
+        lines = readlines(path)
+        for k in order(lines)
+            occursin(pat, lines[k]) || continue
+            note = split_comment(lines[k])[2]
+            push!(found, (file=basename(path), line=k, text=strip(lines[k]), note=note === nothing || isempty(strip(note)) ? nothing : strip(note)))
+        end
+    end
+    # Every line that could be the one, likeliest first: in the module's own file from the
+    # module's first line on; then in the files the functions came from, last assignment
+    # first. Which of them it is, `globallines` tells by the value.
     if isdefined(Base, :moduleloc)
         loc = Base.moduleloc(g.mod)
         path = isempty(string(loc.file)) ? nothing : Base.find_source_file(string(loc.file))
-        if path !== nothing && isfile(path)
-            lines = readlines(path)
-            k = findfirst(k -> occursin(pat, lines[k]), max(loc.line, 1):length(lines))
-            k === nothing || return found(path, k + max(loc.line, 1) - 1)
-        end
+        path !== nothing && isfile(path) && candidates!(path, lines -> max(loc.line, 1):length(lines))
     end
     for f in unique(files)
         path = Base.find_source_file(string(f))
-        path !== nothing && isfile(path) || continue
-        lines = readlines(path)
-        k = findlast(l -> occursin(pat, l), lines)
-        k === nothing || return found(path, k)
+        path !== nothing && isfile(path) && candidates!(path, lines -> length(lines):-1:1)
     end
-    return nothing
+    return unique(found)
 end
 
 # A Julia value as a C initializer: numbers, characters, strings, arrays in row-major

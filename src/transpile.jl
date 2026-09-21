@@ -199,6 +199,10 @@ function transpiled(target...; outfile, outpath, separate, helper, templimit, so
         instances = copy(listed)
         empty!(irrationals)
         prog, names, functions = build!(instances, synthetics, types, values, fixed, avoid, nomacro; precise, width, suffix, templimit, source)
+        # A global's initializer can be the first place an irrational is met (`const τ = 2π`):
+        # written now, so that its macro is known before the names are audited.
+        files = unique(String(mi.def.file) for (mi, _) in instances)
+        for g in prog.globals; globallines(g, files, source, ""); end
         again = audit(prog, fixed, avoid, nomacro)
         again || break
         attempt == 4 && throw(ArgumentError("the file-scope names of this program could not be settled; please report it"))
@@ -238,6 +242,7 @@ function build!(instances, synthetics, types, values, fixed, avoid, nomacro; pre
     merge!(prog.fixed, fixed)
     union!(prog.avoid, avoid)
     empty!(macroavoid); union!(macroavoid, nomacro)
+    union!(prog.yielded, nomacro)
     # The listed functions are named first, together, so that one function at several
     # signatures gets its types appended; then each is claimed like any file-scope name.
     wanted = cnames(instances; settled=false)
@@ -323,13 +328,23 @@ function audit(prog::Program, fixed, avoid, nomacro)
             throw(ArgumentError("$listing both come out as `$want` in C, and neither is spelled that way in the Julia, so there is no saying which should keep it; rename one, or give one a spelling of its own with the `spelling` option"))
         end
     end
-    others = union(Set(structname(T) for (T, _) in prog.structs), Set(first.(prog.tupledefs)), keys(prog.foreign),
-                   setdiff(keys(prog.helpers), prog.exported))
+    structs = Set(structname(T) for (T, _) in prog.structs)
+    others = union(structs, keys(prog.foreign), setdiff(keys(prog.helpers), prog.exported))
     for c in prog.claims
         c.name in others && !(c.name in avoid) && (push!(avoid, c.name); again = true)
     end
+    # The names of ours give way to the author's: a macro, which rewrites a name wherever it
+    # stands, so to a struct's members as well; and a tuple's struct, `step_t`, to a struct
+    # or a function of the author's called that, whichever was met first.
+    members = Set{String}()
+    for (T, _) in prog.structs; isstruct(T) && union!(members, fieldcnames(T)); end
+    for k in Base.values(prog.kinds); k isa Kind && union!(members, k.fields); end
+    theirs = union(prog.names, structs, members)
     for m in keys(irrationals)
-        m in prog.names && !(m in nomacro) && (push!(nomacro, m); again = true)      # here it is the macro that gives way
+        m in theirs && !(m in nomacro) && (push!(nomacro, m); again = true)
+    end
+    for (n, _) in prog.tupledefs
+        n in union(prog.names, structs) && !(n in nomacro) && (push!(nomacro, n); again = true)
     end
     return again
 end
@@ -344,11 +359,15 @@ filescope(prog::Program) = union(prog.names, keys(prog.helpers), keys(prog.forei
 # — and the initializer written from that line's expression where it can be (`symbolic`),
 # so `π` is the macro; from the value otherwise.
 function globallines(g::Global, files, source::Bool, prefix)
-    src = globalsource(g, files)
+    # Several lines may assign a name like this one — `c` in a module and in a submodule of
+    # it. The one whose expression agrees with the value Julia holds is the one; failing
+    # that, the first whose expression can't be checked; never one that disagrees.
+    found = [(src, symbolic(g, src.text)) for src in globalsource(g, files)]
+    k = something(findfirst(p -> p[2] isa String, found), findfirst(p -> p[2] === nothing, found), 0)
+    src, init = k == 0 ? (nothing, nothing) : found[k]
     lines = String[]
     source && src !== nothing && push!(lines, "// @$(src.file):$(src.line): $(src.text)")
-    push!(lines, prefix * globaldecl(g; note=source && src !== nothing ? nothing : src === nothing ? nothing : src.note,
-                                         text=src === nothing ? nothing : symbolic(g, src.text)))
+    push!(lines, prefix * globaldecl(g; note=source && src !== nothing ? nothing : src === nothing ? nothing : src.note, text=init))
     return lines
 end
 

@@ -183,13 +183,13 @@ end
 
 # Emit the body of a construct one level deeper, with `result` available afresh
 # inside the block.
-function nested!(lines, sc::Scope, lo, hi; loop::Bool=false)
+function nested!(lines, sc::Scope, lo, hi; loop::Bool=false, braces::Bool=true)
     saved = sc.result
-    enter!(sc, lo, hi, loop)
+    braces && enter!(sc, lo, hi, loop)
     sc.depth += 1
     block!(lines, sc, lo, hi)
     sc.depth -= 1
-    pop!(sc.path)
+    braces && pop!(sc.path)
     sc.result = saved
 end
 
@@ -288,6 +288,7 @@ function names!(sc::Scope, first::Scope)
     # What `v` would collide with under the name `n`: a Julia name (perhaps none), or nothing.
     function clash(v, n)
         n in reserved && return ""
+        haskey(irrationals, n) && return ""              # a macro of ours rewrites the name wherever it stands, mentioned in this block or not
         n in sc.outer && n in inside[v.home] && return globalnamed(n)
         for (m, u) in named
             m == n || continue
@@ -523,7 +524,7 @@ function whileloop!(lines, sc::Scope, W::While)
     target == W.exit || throw(ArgumentError("a `while` whose condition doesn't lead out of it (line $(sc.stmtline[W.header]))"))
     compound = length(conds) > 1
     inline = all(i -> i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef || code[i] isa Core.SlotNumber ||
-                      code[i] isa Core.SSAValue || code[i] isa Core.GotoIfNot || code[i] isa Core.GotoNode, W.header:bodylo-1)
+                      code[i] isa Core.SSAValue || code[i] isa Core.GotoIfNot || code[i] isa Core.GotoNode || code[i] isa Core.NewvarNode, W.header:bodylo-1)
     compound && !inline && throw(ArgumentError("a `while a && b` whose condition needs work of its own, array work say, before it can be tested (line $(sc.stmtline[W.header])); test the first part in the `while` and the rest in the body, with `break`"))
     if inline
         cond = code[W.test].cond !== true ? condition(sc, conds, op) :
@@ -545,7 +546,9 @@ function whileloop!(lines, sc::Scope, W::While)
         emit!(lines, sc, "    break;")
         emit!(lines, sc, "}")
         sc.depth -= 1
-        nested!(lines, sc, W.test + 1, W.backedge - 1)
+        # The same pair of braces as the condition's statements, so the same block: as two,
+        # a variable of each could both keep one name, and C saw it declared twice.
+        nested!(lines, sc, W.test + 1, W.backedge - 1; braces=false)
         pop!(sc.path)
     end
     pop!(sc.loops)
