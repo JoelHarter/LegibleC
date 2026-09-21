@@ -982,7 +982,7 @@ inert(sc::Scope, k) = silent(sc, k) || (st = sc.ci.code[k]; st isa Expr && st.he
 function silent(sc::Scope, k)
     st = sc.ci.code[k]
     k in sc.skipped || st === nothing || st isa GlobalRef || st isa Core.NewvarNode || st isa Core.SlotNumber ||
-        st isa Core.SSAValue || st isa Number || st isa Expr && st.head in (:meta, :code_coverage_effect)
+        st isa Core.SSAValue || st isa Number || st isa Expr && st.head in (:meta, :code_coverage_effect, :static_parameter)
 end
 
 # Calls with an effect the C must keep in order: writes and prints. Anything foreign

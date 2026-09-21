@@ -25,6 +25,8 @@ an array of that element type and size. Options: `outfile`, `outpath`,
 |---|---|
 | `f(x, y) = …`, `function f(x, y) … end` | yes; the name is kept in C |
 | argument types: the scalars below, static arrays, `Array{T,N}` with a size given in the call | yes |
+| abstract parameter types, `f(x::Real)`, `g(v::AbstractVector{Float64})`, `h(x::T, y::T) where {T<:AbstractFloat}` | yes: give the types in the target, `(f, Float64)`, since Julia compiles one method for each and that one is what is transpiled |
+| `@inbounds`, `@fastmath`, `@inline`, `@noinline` | yes: they change nothing the code computes. `@simd` rewrites its loop and is refused; leave it out, the C compiler vectorises by itself |
 | the same function at several signatures | yes; each gets the types appended to its name (`poly_I64_I64`) |
 | default arguments, `agm(x, y, e=5)` | yes: the short method Julia makes is a C function that calls the long one, `return agm_F64_F64_I64(x, y, 5);` |
 | keyword arguments | not yet |

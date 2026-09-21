@@ -353,7 +353,7 @@ function finish(name, mi::Core.MethodInstance, sc::Scope, head, body)
     # doesn't look, such as a loop header) is declared at the top.
     # Nor one assigned only where control never goes, `if typemax(Float64) == 0.0; y = …; end`:
     # Julia gives it no type, and nothing that is written mentions it.
-    lines = [slotdecl(sc, i) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden) && !(i in sc.declared) && slottype(sc, i) !== Union{}]
+    lines = [slotdecl(sc, i) * ";" for i in ci.nargs+1:length(ci.slotnames) if !(i in sc.hidden) && !(i in sc.declared) && !(slottype(sc, i) in (Union{}, Nothing))]
     append!(lines, head)
     # Array parameters the function reassigns are worked on as copies, made here at
     # the top in one block with the reason above it, so the copy doesn't look gratuitous.
@@ -469,6 +469,10 @@ function analyze!(sc::Scope)
         (f === Base.string || f === Base.repr) && all(printed, (u for u in code if uses(u, i))) && push!(sc.skipped, i)
         # An exception is made to be thrown, and is written there (`throw!`): no C of its own.
         f isa Type && f <: Exception && all(u -> u isa Expr && u.head === :call && callee_or_nothing(ci, u.args[1]) === Core.throw, (u for u in code if uses(u, i))) && push!(sc.skipped, i)
+    end
+    for (i, st) in enumerate(code)
+        st isa Expr && st.head === :loopinfo &&
+            throw(ArgumentError("`@simd` rewrites its loop into a form the transpiler doesn't read (line $(sc.stmtline[i])). Leave it out: it changes nothing the loop computes, and the C compiler vectorises the loop by itself"))
     end
     # A store into a typed global or a typed local, `global count += 1`, `local t::Float64`,
     # is lowered with a test before it: is the value already of that type? If not, convert.
@@ -785,9 +789,13 @@ function statement!(lines, sc::Scope, i, st)
     end
     st isa Core.NewvarNode && return
     st isa Expr && st.head in (:meta, :code_coverage_effect) && return
+    st isa Expr && st.head === :static_parameter && return      # the `T` of `where {T}`: a type, known when transpiled
     i in sc.inlined && return                     # rendered inside the expression that consumes it
     T = widen(ci.ssavaluetypes[i])
     throws(sc, i) && return throw!(lines, sc, st)
+    # The value of a loop, which is `nothing`, kept in a variable of Julia's own making:
+    # `@inbounds for …` lowers to that. No C.
+    T === Nothing && (st isa Core.SlotNumber || st isa Expr && st.head === :(=) && st.args[2] === nothing) && return
     T === Union{} && return                       # unreachable
     if ci.ssavaluetypes[i] isa Core.Const && (ci.ssavaluetypes[i].val isa Char || ci.ssavaluetypes[i].val isa AbstractString)
         sc.expr[i] = value(sc, ci.ssavaluetypes[i].val)   # `Char(97)` is `'a'`; a string literal is itself
@@ -3052,16 +3060,27 @@ end
 function callee(ci, x)
     if x isa Core.SSAValue
         t = ci.ssavaluetypes[x.id]
-        t isa Core.Const && (t.val isa Function || t.val isa Type) && return t.val
+        t isa Core.Const && (t.val isa Function || t.val isa Type) && return plain(t.val)
         return callee(ci, ci.code[x.id])
     end
-    x isa GlobalRef     && return getfield(x.mod, x.name)
+    x isa GlobalRef     && return plain(getfield(x.mod, x.name))
     # The function itself: how a method with a default argument, `agm(x, y, e=5)`, calls the
     # long one from the short one Julia makes for it, `agm(x, y) = agm(x, y, 5)`.
     x isa Core.SlotNumber && x.id == 1 && ci.slottypes[1] isa Core.Const && ci.slottypes[1].val isa Function && return ci.slottypes[1].val
     x isa Expr && x.head === :call && ci.ssavaluetypes !== nothing && return throw(ArgumentError("unsupported callee: $x"))
     (x isa Function || x isa Type || x isa Colon) && return x
     throw(ArgumentError("unsupported callee: $x"))
+end
+
+# `@fastmath x * y + sqrt(x)` calls `mul_fast`, `add_fast`, `sqrt_fast`: the same functions
+# with leave to reorder, which in C is the compiler's setting and not the program's text.
+const fastnames = Dict(:add => :+, :sub => :-, :mul => :*, :div => :/, :rem => :rem, :pow => :^, :eq => :(==), :ne => :!=,
+                       :lt => :<, :le => :<=, :gt => :>, :ge => :>=)
+function plain(f)
+    f isa Function && parentmodule(f) === Base.FastMath && endswith(string(nameof(f)), "_fast") || return f
+    name = Symbol(string(nameof(f))[1:end-5])
+    name = get(fastnames, name, name)
+    return isdefined(Base, name) ? getfield(Base, name) : f
 end
 
 # A C variable has one type, so a Julia variable assigned values of more than one has
