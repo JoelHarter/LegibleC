@@ -761,8 +761,13 @@ function mark!(sc::Scope)
         # `SI.c`, a constant read through its module, is a name: free to repeat, so it
         # is always written where it's read, `SI_c * SI_c`.
         if !choice && callee_or_nothing(ci, st.args[1]) === Base.getproperty && literal(sc, st.args[2]) isa Module
-            # One that isn't `const` can be given a new value before it is used: read where Julia reads it, into a temp.
-            (name = literal(sc, st.args[3]); name isa QuoteNode && (name = name.value); name isa Symbol && !Base.isconst(literal(sc, st.args[2]), name)) && continue
+            # One that isn't `const` can be given a new value before it is used, by a store or by a
+            # call that may store: then it is read where Julia reads it, into a temp.
+            name = literal(sc, st.args[3])
+            name isa QuoteNode && (name = name.value)
+            changes(k) = (c = consumer(code[k]); c isa Expr && c.head === :call && (iscall(c, Core.setglobal!) || !pure(sc, c)))
+            name isa Symbol && !Base.isconst(literal(sc, st.args[2]), name) &&
+                any(u -> u > i && uses(code[u], i) && any(changes, i+1:u-1), eachindex(code)) && continue
             push!(sc.inlined, i)
             continue
         end
@@ -1009,7 +1014,7 @@ end
 
 # Can a pure computation move past statement `k` without changing what it computes?
 # Yes for anything that is no statement in C, a read, or a pure call.
-inert(sc::Scope, k) = silent(sc, k) || (st = sc.ci.code[k]; st isa Expr && st.head === :call && pure(sc, st))
+inert(sc::Scope, k) = silent(sc, k) || (st = sc.ci.code[k]; st isa GlobalRef || st isa Expr && st.head === :call && pure(sc, st))
 
 # Can a computation with an effect move past statement `k`? Only if `k` computes
 # nothing at all: a variable read (a Julia local, which no callee can change), a

@@ -699,7 +699,13 @@ end
 # operand at the top level, so `x = x + y - z` stays as written (`x += y - z` would be
 # a different sum). Nothing if the statement isn't of that shape.
 function compound(x::AbstractString, T::Type, text::AbstractString)
-    occursin(" ? ", text) && return nothing       # `b * c ? p : q` is not `b *= c ? p : q`
+    # `b * c ? p : q` is not `b *= c ? p : q`: a conditional outside any brackets is not an operand to split at.
+    depth = 0
+    for (k, ch) in enumerate(text)
+        ch in "([{" && (depth += 1)
+        ch in ")]}" && (depth -= 1)
+        depth == 0 && ch == '?' && return nothing
+    end
     pieces = splitexpr(text)
     length(pieces) == 3 && pieces[1] == x && pieces[2] in ("+", "-", "*", "/") || return nothing
     pieces[3] == "1" && pieces[2] in ("+", "-") && T <: Integer && return x * pieces[2]^2

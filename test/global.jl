@@ -213,4 +213,19 @@ end
     check("gapglobal", [Case(gapminmaxglobal, 5, 3), Case(gapminmaxglobal, 1, 2), Case(gapminmaxglobal, 9, -4),
         Case(gapmodread, 2.0), Case(gapmodread, -3.0), Case(gapmodread, 0.0)])
 end
+
+# A call that writes a global, and a read of that global beside it: Julia's order, left to right.
+extralevel::Float64 = 1.0
+extraraise(x::Float64) = (global extralevel += x; x)
+function extraorder(x::Float64)
+    global extralevel = 1.0
+    return extraraise(x) + extralevel          # Julia reads the global after the call
+end
+function extraorder2(x::Float64)
+    global extralevel = 1.0
+    return extralevel + extraraise(x) + extralevel
+end
+@testset "order" begin
+    check("order", [Case(extraorder, 2.0), Case(extraorder, -3.0), Case(extraorder2, 2.0)])
+end
 end
