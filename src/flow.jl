@@ -627,6 +627,11 @@ end
 
 function lastlive(sc::Scope, lo, hi)
     for i in hi:-1:lo
+        # A loop is one thing. Walking back through its working into its body found the
+        # body's last statement, and a `break` there was taken for the branch's own last
+        # jump and dropped: `if m > 1; for …; m > 100 && break; end; end` never left early.
+        any(F -> lo <= F.start && F.start <= i < F.exit, values(sc.fors)) && return nothing
+        any(W -> lo <= W.header && W.header <= i <= W.backedge, values(sc.whiles)) && return nothing
         nextlive(sc, i) == i && return i
     end
     return nothing

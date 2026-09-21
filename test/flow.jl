@@ -132,6 +132,51 @@ function whilethree(n::Int64, m::Int64)
     end
     return s
 end
+# A branch that ends in a loop whose body ends in a `break`: the loop is one thing, and its
+# `break` is not the branch's own last jump (it was dropped: the loop never left early).
+function ifforbreak(m::Int64)
+    if m > 1
+        for j in 1:10
+            m *= 2
+            m > 100 && break
+        end
+    end
+    return m
+end
+function ifforbreak2(n::Int64, p::Bool)
+    s = 0
+    for i in 1:n
+        if p
+            for j in 1:n
+                s += j
+                s > 5 * i && break
+            end
+        end
+    end
+    return s
+end
+# A condition whose parts can't be written as one C condition, with an `else`: the inner
+# test's failure belongs to the outer `else`, which a nested `if` would lose. Checked against
+# where the lowered code really goes, and refused: each of these answered wrongly before.
+function andheavy(a::Bool, x::SVector{3,Float64})
+    r = 0.0
+    if a && sum(x .* x) > 1.0
+        r = 10.0
+    else
+        r = 20.0
+    end
+    return r + 1.0
+end
+orheavy(a::Bool, x::SVector{3,Float64}) = (s = 0.0; if a || sum(x .* x) > 1.0; s += 5.0; end; s)
+function andor(a::Bool, b::Bool, c::Bool)
+    r = 0
+    if a && (b || c)
+        r = 1
+    else
+        r = 2
+    end
+    return r
+end
 # Julia builds a range once, so a bound the body changes is read before the loop: 21, not 6.
 shrinking(n::Int64) = (s = 0; for k in 1:n; n -= 1; s += k; end; s)
 function drained(v::MVector{3,Int64}); s = 0; for k in 1:v[1]; v[1] -= 1; s += k; end; return s; end
@@ -140,9 +185,12 @@ append!(cases, [Case(each, v3), Case(eachbreak, SVector(1.0, 2.0, 3.0, 4.0)), Ca
                 Case(shrinking, 6), Case(drained, MVector(3, 0, 0)), Case(steady, 6),
                 Case(opened, 5), Case(opened, -7), Case(opened, 1), Case(innerbreak, 4), Case(innerbreak, 1),
                 Case(bumped, 3), Case(bumpedif, 3), Case(bumpedeach, v3), Case(rebinding, v3),
-                Case(whileand, 5, 4), Case(whileand, 2, 9), Case(whileor, 5, 4), Case(whileor, 0, 0), Case(whilethree, 9, 9)])
+                Case(whileand, 5, 4), Case(whileand, 2, 9), Case(whileor, 5, 4), Case(whileor, 0, 0), Case(whilethree, 9, 9),
+                Case(ifforbreak, 3), Case(ifforbreak, 1), Case(ifforbreak2, 4, true), Case(ifforbreak2, 4, false)])
 @testset "flow text" begin
     @test_throws ArgumentError csource("nestbreak", nestbreak)                                # refused, where it used to leave one loop: 63 for Julia's 11
+    @test_throws ArgumentError csource("andheavy", andheavy)      # Julia 21, and the C said 1
+    @test_throws ArgumentError csource("orheavy", orheavy)        # Julia 5, and the C said 10: the body written twice
     loops = csource("flowloops", bumped, whileand, whileor)
     @test occursin("for (int64_t i = 1; i <= n; i++) {\n        int64_t k = i;", loops)                 # the counting is ours, the variable the body's
     @test occursin("while (n > 0 && m > 0) {", loops) && occursin("while (n > 0 || m > 0) {", loops)
@@ -156,5 +204,5 @@ append!(cases, [Case(looped, v3, 3), Case(looped, v3, 0), Case(branched, 3.0, 1.
 check("flow", cases; targets=[smaller, sign_, larger, quadrant, bothpos, guard, triangle, oddsum, squares, stepped, skipper,
                               total, (totalvec, Float64, 4), trace, gridsum, double1, basis, outer, sizes, looped, branched, rebound,
                               each, eachbreak, halve, shrinking, drained, steady, opened, innerbreak,
-                              bumped, bumpedif, bumpedeach, rebinding, whileand, whileor, whilethree])
+                              bumped, bumpedif, bumpedeach, rebinding, whileand, whileor, whilethree, ifforbreak, ifforbreak2])
 end

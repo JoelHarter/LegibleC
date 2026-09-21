@@ -54,6 +54,48 @@ function claim!(tree::Tree, sc::Scope, i, role::Symbol)
     tree.claimed[i] = role
 end
 
+# Does statement `t` do nothing, as far as where control goes is concerned? A load, Julia's
+# own marker, what is written inside the expression that uses it or consumed before any C
+# exists, a bare read or copy, dead code. Never a test, a return, or a loop's own working:
+# a `for`'s `iterate` call is what makes the next pass, and looking through it is how
+# "falls into the next pass" and "leaves the loop" came to look like one place.
+function inert(tree::Tree, sc::Scope, t)
+    st = sc.ci.code[t]
+    t in tree.machinery && return false
+    (st isa Core.GotoIfNot || st isa Core.ReturnNode) && return false
+    (st === nothing || st isa GlobalRef || st isa Core.NewvarNode || st isa Core.SlotNumber || st isa Core.SSAValue || st isa Number) && return true
+    st isa Expr && st.head in (:meta, :code_coverage_effect) && return true
+    return t in sc.inlined || t in sc.skipped || widen(sc.ci.ssavaluetypes[t]) === Union{}
+end
+
+# Where control really is on reaching statement `t`: past everything that does nothing and
+# along every plain jump, which does nothing but move, to the first statement that does
+# something; one past the end if there is none. Two statements are the same place exactly
+# when this is equal. This reads the lowered code and nothing else: not `nextlive`, not the
+# tree. It is what the tree is checked against.
+function place(tree::Tree, sc::Scope, t)
+    code = sc.ci.code
+    seen = Set{Int}()
+    while t <= length(code) && !(t in seen)
+        push!(seen, t)
+        if code[t] isa Core.GotoNode
+            t = code[t].label
+        elseif inert(tree, sc, t)
+            t += 1
+        else
+            break
+        end
+    end
+    return t
+end
+
+# The tree says control goes one way; the lowered code says where the jump really goes. If
+# those are two places, the C would compile and compute something else, so it is refused.
+function agree(tree::Tree, sc::Scope, i, actual, implied, what)
+    place(tree, sc, actual) == implied ||
+        throw(ArgumentError("control flow not recognised at line $(sc.stmtline[i]): $what leads somewhere the C written for it would not go (statement $i). If it is a condition with `&&` or `||` in it, give the second part a variable of its own first, `ok = …; if a && ok`, or nest the `if`s"))
+end
+
 """
     recover(sc) -> Tree
 
@@ -69,36 +111,40 @@ function recover(sc::Scope)
             isjump(code[i]) && claim!(tree, sc, i, :loop)
         end
     end
-    recover!(tree, sc, 1, length(code), NTuple{2, Int}[])
+    recover!(tree, sc, 1, length(code), NTuple{4, Int}[], length(code) + 1)
     validate(tree, sc)
     return tree
 end
 
 # Statements `lo:hi`, as `block!` will walk them: the same order, the same tests, so that
-# what is decided here is exactly what is written there.
-function recover!(tree::Tree, sc::Scope, lo::Int, hi::Int, loops; except::Int=0)
+# what is decided here is exactly what is written there. `onward` is the place control
+# reaches on running off the end of these statements: for a branch, what follows its `if`;
+# for a loop's body, the loop's next pass. Each enclosing loop is (its exit, its next-pass
+# statement, the place reached on leaving it, the place its next pass begins).
+function recover!(tree::Tree, sc::Scope, lo::Int, hi::Int, loops, onward::Int; except::Int=0)
     code = sc.ci.code
+    past(k) = k <= hi ? place(tree, sc, k) : onward       # the place after a construct that ends at `k - 1`
     i = lo
     while i <= hi
         if !isempty(get(sc.lets, i, ())) && sc.lets[i][1][2] <= hi
             l = popfirst!(sc.lets[i])            # so that the walk inside doesn't open it again
             push!(tree.regions, (l[1], l[2]))
-            recover!(tree, sc, l[1], l[2], loops)
+            recover!(tree, sc, l[1], l[2], loops, past(l[2] + 1))
             pushfirst!(sc.lets[i], l)
             i = l[2] + 1
         elseif haskey(sc.fors, i)
             F = sc.fors[i]
             push!(tree.regions, (F.bodylo, F.bodyhi))
-            recover!(tree, sc, F.bodylo, F.bodyhi, [loops; (F.exit, F.next)])
+            recover!(tree, sc, F.bodylo, F.bodyhi, [loops; (F.exit, F.next, past(F.exit), F.next)], F.next)
             i = F.exit
         elseif haskey(sc.whiles, i) && i != except
-            i = round!(tree, sc, sc.whiles[i], loops)
+            i = round!(tree, sc, sc.whiles[i], loops, past(sc.whiles[i].exit))
         elseif i in sc.skipped
             i += 1
         elseif code[i] isa Core.GotoIfNot
-            i = branch!(tree, sc, i, hi, loops)
+            i = branch!(tree, sc, i, hi, loops, onward)
         elseif code[i] isa Core.GotoNode
-            tree.exits[i] = leave(sc, i, code[i].label, loops)
+            tree.exits[i] = leave(tree, sc, i, code[i].label, loops)
             claim!(tree, sc, i, Symbol(tree.exits[i]))
             i += 1
         else
@@ -109,18 +155,18 @@ end
 
 # A jump that is a statement of its own: the `break` or the `continue` of the loop it is
 # in. C's `break` leaves one loop; Julia's leaves the whole nest of a `for i in …, j in …`.
-function leave(sc::Scope, i, label, loops)
+function leave(tree::Tree, sc::Scope, i, label, loops)
     if !isempty(loops)
-        brk, cont = loops[end]
-        label == brk && return "break"
-        label == cont && return "continue"
-        any(label == b for (b, _) in loops[1:end-1]) &&
+        brk, cont, out, again = loops[end]
+        label == brk && (agree(tree, sc, i, label, out, "a `break`"); return "break")
+        label == cont && (agree(tree, sc, i, label, again, "a `continue`"); return "continue")
+        any(label == l[1] for l in loops[1:end-1]) &&
             throw(ArgumentError("a `break` inside `for i in …, j in …` leaves every loop of the nest in Julia, and C's `break` leaves one (line $(sc.stmtline[i])); write the loops one inside the other and leave with a flag, or put the nest in a function of its own and `return`"))
     end
     throw(ArgumentError("control flow not recognised: a jump at line $(sc.stmtline[i]) that is no `if`, loop, `break` or `continue` (statement $i, to statement $label)"))
 end
 
-function round!(tree::Tree, sc::Scope, W::While, loops)
+function round!(tree::Tree, sc::Scope, W::While, loops, out::Int)
     code = sc.ci.code
     # `while a && b`, `while a || b`: the same merged tests an `if` opens with.
     conds, op, target, bodylo = tests(sc, W.test)
@@ -133,20 +179,37 @@ function round!(tree::Tree, sc::Scope, W::While, loops)
     tree.rounds[W.header] = Round(W, conds, op, bodylo, inline)
     for i in W.test:bodylo-1; isjump(code[i]) && claim!(tree, sc, i, :test); end
     claim!(tree, sc, W.backedge, :loop)
-    inside = [loops; (W.exit, W.backedge)]
+    edges(tree, sc, W.test, bodylo, op, place(tree, sc, W.exit), "a `while`'s condition")
+    again = place(tree, sc, W.backedge)             # the jump back, and on to the first thing the next pass does
+    inside = [loops; (W.exit, W.backedge, out, again)]
     if inline
         push!(tree.regions, (bodylo, W.backedge - 1))
-        recover!(tree, sc, bodylo, W.backedge - 1, inside)
+        recover!(tree, sc, bodylo, W.backedge - 1, inside, again)
     else
         # The condition's statements go inside the braces, and the loop begins with them.
         push!(tree.regions, (W.header, W.backedge - 1))
-        recover!(tree, sc, W.header, W.test - 1, inside; except=W.header)
-        recover!(tree, sc, W.test + 1, W.backedge - 1, inside)
+        recover!(tree, sc, W.header, W.test - 1, inside, W.test; except=W.header)
+        recover!(tree, sc, W.test + 1, W.backedge - 1, inside, again)
     end
     return W.backedge + 1
 end
 
-function branch!(tree::Tree, sc::Scope, i::Int, hi::Int, loops)
+# The edges of a merged condition, each against where the lowered code really sends it. In
+# `a && b` every test that fails goes where the whole condition fails to, and one that holds
+# goes on to the next test, the last into the body. In `a || b` a test that fails goes on to
+# the next test, only the last to where the condition fails; one that holds hops to the body.
+function edges(tree::Tree, sc::Scope, first::Int, bodylo::Int, op, failed::Int, what)
+    code = sc.ci.code
+    at = [k for k in first:bodylo-1 if code[k] isa Core.GotoIfNot]
+    body = place(tree, sc, bodylo)
+    for (n, k) in enumerate(at)
+        last = n == length(at)
+        agree(tree, sc, k, code[k].dest, op == "&&" || last ? failed : at[n+1], what)
+        agree(tree, sc, k, k + 1, op == "&&" && !last ? at[n+1] : body, what)
+    end
+end
+
+function branch!(tree::Tree, sc::Scope, i::Int, hi::Int, loops, onward::Int)
     code = sc.ci.code
     conds, op, target, j = tests(sc, i)
     for k in i:j-1; isjump(code[k]) && claim!(tree, sc, k, :test); end
@@ -179,6 +242,11 @@ function branch!(tree::Tree, sc::Scope, i::Int, hi::Int, loops)
             claim!(tree, sc, last, :join)
         end
     end
+    # What the C will do, against where the lowered code really goes.
+    out = after <= hi ? place(tree, sc, after) : onward
+    edges(tree, sc, i, thenlo, op, elselo > 0 ? place(tree, sc, elselo) : out, "an `if`'s condition")
+    last !== nothing && get(tree.claimed, last, :none) in (:else, :join) &&
+        agree(tree, sc, last, code[last].label, out, "the end of an `if`'s branch")
     chain = 0
     if elselo > 0
         first = nextlive(sc, elselo)
@@ -190,12 +258,12 @@ function branch!(tree::Tree, sc::Scope, i::Int, hi::Int, loops)
     end
     tree.ifs[i] = Branch(i, conds, op, thenlo, thenhi, elselo, elsehi, after, chain)
     push!(tree.regions, (thenlo, thenhi))
-    recover!(tree, sc, thenlo, thenhi, loops)
+    recover!(tree, sc, thenlo, thenhi, loops, out)
     if chain != 0
-        branch!(tree, sc, chain, elsehi, loops)
+        branch!(tree, sc, chain, elsehi, loops, out)
     elseif elselo > 0
         push!(tree.regions, (elselo, elsehi))
-        recover!(tree, sc, elselo, elsehi, loops)
+        recover!(tree, sc, elselo, elsehi, loops, out)
     end
     return after
 end
