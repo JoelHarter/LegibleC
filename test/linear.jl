@@ -64,4 +64,12 @@ check("chain", [Case(chain3, SMatrix{2,3}(1.0, 2, 3, 4, 5, 6), SMatrix{3,4}(1.0:
     src = csource("chain", chain3)
     @test occursin("double temp1_A_B[2][4];", src) && occursin("mul_2x3_3x4(A, B, temp1_A_B);", src) && occursin("mul_2x4_4x5(temp1_A_B, C, out);", src)
 end
+# `A^2`, `A^3`: Julia's own definition is the products, so that is what is written.
+squared(A::SMatrix{2,2,Float64,4}) = A^2
+cubed(A::SMatrix{3,3,Float64,9}) = A^3 + A
+fourth(A::SMatrix{2,2,Float64,4}) = A^4
+@testset "matrix power" begin
+    check("matrixpower", [Case(squared, SMatrix{2,2}(1.0, 2.0, 3.0, 4.5)), Case(cubed, SMatrix{3,3}(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.5))])
+    @test occursin("only `A^2` and `A^3` are supported", sprint(showerror, try csource("fourth", fourth) catch e; e end))
+end
 end

@@ -124,6 +124,7 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `A * B`, `A * v`, `v' * A`, `v' * w`, `v * w'`, `A * B'`, `A' * B` | yes |
 | `dot(v, w)`, `cross(v, w)`, `det(A)` | yes |
 | `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm`, `count`, `argmax`, `argmin`, `extrema` | yes |
+| `A^2`, `A^3` on a square matrix | yes, as the products; other powers not yet |
 | `norm(v, 1)`, `norm(v, Inf)`, `norm(v, 2)`; `mean`, `var`, `std` from `Statistics` | yes, each a helper that returns the scalar; `var` and `std` are the corrected ones, as Julia's. `normalize`, `opnorm`, other orders: not yet |
 | `sum(A; dims=1)`, `prod`, `maximum`, `minimum` with `dims`; `diff`, `cumsum`, `cumprod` | yes |
 | `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[:, 2:end]`, `A[i, 2:3]`, any dimension (literal ranges) | yes |

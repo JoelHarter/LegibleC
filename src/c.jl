@@ -1473,6 +1473,13 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         return
     end
     f === Base.getindex && return slice!(lines, sc, i, args, dest; declaration)
+    if f === Base.literal_pow && length(args) == 3 && isarray(valuetype(sc, args[2]))
+        # `A^2`, `A^3` on a square matrix: Julia's own definition is `A * A`, `A * A * A`.
+        p = literal(sc, args[3])
+        e = p isa Val ? typeof(p).parameters[1] : nothing
+        e in (2, 3) || throw(ArgumentError("a matrix to the power $(something(e, "of a variable")): only `A^2` and `A^3` are supported; write the products out (statement $i)"))
+        return arraycall!(lines, sc, i, Expr(:call, GlobalRef(Base, :*), fill(args[2], e)...), dest; declaration)
+    end
     if f === Base.copy
         R = valuetype(sc, args[1])
         declaration && emit!(lines, sc, declare(R, dest) * ";")
