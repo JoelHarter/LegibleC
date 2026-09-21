@@ -49,7 +49,10 @@ two = [(:add, :(a + b), numbers, numbers), (:sub, :(a - b), numbers, numbers), (
 # What the compiler setting is allowed to change is left out, by saying what it is. A product
 # that overflows on its own and not inside a fused multiply-add: `-max * -max + (-max + -max)`
 # is `Inf - Inf` in Julia and `-Inf` under `-ffp-contract=fast`, which keeps the product exact.
-allowed(name, combo) = !(startswith(name, "mixed") && any(x -> x isa AbstractFloat && abs(x) == floatmax(typeof(x)), combo))
+# And the sign of a zero, which the setting lets go (`-fno-signed-zeros` is part of fast math):
+# GCC answers `signbit(-0.0)` with 0.
+allowed(name, combo) = !(startswith(name, "mixed") && any(x -> x isa AbstractFloat && abs(x) == floatmax(typeof(x)), combo)) &&
+                       !(startswith(name, "signbit") && iszero(combo[1]))
 
 # One function of the grid: its Julia, its types, and what Julia answers on every combination of values.
 struct Item
