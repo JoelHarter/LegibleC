@@ -39,6 +39,7 @@ mutable struct Program
     avoid::Set{String}
     written::Set{Any}                                              # globals some function writes into, as (module, name): not `const` in C
     yielded::Set{String}                                           # names of the author's that a name of ours (a macro, a tuple's struct) keeps clear of
+    walking::Any                                                   # the `Scope` of the function being written, for saying where a refusal happened
 end
 
 # A global variable in the output: its C name, the Julia binding it came from (module and
@@ -63,7 +64,7 @@ Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true) =
     Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
             suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}(),
-            Any[], Dict{Any, String}(), Set{String}(), Set{Any}(), Set{String}())
+            Any[], Dict{Any, String}(), Set{String}(), Set{Any}(), Set{String}(), nothing)
 
 # The irrationals the current `transpile` call has met, by the macro each is written as:
 # `"LEGIBLEC_PI" => π`. The helper header defines the ones the output uses.
@@ -193,6 +194,60 @@ to `helpers`, and any standard headers to `headers`.
 """
 function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Program;
                    templimit::Integer=40, source::Bool=true)
+    # The one way out for whatever can't be written. Thrown again from outside the `catch`,
+    # so that what Julia prints under it is the way in from `transpile`, and not the
+    # transpiler's insides.
+    prog.walking = nothing
+    local made
+    problem = try
+        made = compose(name, mi, sig, prog, templimit, source)
+        nothing
+    catch e
+        e isa InterruptException && rethrow()
+        e isa ArgumentError || e isa Fault || (failure[] = (e, catch_backtrace()))
+        e
+    end
+    problem === nothing && return made
+    throw(explained(problem, mi, prog.walking))
+end
+
+"""
+    Fault
+
+Something the transpiler got wrong itself. A refusal, an `ArgumentError`, is about the Julia
+it was given, and says what to write instead; a `Fault` is about the transpiler, says which
+function and line it was working on, and asks to be reported. The error underneath, with
+its stack, is kept in `LegibleC.failure[]`.
+"""
+struct Fault <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::Fault) = print(io, e.msg)
+const failure = Ref{Any}(nothing)
+
+# What went wrong, in the author's terms: the function, the file and line, and the line
+# itself. A statement's number, which many messages carry, means nothing to the author; it
+# is how the line is found, and then it is dropped.
+function explained(e, mi::Core.MethodInstance, sc)
+    e isa Fault && return e
+    def = mi.def
+    msg = e isa ArgumentError ? e.msg : sprint(showerror, e)
+    line = 0
+    if sc !== nothing
+        m = match(r"\(statement (\d+)", msg)
+        m === nothing || (line = get(sc.stmtline, parse(Int, m[1]), 0))
+        line == 0 && (m = match(r"\bline (\d+)", msg)) !== nothing && (line = parse(Int, m[1]))
+        line == 0 && sc.current > 0 && (line = sc.stmtline[sc.current])
+    end
+    line == 0 && (line = def.line)
+    text = sc !== nothing && sc.src !== nothing && line in eachindex(sc.src.lines) ? strip(sc.src.lines[line]) : ""
+    where = "`$(def.name)`, $(basename(string(def.file))):$line" * (isempty(text) ? "" : ":  " * text)
+    e isa ArgumentError && return ArgumentError(replace(msg, r" \(statement \d+[^)]*\)" => "") * "\n  in " * where)
+    return Fault("the transpiler went wrong in " * where * "\n  " * msg *
+                 "\nThis is a mistake of LegibleC's, not of the Julia. Please report it with the function above; `LegibleC.failure[]` holds the error and its stack.")
+end
+
+function compose(name::AbstractString, mi::Core.MethodInstance, sig, prog::Program, templimit::Integer, source::Bool)
     ci, rettype = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     rettype === Union{} && throw(ArgumentError("$(mi.def.name) never returns normally according to inference: something in it always throws"))
     rettype = returntype(mi)                # one C type: numbers settled, anything else refused by line
@@ -233,6 +288,7 @@ end
 function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templimit, source, first)
     ci, _ = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
     sc = Scope(ci, mi, sig, templimit, prog, source)
+    prog.walking = sc
     if first === nothing
         # The first walk names every variable unmistakably, `v5__omega`, so that its text
         # shows, block by block, which variables and which outer names are mentioned.
@@ -1364,7 +1420,7 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
          f === Base.:- ? (length(args) == 1 ? :neg : :sub) :
          f === Base.:* ? :mul :
          f === Base.:/ ? :div :
-         throw(ArgumentError("unsupported array operation: $f"))
+         unknown(sc, f, args, i)
     # `A + 2I`, `A - I`, `2I - A`: a multiple of the identity on the diagonal.
     op in (:add, :sub) && length(args) == 2 && any(a -> literal(sc, a) isa LinearAlgebra.UniformScaling, args) &&
         return scaling!(lines, sc, i, op, args, dest; declaration)
@@ -2095,7 +2151,16 @@ function render(sc::Scope, i, ex::Expr)
     name === nothing || return "$name($(callargs(sc, args)))", PRIMARY
 
 
-    throw(ArgumentError("unsupported call: $f (statement $i)"))
+    unknown(sc, f, args, i)
+end
+
+# The refusal of last resort: a call nothing above knew. It names the call as Julia sees it,
+# with the types of its arguments, since the same function is often known for others.
+function unknown(sc::Scope, f, args, i)
+    (f === Colon() || f === Base.range || f === Base.OneTo) &&
+        throw(ArgumentError("a range kept in a variable has no C: ranges are supported as the range of a `for` and as an index, `v[2:4]`. Write the range in the `for` itself (statement $i)"))
+    types = join(("::" * replace(string(widen(valuetype(sc, a))), "StaticArraysCore." => "") for a in args), ", ")
+    throw(ArgumentError("`$(f isa Function ? nameof(f) : f)($types)` has no C yet: the transpiler doesn't know this function for these arguments. Write it with what it does know, or as a function of your own (statement $i)"))
 end
 
 # An operation along one dimension of an array, into `dest`: a reduction that keeps the

@@ -5,8 +5,20 @@ What a refusal means, and how to check a translation.
 ## When it refuses
 
 Anything the transpiler doesn't understand is an `ArgumentError` at
-transpile time, naming the construct and the IR statement, never C that
-compiles and does something else. The usual causes:
+transpile time, never C that compiles and does something else. Every refusal
+leaves the same way: what it is and what to write instead, then the function,
+the file and line, and the Julia line itself.
+
+```
+ArgumentError: a range kept in a variable has no C: ranges are supported as the
+range of a `for` and as an index, `v[2:4]`. Write the range in the `for` itself
+  in `total`, orbit.jl:41:  r = 1:n
+```
+
+The Julia has to be in working order first. A refusal is about Julia that runs
+and that the transpiler can't yet write as C; it is not a check of the Julia.
+
+The usual causes:
 
 - a call it has no rule for — check [syntax.md](syntax.md); the fix is to
   write the operation another way, or reach the C function directly with
@@ -14,7 +26,17 @@ compiles and does something else. The usual causes:
 - an array whose size isn't in its type, or a sized `Array` target without
   its size;
 - a non-ASCII character literal, since C's `char` holds one byte;
-- a `dims` keyword that isn't a literal.
+- a `dims` keyword that isn't a literal;
+- control flow whose C would not go where the Julia goes, which today is a
+  condition part that needs a line of its own when a failed test must reach an
+  `else` (`if a && sum(x .* x) > 1.0 … else`): give that part a variable first.
+
+## When the transpiler itself goes wrong
+
+A mistake of the transpiler's own is a `LegibleC.Fault`, not an
+`ArgumentError`. It says so, names the function and line it was working on,
+and asks to be reported. The error underneath and its stack are kept in
+`LegibleC.failure[]` for whoever looks into it.
 
 
 ## Checking a translation

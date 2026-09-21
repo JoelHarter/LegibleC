@@ -92,8 +92,17 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
     LegibleC.booltype[] = bool
     LegibleC.posix[] = posix
     empty!(LegibleC.irrationals)
+    local problem
     try
         return transpiled(target...; outfile, outpath, separate=split, helper=(endswith(helper, ".c") || endswith(helper, ".h") ? helper[1:end-2] : helper), templimit, source, precise, width, suffix=tempsuffix, scope, variables)
+    catch e
+        # A refusal, a fault already explained (`cfunction`), or the file system's own
+        # complaint goes out as it is. Anything else is a mistake of the transpiler's made
+        # outside any one function, and says so in place of a stack of its insides.
+        (e isa ArgumentError || e isa Fault || e isa InterruptException || e isa SystemError || e isa Base.IOError) && rethrow()
+        failure[] = (e, catch_backtrace())
+        problem = Fault("the transpiler went wrong:\n  " * sprint(showerror, e) *
+                        "\nThis is a mistake of LegibleC's, not of the Julia. Please report it with what was being transpiled; `LegibleC.failure[]` holds the error and its stack.")
     finally
         LegibleC.spelling[] = Dict{Char, String}()
         LegibleC.scope[] = Main
@@ -102,6 +111,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
         empty!(LegibleC.irrationals)
         LegibleC.booltype[] = Bool
     end
+    throw(problem)
 end
 
 """

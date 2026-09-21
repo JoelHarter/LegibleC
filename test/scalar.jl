@@ -1,7 +1,7 @@
 # Scalar arithmetic, division rules, powers, integer operations, conversions, math.
 module Scalar
 using Test, StaticArrays
-import Main: Case, check, csource
+import Main: Case, check, csource, LegibleC
 
 arith(a::Float64, b::Float64, c::Float64) = (d = (a + b) * c / 2)
 unary(x::Int64) = -x + 2 * x
@@ -148,5 +148,18 @@ check("onetype", [Case(accum, SVector(1.5, 2.5, 3.0)), Case(joined, 2.0, true), 
     @test occursin("`a` is a ", msg) && occursin("on one path and a ", msg) && occursin("which method of `pick` runs depends on which", msg)
     msg = sprint(showerror, try csource("signs", signs) catch e; e end)
     @test occursin("`signs` returns values of different types from the same argument types (Float64 at line", msg) && occursin("String at line", msg) && occursin("one return type", msg)
+end
+# Every refusal leaves the same way: what it is, then the function, the file and line, and
+# the Julia line itself. A statement's number, which is the transpiler's, never shows.
+nocode(x::Float64, k::Int64) = x * trailing_zeros(k)
+@testset "refusal" begin
+    msg = sprint(showerror, try csource("nocode", nocode) catch e; e end)
+    @test occursin("`trailing_zeros(::Int64)` has no C yet", msg) && !occursin("statement", msg)
+    @test occursin("in `nocode`, scalar.jl:", msg) && occursin("nocode(x::Float64, k::Int64) = x * trailing_zeros(k)", msg)
+    # A mistake of the transpiler's own says so, names where it was, and keeps the error underneath.
+    mi = Base.method_instance(nocode, (Float64, Int64))
+    fault = LegibleC.explained(KeyError(:gone), mi, nothing)
+    @test fault isa LegibleC.Fault && occursin("the transpiler went wrong in `nocode`, scalar.jl:", fault.msg) && occursin("KeyError", fault.msg)
+    @test LegibleC.explained(fault, mi, nothing) === fault
 end
 end
