@@ -461,9 +461,12 @@ function analyze!(sc::Scope)
         (f === Base.cconvert || f === Base.unsafe_convert) && push!(sc.skipped, i)
         # A factorization only ever feeds `\` or `inv`; the solver helper does both steps.
         (f === LinearAlgebra.cholesky || f === LinearAlgebra.lu) && push!(sc.skipped, i)
-        # A `string(…)` or `repr(…)` that only feeds a print is printed piece by piece.
-        (f === Base.string || f === Base.repr) && all(u -> u isa Expr && u.head === :call && callee_or_nothing(ci, u.args[1]) in (Base.print, Base.println, Base.string, Base.repr),
-                                                      (u for u in code if uses(u, i))) && push!(sc.skipped, i)
+        # A `string(…)` or `repr(…)` that only feeds a print is printed piece by piece; so is
+        # one that is the message of an exception, which is printed where it is thrown.
+        printed(u) = u isa Expr && u.head === :call && (g = callee_or_nothing(ci, u.args[1]); g in (Base.print, Base.println, Base.string, Base.repr, Base.error) || g isa Type && g <: Exception)
+        (f === Base.string || f === Base.repr) && all(printed, (u for u in code if uses(u, i))) && push!(sc.skipped, i)
+        # An exception is made to be thrown, and is written there (`throw!`): no C of its own.
+        f isa Type && f <: Exception && all(u -> u isa Expr && u.head === :call && callee_or_nothing(ci, u.args[1]) === Core.throw, (u for u in code if uses(u, i))) && push!(sc.skipped, i)
     end
     # The keyword tuple of a `kwcall` — `(dims = 1,)`, built over a few statements — is
     # read at transpile time; none of it is C.
@@ -737,6 +740,7 @@ function statement!(lines, sc::Scope, i, st)
     st isa Expr && st.head in (:meta, :code_coverage_effect) && return
     i in sc.inlined && return                     # rendered inside the expression that consumes it
     T = widen(ci.ssavaluetypes[i])
+    throws(sc, i) && return throw!(lines, sc, st)
     T === Union{} && return                       # unreachable
     if ci.ssavaluetypes[i] isa Core.Const && (ci.ssavaluetypes[i].val isa Char || ci.ssavaluetypes[i].val isa AbstractString)
         sc.expr[i] = value(sc, ci.ssavaluetypes[i].val)   # `Char(97)` is `'a'`; a string literal is itself
@@ -781,6 +785,13 @@ function statement!(lines, sc::Scope, i, st)
         f = valuetype(sc, st.args[2]) === Float32 ? "f" : ""
         push!(sc.headers, "math.h")
         sc.pair[i] = ("sin$f($a)", "cos$f($a)")
+    elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.minmax && length(st.args) == 3 &&
+           valuetype(sc, st.args[2]) === valuetype(sc, st.args[3]) && valuetype(sc, st.args[2]) <: Union{hardware, Float32, Float64}
+        # `lo, hi = minmax(a, b)` is `lo = min(a, b); hi = max(a, b)`, read the same way.
+        A = valuetype(sc, st.args[2])
+        a, b = expression(sc, st.args[2])[1], expression(sc, st.args[3])[1]
+        A <: AbstractFloat && push!(sc.headers, "math.h")
+        sc.pair[i] = A <: AbstractFloat ? ("$(mathname(A, "fmin"))($a, $b)", "$(mathname(A, "fmax"))($a, $b)") : ("($a < $b ? $a : $b)", "($a > $b ? $a : $b)")
     elseif st isa Expr && st.head === :call && (T === Nothing || T === Any) && userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end]) !== nothing
         # A call for its effect, or whose result goes unused (Julia then types it `Any`
         # and the callee's own return type says what C needs).
@@ -2164,6 +2175,8 @@ end
 function unknown(sc::Scope, f, args, i)
     (f === Colon() || f === Base.range || f === Base.OneTo) &&
         throw(ArgumentError("a range kept in a variable has no C: ranges are supported as the range of a `for` and as an index, `v[2:4]`. Write the range in the `for` itself (statement $i)"))
+    f in (Base.sincos, Base.minmax) &&
+        throw(ArgumentError("`$(nameof(f))` is only available destructured, `s, c = sincos(x)`, `lo, hi = minmax(a, b)`: C has no pair to keep in a variable (statement $i)"))
     types = join(("::" * replace(string(widen(valuetype(sc, a))), "StaticArraysCore." => "") for a in args), ", ")
     throw(ArgumentError("`$(f isa Function ? nameof(f) : f)($types)` has no C yet: the transpiler doesn't know this function for these arguments. Write it with what it does know, or as a function of your own (statement $i)"))
 end
@@ -2852,7 +2865,7 @@ function value(sc::Scope, x)
     if x isa Core.SSAValue
         x.id in sc.inlined && return first(expression(sc, x))
         haskey(sc.expr, x.id) && return sc.expr[x.id]
-        haskey(sc.pair, x.id) && throw(ArgumentError("sincos is only available destructured, `s, c = sincos(x)` (statement $(x.id))"))
+        haskey(sc.pair, x.id) && throw(ArgumentError("`sincos` and `minmax` are only available destructured, `s, c = sincos(x)`, `lo, hi = minmax(a, b)` (statement $(x.id))"))
         sc.ci.code[x.id] isa GlobalRef && return value(sc, sc.ci.code[x.id])
         sc.ci.code[x.id] isa Core.SlotNumber && return sc.names[sc.ci.code[x.id].id]   # a read inside a loop header
         throw(ArgumentError("value of statement $(x.id) is not available in C"))

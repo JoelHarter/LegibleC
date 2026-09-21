@@ -156,6 +156,9 @@ end
 # transpose of what they wrap. Everything else passes.
 function normalize(T::Type)
     T === Union{} && return T
+    # An irrational held as a value, `(ℯ, π, 2.0)`, is held as the double it is a macro for.
+    T <: Tuple && isconcretetype(T) && any(P -> P <: AbstractIrrational, T.parameters) &&
+        return Tuple{(P <: AbstractIrrational ? Float64 : P for P in T.parameters)...}
     T <: LinearAlgebra.Adjoint || T <: LinearAlgebra.Transpose || return T
     P = T.parameters[2]
     shape(P) === nothing && return T

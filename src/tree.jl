@@ -66,7 +66,7 @@ function inert(tree::Tree, sc::Scope, t)
     # A choice that is a value is an expression inside whatever reads it. Its shape was matched
     # exactly (`findchoices`), both sides meet at the read, and control goes on from there.
     t in tree.chosen && return true
-    (st isa Core.GotoIfNot || st isa Core.ReturnNode) && return false
+    (st isa Core.GotoIfNot || st isa Core.ReturnNode || throws(sc, t)) && return false
     (st === nothing || st isa GlobalRef || st isa Core.NewvarNode || st isa Core.SlotNumber || st isa Core.SSAValue || st isa Number) && return true
     st isa Expr && st.head in (:meta, :code_coverage_effect) && return true
     return t in sc.inlined || t in sc.skipped || widen(sc.ci.ssavaluetypes[t]) === Union{}

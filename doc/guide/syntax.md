@@ -74,7 +74,7 @@ both languages, read-only.
 | `isodd`, `iseven`, `inv(x)`, `deg2rad`, `rad2deg`, `>>>`, `eps(x)`, `ifelse(c, a, b)` | yes, each as the C expression it is: `k % 2 != 0`, `1.0 / x`, `x * (LEGIBLEC_PI / 180)` |
 | `gcd`, `lcm`, `isqrt`; `sind`, `cosd`, `tand` | yes, as a small helper each; the degree functions are exact at the multiples of 90, as Julia's are |
 | `zero(x)`, `one(x)` | yes |
-| `s, c = sincos(x)` | yes, as `sin(x)` and `cos(x)`; only destructured |
+| `s, c = sincos(x)`, `lo, hi = minmax(a, b)` | yes, as the two values; only destructured |
 | `Float64(a)`, `Int64(x)`, `round(Int64, x)`, `floor(Int64, x)`, … | yes, as casts |
 | `pi`, `ℯ`, `Inf`, `NaN`, `Inf32`, `NaN32`, numeric literals | yes |
 | `isnan`, `isinf`, `isfinite`, `signbit`; `typemax`, `typemin`, `floatmax`, `floatmin`, `eps` of a type | yes, as the `math.h`, `stdint.h`, `float.h` names |
@@ -92,6 +92,9 @@ both languages, read-only.
 | `for i in 1:2, j in 1:3` | yes |
 | `for x in v` over a vector's elements | yes |
 | `break`, `continue`, `return` anywhere | yes |
+| `if a && (b \|\| c)`, `while (a \|\| b) && n > 0`: any mix of `&&`, `\|\|`, `? :` in a condition | yes |
+| a condition part that needs a line of its own (array work, `mod` of a product) with an `else` to reach | refused by line: give that part a variable first |
+| `throw(DomainError(x, "…"))`, `error("…")`, `@assert c` | yes: the exception's name and what it was made from on `stderr`, then `abort()`. C has no exceptions, and Julia that throws is outside what the C is checked against |
 | `let a = …, b = …` … `end` | yes, as a bare `{ … }` block; on one line, or used as a value, its variables come out flat |
 | `for x in A` over a matrix, a non-literal step, a range in a variable, `enumerate`, `zip` | not yet |
 | `try`/`catch`, comprehensions, closures, `do` blocks | not yet |

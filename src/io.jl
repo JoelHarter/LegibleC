@@ -92,6 +92,34 @@ function print!(lines, sc::Scope, args, newline::Bool)
     flush()
 end
 
+# `throw(DomainError(x, "…"))`, `error("…")`, `@assert`: the program stops, saying why. C has
+# no exceptions, so it stops the way the solvers' helpers do when a matrix is singular: the
+# exception's name and what it was made from on `stderr`, and `abort()`. Julia that throws
+# is outside what the C is checked against; this is for the person who meets it anyway.
+function throw!(lines, sc::Scope, st::Expr)
+    code = sc.ci.code
+    parts = Any[GlobalRef(Base, :stderr)]
+    if callee_or_nothing(sc.ci, st.args[1]) === Base.error
+        push!(parts, "ERROR: ")
+        append!(parts, st.args[2:end])
+    else
+        e = st.args[2]
+        made = e isa Core.SSAValue && code[e.id] isa Expr && code[e.id].head === :call && callee_or_nothing(sc.ci, code[e.id].args[1]) isa Type ? code[e.id].args[2:end] : Any[]
+        E = widen(valuetype(sc, e))
+        v = literal(sc, e)                        # one Julia folded whole: `ArgumentError("…")`
+        isempty(made) && v isa Exception && hasproperty(v, :msg) && v.msg isa AbstractString && (made = Any[v.msg])
+        made = [a for a in made if literal(sc, a) isa AbstractString || valuetype(sc, a) <: Union{Number, AbstractString} || isarray(valuetype(sc, a))]
+        push!(parts, string(nameof(E)) * (isempty(made) ? "" : ": "))
+        for (k, a) in enumerate(made)
+            k > 1 && push!(parts, ", ")
+            push!(parts, a)
+        end
+    end
+    print!(lines, sc, parts, true)
+    push!(sc.headers, "stdlib.h")
+    emit!(lines, sc, "abort();")
+end
+
 # `@printf`: Julia's format string is already C's, so it passes through, with `%d` and
 # friends widened to `%lld` for a 64-bit integer.
 function printf!(lines, sc::Scope, args)

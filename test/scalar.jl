@@ -169,6 +169,20 @@ degrees(x::Float64) = sind(x) + 10.0 * cosd(x) + 100.0 * tand(x / 4)
 # Julia's are exact at the multiples of 90, which `sin(x * π / 180)` is not.
 exact(x::Float64) = (sind(x) == 0.0 ? 1 : 0) + (cosd(x) == 0.0 ? 10 : 0) + (sind(x) == 1.0 ? 100 : 0) + (cosd(x) == -1.0 ? 1000 : 0)
 least() = typemin(Int64) + 1                                      # C has no negative literals
+function ordered(a::Float64, b::Float64); lo, hi = minmax(a, b); return hi - 2.0 * lo; end
+function orderedexpr(a::Int64, b::Int64); lo, hi = minmax(a * 2, b + 1); return hi - 2 * lo; end   # each argument is written twice: never in place
+keptpair(a::Int64, b::Int64) = (t = minmax(a, b); t[2] - t[1])
+consts(x::Float64) = (ℯ, x * π, π)                               # an irrational held as a value is the double it is a macro for
+# `throw`, `error`, `@assert`: the exception's name and what it was made from on `stderr`, and
+# `abort()`. Only inputs that don't throw are compared with Julia: Julia that throws never reaches C.
+function guarded(n::Int64, x::Float64)
+    n < 0 && throw(ArgumentError("n must not be negative"))
+    x < 0.0 && throw(DomainError(x, "needs a nonnegative number"))
+    n > 50 && error("much too big: $n for $x")
+    @assert n != 7 "seven"
+    @assert x != 7.0
+    return n + sqrt(x)
+end
 @testset "idiom" begin
     cases = [[Case(parity, k) for k in (-3, -2, 0, 1, 8)]; Case(parity32, Int32(-3)); Case(parity32, Int32(4));
              Case(recip, 4.0, 8); Case(recip, -0.5, -3); Case(recip32, 4.0f0);
@@ -180,7 +194,9 @@ least() = typemin(Int64) + 1                                      # C has no neg
              Case(divisors32, Int32(12), Int32(-18)); Case(gcdonly, typemin(Int64), -1); Case(gcdonly, 6, typemin(Int64));
              [Case(roots, n) for n in (0, 1, 15, 16, 17, 4503599761588224, 9223372030926249000, 9223372036854775806)];
              [Case(degrees, x) for x in (0.0, 30.0, 45.0, 60.0, 135.0, 180.0, 200.0, 225.0, 300.0, 315.0, 350.0, 720.5, -30.0, -200.0, -300.0, 1e6 + 0.25)];
-             [Case(exact, x) for x in (0.0, 90.0, 180.0, 270.0, 360.0, -90.0, -180.0, 450.0, 30.0)]; Case(least)]
+             [Case(exact, x) for x in (0.0, 90.0, 180.0, 270.0, 360.0, -90.0, -180.0, 450.0, 30.0)]; Case(least);
+             Case(ordered, 3.0, 1.0); Case(ordered, 1.0, 3.0); Case(orderedexpr, 3, 1); Case(orderedexpr, 1, 9);
+             Case(consts, 2.0); Case(guarded, 4, 9.0)]
     check("idiom", cases)
     src = csource("idiomtext", parity, recip, angles, shifts, gap, choose, least)
     @test occursin("(k % 2 != 0 ? 1 : 0) + ((k + 1) % 2 == 0 ? 10 : 0)", src)
@@ -190,6 +206,14 @@ least() = typemin(Int64) + 1                                      # C has no neg
     @test occursin("double temp1_x = 2.0 * x;", src) && occursin("nextafter(fabs(temp1_x), INFINITY) - fabs(temp1_x)", src)
     @test occursin("(c ? a : b) + (a > b ? a - b : b - a)", src)
     @test occursin("return INT64_MIN + 1;", src)
+    src = csource("guardedtext", guarded, consts)
+    @test occursin("if (n < 0) {\n        fprintf(stderr, \"ArgumentError: n must not be negative\\n\");\n        abort();\n    }", src)
+    @test occursin("fprintf(stderr, \"DomainError: %g, needs a nonnegative number\\n\", x);", src)
+    @test occursin("fprintf(stderr, \"ERROR: much too big: %lld for %g\\n\", (long long)n, x);", src)
+    @test occursin("if (n == 7) {\n        fprintf(stderr, \"AssertionError: seven\\n\");", src)      # `@assert c`: the opposite test, no empty branch
+    @test occursin("if (x == 7.0) {\n        fprintf(stderr, \"AssertionError: x != 7.0\\n\");", src)
+    @test occursin("LEGIBLEC_E", src) && occursin("x * LEGIBLEC_PI", src)
+    @test occursin("is only available destructured", sprint(showerror, try csource("keptpair", keptpair) catch e; e end))
 end
 # Every refusal leaves the same way: what it is, then the function, the file and line, and
 # the Julia line itself. A statement's number, which is the transpiler's, never shows.

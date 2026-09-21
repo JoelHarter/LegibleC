@@ -576,7 +576,16 @@ end
 function ifelse!(lines, sc::Scope, B::Branch; chained::Bool=false)
     annotate!(lines, sc, sc.stmtline[B.i])
     emit!(lines, sc, (chained ? "} else if (" : "if (") * condition(sc, B.conds, B.op) * ") {")
+    header = length(lines)
     nested!(lines, sc, B.thenlo, B.thenhi)
+    if length(lines) == header && B.elselo > 0 && B.chain == 0
+        # Nothing to do where it holds, and something where it doesn't, which is how
+        # `@assert c` arrives: a person tests for the opposite and has no empty branch.
+        lines[header] = replace(lines[header], r"if \(.*\) \{$" => "if (" * opposite(sc, B.conds, B.op) * ") {")
+        nested!(lines, sc, B.elselo, B.elsehi)
+        emit!(lines, sc, "}")
+        return B.after
+    end
     if B.chain != 0
         ifelse!(lines, sc, sc.tree.ifs[B.chain]; chained=true)      # an else that is exactly one `if`: `else if`
         return B.after
@@ -613,6 +622,10 @@ function ifextent(sc::Scope, i, hi, loops)
     return target
 end
 
+# A `throw` or an `error`: typed as never returning, as dead code is, and not dead at all.
+throws(sc::Scope, i) = (st = sc.ci.code[i]; st isa Expr && st.head === :call && widen(sc.ci.ssavaluetypes[i]) === Union{} &&
+                                           callee_or_nothing(sc.ci, st.args[1]) in (Core.throw, Base.error))
+
 # The first statement at or after `i` that will actually be emitted (not inlined into
 # a condition, not dead, not a constant load).
 function nextlive(sc::Scope, i)
@@ -622,7 +635,7 @@ function nextlive(sc::Scope, i)
     # branch was never seen, and its body ran once.
     while i <= length(code) && !haskey(sc.fors, i) && !haskey(sc.whiles, i) &&
           (i in sc.inlined || i in sc.skipped || code[i] isa GlobalRef || code[i] isa Core.NewvarNode ||
-           widen(sc.ci.ssavaluetypes[i]) === Union{} && !(code[i] isa Core.ReturnNode))
+           widen(sc.ci.ssavaluetypes[i]) === Union{} && !(code[i] isa Core.ReturnNode) && !throws(sc, i))
         i += 1
     end
     return i
@@ -638,6 +651,24 @@ function lastlive(sc::Scope, lo, hi)
         nextlive(sc, i) == i && return i
     end
     return nothing
+end
+
+# The condition that holds exactly when this one doesn't. One comparison is turned round
+# where that is exact: `==` and `!=` always, the ordered ones on integers only, since for
+# floats `!(a < b)` holds for a NaN and `a >= b` doesn't. Anything else is `!(…)`.
+function opposite(sc::Scope, conds, op)
+    flipped = Dict(Base.:(==) => :!=, Base.:!= => :(==), Base.:< => :>=, Base.:<= => :>, Base.:> => :<=, Base.:>= => :<)
+    x = conds[1][1]
+    if length(conds) == 1 && !conds[1][2] && x isa Core.SSAValue && x.id in sc.inlined && !haskey(sc.choices, x.id)
+        st = sc.ci.code[x.id]
+        f = callee_or_nothing(sc.ci, st.args[1])
+        if haskey(flipped, f) && length(st.args) == 3 && all(a -> valuetype(sc, a) <: Number, st.args[2:3]) &&
+           (f in (Base.:(==), Base.:!=) || all(a -> valuetype(sc, a) <: Integer, st.args[2:3]))
+            return first(render(sc, x.id, Expr(:call, GlobalRef(Base, flipped[f]), st.args[2:3]...)))
+        end
+    end
+    text = condition(sc, conds, op)
+    return "!" * (length(conds) == 1 && occursin(r"^[\w.>\[\]-]+$", text) ? text : "($text)")
 end
 
 # A condition from its pieces, joined by `&&` or `||`.
@@ -932,6 +963,7 @@ function duplicates(sc::Scope, u, use::Expr, i)
     end
     f === Base.mod && T <: Integer && return true
     f in (Base.max, Base.min) && T <: Integer && return true
+    f === Base.minmax && return true                  # each argument is in the minimum and in the maximum
     r = idiom(f, T, [widen(valuetype(sc, a)) for a in use.args[2:end]])
     r === nothing || return any(k -> use.args[k+1] == Core.SSAValue(i) && twice(r, k), 1:length(use.args)-1)
     f === Base.:(==) && (isstruct(valuetype(sc, use.args[2])) || istuple(valuetype(sc, use.args[2]))) && return true
