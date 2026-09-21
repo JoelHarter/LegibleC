@@ -54,12 +54,15 @@ conditional(r::Idiom, k) = r.f === Base.ifelse && k > 1
 
 function written(sc::Scope, r::Idiom, T, args)
     isempty(r.header) || push!(sc.headers, r.header)
+    if r.f === Base.ifelse
+        c, a, b = (expression(sc, x) for x in args)
+        side(t) = t.prec == LOR ? paren(t) : t
+        return choice(c, side(a), side(b), T)
+    end
     A = valuetype(sc, args[1])
     text = r.c
     for (k, a) in enumerate(args)
         o = r.operand == 0 ? expression(sc, a)[1] : operand(sc, a, r.operand; right=true)
-        # The condition of `? :` is bracketed unless it is a comparison or a single thing, as a choice's is.
-        r.f === Base.ifelse && k == 1 && (e = expression(sc, a); o = e[2] >= UNARY || e[2] in (REL, EQ) ? e[1] : "(" * e[1] * ")")
         text = replace(text, "{" * "abc"[k] * "}" => o)
     end
     r.helper === nothing || (text = replace(text, "{h}" => r.helper(sc.helpers, A)))

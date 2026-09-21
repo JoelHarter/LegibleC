@@ -9,6 +9,7 @@
 
 include("name.jl")
 include("type.jl")
+include("term.jl")      # an expression until it is written: its parts, Julia's type for it and C's
 include("prose.jl")
 include("helper.jl")
 include("source.jl")
@@ -751,21 +752,14 @@ function emitexpr!(lines, sc::Scope, prefix::AbstractString, expr::AbstractStrin
     emit!(lines, sc, line * ";")
 end
 
-# `x = x + e` as `x += e`, and an integer's `x + 1` as `x++`: only when `e` is a whole
-# operand at the top level, so `x = x + y - z` stays as written (`x += y - z` would be
+# `x = x + e` as `x += e`, and an integer's `x + 1` as `x++`: only when the expression is
+# `x`, one operator, and the rest, so `x = x + y - z` stays as written (`x += y - z` would be
 # a different sum). Nothing if the statement isn't of that shape.
-function compound(x::AbstractString, T::Type, text::AbstractString)
-    # `b * c ? p : q` is not `b *= c ? p : q`: a conditional outside any brackets is not an operand to split at.
-    depth = 0
-    for (k, ch) in enumerate(text)
-        ch in "([{" && (depth += 1)
-        ch in ")]}" && (depth -= 1)
-        depth == 0 && ch == '?' && return nothing
-    end
-    pieces = splitexpr(text)
-    length(pieces) == 3 && pieces[1] == x && pieces[2] in ("+", "-", "*", "/") || return nothing
-    pieces[3] == "1" && pieces[2] in ("+", "-") && T <: Integer && return x * pieces[2]^2
-    return "$x $(pieces[2])= $(pieces[3])"
+function compound(x::AbstractString, T::Type, t::Term)
+    t.kind === :binary && t.text in ("+", "-", "*", "/") && string(t.parts[1]) == x || return nothing
+    e = t.parts[2]
+    e.kind === :number && e.text == "1" && t.text in ("+", "-") && T <: Integer && return x * t.text^2
+    return "$x $(t.text)= $(within(e, t.prec; right=true))"
 end
 
 # The fields of an initializer's text, split at the commas outside any brackets.
@@ -938,12 +932,13 @@ function statement!(lines, sc::Scope, i, st)
         G = globaltype(getfield(mod, name))
         G <: Number || throw(ArgumentError("assigning to the global `$name`, a $(G): only a scalar global can be given a new value; an array's elements can be written, `$name[i] = …` (statement $i)"))
         push!(sc.prog.written, (mod, name))
-        text = first(expression(sc, st.args[4]))
+        term = expression(sc, st.args[4])
+        text = string(term)
         # `g += f(n)` leaves it to the compiler whether `g` is read before `f` runs, and `f`
         # may write `g`: shortened only when nothing on the right has an effect.
         effect(x) = x isa Core.SSAValue && (haskey(sc.alias, x.id) ? effect(sc.alias[x.id] isa Tuple ? sc.alias[x.id][2] : sc.alias[x.id]) : effect(ci.code[x.id])) ||
                     x isa Expr && (x.head === :call && !pure(sc, x) || any(effect, x.args))
-        short = effect(st.args[4]) ? nothing : compound(g.cname, G, text)
+        short = effect(st.args[4]) ? nothing : compound(g.cname, G, term)
         short === nothing ? emitexpr!(lines, sc, "$(g.cname) = ", text) : emit!(lines, sc, short * ";")
         sc.expr[i] = g.cname
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.sincos && length(st.args) == 2
@@ -1128,8 +1123,9 @@ function statement!(lines, sc::Scope, i, st)
         elseif rhs isa Expr && rhs.head === :call && (callee_or_nothing(ci, rhs.args[1]) === Core.tuple || (callee_or_nothing(ci, rhs.args[1]) isa Type && isstruct(T)))
             compound!(lines, sc, i, T, rhs.args[2:end], x; declared=!here || haskey(sc.placed, i))
         else
-            text = rhs isa Expr ? first(render(sc, i, rhs)) : value(sc, rhs)
-            short = here ? nothing : compound(x, T, text)
+            term = rhs isa Expr ? render(sc, i, rhs) : expression(sc, rhs)
+            text = string(term)
+            short = here ? nothing : compound(x, T, term)
             k = tuplekind(sc, rhs)
             if k === nothing && istuple(T) && rhs isa Expr && rhs.head === :call &&
                (r = userinstance!(sc, callee_or_nothing(ci, rhs.args[1]), rhs.args[2:end])) !== nothing
@@ -1833,11 +1829,7 @@ function setslice!(lines, sc::Scope, i, A, src, idx)
 end
 
 # A Julia index as a 0-based C expression.
-function zerobased(sc::Scope, k)
-    k isa Integer && return string(k - 1)
-    text, p = expression(sc, k)
-    return (p < ADD ? "($text)" : text) * " - 1"
-end
+zerobased(sc::Scope, k) = string(subscript(sc, k))
 
 isarray(T) = T <: AbstractArray
 
@@ -2095,24 +2087,16 @@ uses(x, i) = x isa Core.SSAValue   ? x.id == i :
 
 assigns(st, slot) = st isa Expr && st.head === :(=) && st.args[1].id == slot
 
-# C precedence levels used by `render`.
-const PRIMARY, UNARY, MUL, ADD, SHIFT, REL, EQ, BAND, BXOR, BOR, LAND, LOR = 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4
 include("idiom.jl")     # scalar functions that are one C expression, a row each
 
 """
-    render(sc, i, ex) -> (text, precedence)
+    render(sc, i, ex) -> Term
 
 The C expression for the scalar call `ex`, whose result is SSA value `i`.
 """
 function render(sc::Scope, i, ex::Expr)
-    text, p = rendered(sc, i, ex)
-    # C does its arithmetic on nothing narrower than `int`: `a + b` on two `uint8_t` is an
-    # `int` that can be 300, where Julia's is a `UInt8` that wrapped to 44. Stored into a
-    # `uint8_t` it wraps the same; inside a larger expression it doesn't. So arithmetic whose
-    # Julia type is narrower than `int` is cast to that type where it is written.
-    T = widen(sc.ci.ssavaluetypes[i])
-    T <: Union{Int8, UInt8, Int16, UInt16} && callee_or_nothing(sc.ci, ex.args[1]) in (Base.:+, Base.:-, Base.:*, Base.:<<, Base.:~, Base.literal_pow) || return text, p
-    return "($(ctype(T)))" * (p < UNARY ? "($text)" : text), UNARY
+    r = rendered(sc, i, ex)
+    return r isa Term ? r : Term(r[1], r[2], widen(sc.ci.ssavaluetypes[i]))      # C text composed by hand: a call, a helper, a macro
 end
 
 function rendered(sc::Scope, i, ex::Expr)
@@ -2127,9 +2111,6 @@ function rendered(sc::Scope, i, ex::Expr)
     end
     T = widen(ci.ssavaluetypes[i])
     n = length(args)
-    # `a + -b` is written `a - b`, and `a - -b` is `a + b`: exact, since a negation
-    # is, and what a person writes. A negation is what a right operand that starts
-    # with `-` is: anything binding less tightly than `*` has been parenthesised.
     # With an integer standing in for `bool` (the `bool` option), a truth value read from
     # storage — a parameter, a field, an element, a global — is any nonzero value, so
     # where it enters arithmetic or a comparison it is read as `(b != 0)`. One computed
@@ -2141,46 +2122,40 @@ function rendered(sc::Scope, i, ex::Expr)
         (st isa Core.SlotNumber || st isa GlobalRef) && return true
         st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.getfield, Core.getfield, Base.getproperty, Base.getindex)
     end
-    truth(x, prec; right=false) = booltype[] !== Bool && valuetype(sc, x) === Bool && stored(x) ? "($(operand(sc, x, EQ)) != 0)" : operand(sc, x, prec; right)
-    # Julia's integer literal is an `Int64`; C's is an `int`. `1 << k` and `ms * 1000` on a
-    # `uint32_t` are 32-bit arithmetic in C and 64-bit in Julia. Where the result is 64 bits
-    # wide and nothing that decides C's type is, the first operand is cast: `(int64_t)1 << k`.
-    # Not where the 32 bits can't be outgrown: `2 * 3`, `c - 'a'`, two `uint8_t`s added.
-    wide(a) = a isa Integer ? !(typemin(Int32) <= a <= typemax(Int32)) : sizeof(valuetype(sc, a)) >= 8
-    reach(a) = a isa Integer ? abs(big(a)) : (V = valuetype(sc, a); V === Bool ? big(1) : V === Char ? big(0x10ffff) : big(2)^(8 * sizeof(V)))
-    outgrown(sym) = sym == "<<" || (sym == "*" ? prod(reach, args) : sum(reach, args)) >= big(2)^31
+    truth(x) = booltype[] !== Bool && valuetype(sc, x) === Bool && stored(x) ? Term("($(operand(sc, x, EQ)) != 0)", PRIMARY, Bool) : expression(sc, x)
+    # `a + b + c` is `(a + b) + c` in Julia, each step in the type its two operands promote to:
+    # two `UInt8` wrap at 256 before an `Int64` is added. What C makes of each step, and the
+    # cast where that differs, is `arithmetic`'s to say; a comparison is `compared`'s.
+    # `a + -b` is written `a - b`, and `a - -b` is `a + b`: exact, since a negation is, and
+    # what a person writes.
     function op(sym, prec)
-        if sym in ("+", "-", "*", "<<") && T <: Union{Int64, UInt64} && !any(wide, sym == "<<" ? args[1:1] : args) && outgrown(sym)
-            s = "($(ctype(T)))" * truth(args[1], UNARY)
-            for a in args[2:end]
-                s *= " $sym " * truth(a, prec; right=true)
+        acc = truth(args[1])
+        J = valuetype(sc, args[1])
+        for (k, x) in enumerate(args[2:end])
+            b = truth(x)
+            s = sym
+            sym in ("+", "-") && leading(b) && bare(b, prec; right=true) && ((s, b) = (sym == "+" ? "-" : "+", positive(b)))
+            if sym in ("<", "<=", ">", ">=", "==", "!=")
+                acc = compared(s, prec, acc, b, i)
+            else
+                J = k == n - 1 ? T : Base.promote_op(f, J, valuetype(sc, x))
+                acc = arithmetic(s, prec, acc, b, J; wrap=k == n - 1 || !(J isa DataType && T isa DataType && sizeof(J) == sizeof(T)))
             end
-            return s, prec
         end
-        s = truth(args[1], prec)
-        for a in args[2:end]
-            t = truth(a, prec; right=true)
-            s *= sym in ("+", "-") && startswith(t, "-") ? (sym == "+" ? " - " : " + ") * t[2:end] : " $sym " * t
-        end
-        return s, prec
+        return acc
     end
-    # `-(-x)` is `x`, exactly.
-    unary(sym) = (t = operand(sc, args[1], UNARY); sym == "-" && startswith(t, "-") ? (t[2:end], PRIMARY) : (sym * t, UNARY))
+    unary(sym) = prefix(sym, expression(sc, args[1]), T)
     # A `math.h` function on a `float` is the `f` variant: `sqrtf`, `fabsf`, `powf`.
     # The variant is the result's, which is Julia's promotion of the arguments: `max(x32, y64)` is
     # `fmax`, not `fmaxf`. A complex argument names its own (`cabs` of a complex gives a real).
     variant() = (k = findfirst(a -> valuetype(sc, a) <: Complex, args); k !== nothing ? valuetype(sc, args[k]) : T <: AbstractFloat ? T : valuetype(sc, args[1]))
     fn(name, hdr="math.h") = (push!(sc.headers, hdr); ("$(hdr == "math.h" ? mathname(variant(), name) : name)(" * join((expression(sc, a)[1] for a in args), ", ") * ")", PRIMARY))
-    # A signed and an unsigned integer together: Julia compares and divides them as the numbers
-    # they are, and C converts the signed one to unsigned first, so that `-1 < 1u` is false.
-    # Harmless where the signed type holds every value of the unsigned one, and for a literal
-    # that isn't negative. Refused otherwise: there is no C operator that means what Julia means.
-    # For `div`, `rem` and `mod` whatever the widths: Julia has methods of their own for a signed
-    # by an unsigned, with a result type and a rule that no one C expression gives.
-    function signedness(what; anywidth::Bool=false)
+    # `div`, `rem` and `mod` of a signed integer by an unsigned one, or the other way round:
+    # Julia has methods of their own for those, with a result type and a rule that no one C
+    # expression gives. Refused, unless the signed one is a literal that isn't negative.
+    function signedness(what)
         Ts = [(a, valuetype(sc, a)) for a in args]
-        any(((a, U),) -> U <: Unsigned && (anywidth || sizeof(U) >= 4) &&
-                         any(((b, S),) -> S <: Signed && (anywidth || sizeof(U) >= sizeof(S)) && !(literal(sc, b) isa Integer && literal(sc, b) >= 0), Ts), Ts) &&
+        any(((a, U),) -> U <: Unsigned && any(((b, S),) -> S <: Signed && !(literal(sc, b) isa Integer && literal(sc, b) >= 0), Ts), Ts) &&
             throw(ArgumentError("$what between a signed and an unsigned integer ($(join((string(X) for (_, X) in Ts), ", "))): Julia takes them as the numbers they are, C converts the signed one to unsigned first, and a negative one goes wrong. Convert one side so that both are alike, `Int64(u)` or `UInt64(s)` (statement $i)"))
     end
     floating = T <: AbstractFloat
@@ -2200,7 +2175,7 @@ function rendered(sc::Scope, i, ex::Expr)
     elseif f in (Base.real, Base.conj) && n == 1 && T <: Real
         return expression(sc, args[1])                # a real's real part and conjugate are itself
     elseif f === Base.float && n == 1
-        return valuetype(sc, args[1]) <: AbstractFloat ? expression(sc, args[1]) : ("($(ctype(T)))" * operand(sc, args[1], UNARY), UNARY)
+        return valuetype(sc, args[1]) <: AbstractFloat ? expression(sc, args[1]) : cast(T, expression(sc, args[1]))
     elseif f === Base.imag && n == 1 && T <: Real
         return value(sc, zero(T)), PRIMARY
     end
@@ -2337,7 +2312,7 @@ function rendered(sc::Scope, i, ex::Expr)
         f = Base.:/
         return render(sc, i, Expr(:call, f, args...))
     end
-    f in (Base.div, Base.rem, Base.mod) && signedness("`$(nameof(f))`"; anywidth=true)
+    f in (Base.div, Base.rem, Base.mod) && signedness("`$(nameof(f))`")
     # `div` on floats is Julia's own formula, `round((x - rem(x, y)) / y)`: the part of `x` that `y`
     # goes into, divided out. It is NaN where the remainder is, `div(1.0, 0.0)`, which
     # `trunc(x / y)` is not. `fld` takes the remainder with the divisor's sign, which is `mod`.
@@ -2372,8 +2347,8 @@ function rendered(sc::Scope, i, ex::Expr)
         # else the idiom can overflow in `+ b`, so it is the helper that says Julia's rule.
         d = literal(sc, args[2])
         if d isa Integer && d != -1 && 0 < abs(big(d)) <= big(typemax(T)) ÷ 2
-            a, b = operand(sc, args[1], MUL), operand(sc, args[2], MUL; right=true)
-            return "(($a % $b) + $b) % $b", MUL
+            a, b = expression(sc, args[1]), expression(sc, args[2])
+            return arithmetic("%", MUL, arithmetic("+", ADD, paren(arithmetic("%", MUL, a, b, T)), b, T), b, T)      # `((a % b) + b) % b`
         end
         return "$(modhelper!(sc.helpers, T))($(expression(sc, args[1])[1]), $(expression(sc, args[2])[1]))", PRIMARY
     end
@@ -2385,12 +2360,12 @@ function rendered(sc::Scope, i, ex::Expr)
         e == 0 && return unit, PRIMARY
         e == 1 && return expression(sc, args[2])
         floating || e > 0 || throw(ArgumentError("a negative power of an integer is a DomainError in Julia (statement $i)"))
-        x = operand(sc, args[2], MUL)
+        x = expression(sc, args[2])
         # Squares, cubes and the reciprocal are written out; anything else is
         # `powi(x, n)`, by squaring (`powhelper!`).
-        e == 2 && return "$x * $x", MUL
-        e == 3 && return "$x * $x * $x", MUL
-        e == -1 && return "$unit / $x", MUL
+        e == 2 && return arithmetic("*", MUL, x, x, T)
+        e == 3 && return arithmetic("*", MUL, arithmetic("*", MUL, x, x, T; wrap=false), x, T)
+        e == -1 && return "$unit / $(within(x, MUL; right=true))", MUL
         return "$(powhelper!(sc.helpers, T))($(expression(sc, args[2])[1]), $e)", PRIMARY
     end
     # `@fastmath x^2` arrives as `pow_fast(x, Val(2))`: the literal power it was written as.
@@ -2412,7 +2387,6 @@ function rendered(sc::Scope, i, ex::Expr)
     end
 
     # Comparison and logic.
-    f in (Base.:<, Base.:<=, Base.:>, Base.:>=, Base.:(==), Base.:!=) && all(a -> valuetype(sc, a) <: Integer, args) && signedness("a comparison")
     f === Base.:<  && return op("<", REL)
     f === Base.:<= && return op("<=", REL)
     f === Base.:>  && return op(">", REL)
@@ -2471,13 +2445,26 @@ function rendered(sc::Scope, i, ex::Expr)
         f === Base.abs && return T === Int64 ? fn("llabs", "stdlib.h") : T === Int32 ? fn("abs", "stdlib.h") :
                                  (push!(sc.headers, "stdlib.h"); ("($(ctype(T)))abs($(expression(sc, args[1])[1]))", UNARY))
         if f === Base.max || f === Base.min
-            signedness("`$(nameof(f))`")
-            acc = expression(sc, args[1])[1]
-            for b in args[2:end]              # `max(a, b, c)` is `max(max(a, b), c)`
-                b = expression(sc, b)[1]
-                acc = "($acc $(f === Base.max ? ">" : "<") $b ? $acc : $b)"
+            # Julia converts both to the type they promote to and takes one of them. Where C converts
+            # them to that same type there is nothing to decide: a negative value going to an unsigned
+            # type is an error in Julia. The conversion is written all the same, `(uint32_t)k > u`,
+            # because a compiler warns of the silent one. Where C's type is another, `max(u32, -1)`,
+            # the casts are a comparison's and a choice's.
+            acc = expression(sc, args[1])
+            J = valuetype(sc, args[1])
+            for x in args[2:end]              # `max(a, b, c)` is `max(max(a, b), c)`
+                b = expression(sc, x)
+                J = promote_type(J, valuetype(sc, x))
+                sign = f === Base.max ? ">" : "<"
+                same = common(acc.c, b.c) === promoted(J)
+                if same && J <: Unsigned && sizeof(J) >= 4
+                    acc.c isa DataType && acc.c <: Signed && acc.kind !== :number && (acc = cast(J, acc))          # a literal is converted without a word from anyone
+                    b.c isa DataType && b.c <: Signed && b.kind !== :number && (b = cast(J, b))
+                end
+                test = same ? Term(:binary, sign, [acc, b], Bool, Bool, REL, limits(Bool)) : compared(sign, REL, acc, b, i)
+                acc = paren(same ? Term(:choice, "?", [test, acc, b], J, promoted(J), COND, limits(J)) : choice(test, test.parts[1], b, J))
             end
-            return acc, PRIMARY
+            return acc
         end
         # `round(Int, x)`, `floor(Int, x)`, …: a math function then a cast.
         if f in (Base.round, Base.floor, Base.ceil, Base.trunc) && n == 2
@@ -2493,7 +2480,7 @@ function rendered(sc::Scope, i, ex::Expr)
     f === Core.typeassert && n == 2 && T <: Number && return expression(sc, args[1])
     if f === Base.convert && n == 2 && T <: Number && literal(sc, args[1]) isa Type
         valuetype(sc, args[2]) === T && return expression(sc, args[2])
-        return "($(ctype(T)))" * truth(args[2], UNARY), UNARY
+        return cast(T, truth(args[2]))
     end
     # One C expression of its arguments: a row of the table (`idiom.jl`).
     r = idiom(f, T, [widen(valuetype(sc, a)) for a in args])
@@ -2522,7 +2509,7 @@ function rendered(sc::Scope, i, ex::Expr)
 
     # Conversions: a call to a type.
     f isa Type && isstruct(T) && return compound(sc, T, args), PRIMARY
-    f isa Type && n == 1 && return "($(ctype(T)))" * truth(args[1], UNARY), UNARY
+    f isa Type && n == 1 && return cast(T, truth(args[1]))
 
     # Arrays, as scalars: an element, or a size.
     f === Base.getindex && return index(sc, args[1], args[2:end]), PRIMARY
@@ -3254,7 +3241,7 @@ function index(sc::Scope, A, idx)
     isarray(T) || throw(ArgumentError("indexing into a $T"))
     # `(A')[i, j]` read in place: the same storage with its axes the other way round, which
     # the axis model knows how to read (and to conjugate, for an adjoint of complex numbers).
-    istransposed(T) && length(idx) == 2 && return access(T, value(sc, A), [subscript(sc, k) for k in idx])
+    istransposed(T) && length(idx) == 2 && return access(T, value(sc, A), [string(subscript(sc, k)) for k in idx])
     length(idx) == 1 && ndims(T) > 1 && !istransposed(T) && valuetype(sc, idx[1]) <: Integer && return value(sc, A) * linear(sc, T, idx[1])
     length(idx) == ndims(T) || throw(ArgumentError("$(length(idx)) indices into a $(ndims(T))-dimensional array"))
     return value(sc, A) * join("[$(subscript(sc, k))]" for k in idx)
@@ -3275,8 +3262,7 @@ function linear(sc::Scope, T::Type, k)
         end
         return join("[$x]" for x in subs)
     end
-    k0 = subscript(sc, k)
-    occursin(r"^\w+$", k0) || (k0 = "($k0)")
+    k0 = within(subscript(sc, k), PRIMARY)
     subs = String[]
     stride = 1
     for (d, m) in enumerate(dims)
@@ -3290,13 +3276,14 @@ end
 # A 1-based Julia index as a 0-based C subscript. The shift folds into a literal offset
 # the index already has: `v[i + 1]` is `v[i]`, `v[i - 1]` is `v[i - 2]`.
 function subscript(sc::Scope, k)
-    k isa Integer && return string(k - 1)
-    text, p = expression(sc, k)
-    if p == ADD && (m = match(r"^(.*) ([+-]) (\d+)$", text)) !== nothing
-        off = (m[2] == "+" ? 1 : -1) * parse(Int, m[3]) - 1
-        return off == 0 ? m[1] : m[1] * (off > 0 ? " + $off" : " - $(-off)")
+    k isa Integer && return atom(string(k - 1), Int64)
+    t = expression(sc, k)
+    less(a, n) = Term(:binary, n > 0 ? "-" : "+", [a, atom(string(abs(n)), Int64)], t.julia, common(a.c, Int32), ADD, nothing)
+    if t.kind === :binary && t.text in ("+", "-") && t.parts[2].kind === :number && t.parts[2].prec == PRIMARY
+        off = (t.text == "+" ? 1 : -1) * t.parts[2].reach[1] - 1
+        return off == 0 ? t.parts[1] : less(t.parts[1], -off)
     end
-    return (p < ADD ? "($text)" : text) * " - 1"
+    return less(t, 1)
 end
 
 # An integer as C writes it. C has no negative literals: `-9223372036854775808` is the

@@ -27,8 +27,10 @@ The usual causes:
   its size;
 - a non-ASCII character literal, since C's `char` holds one byte;
 - a `dims` keyword that isn't a literal;
-- a signed integer compared with or divided by an unsigned one of at least its
-  width, where no C operator means what Julia means: convert one side.
+- a signed integer compared with a `UInt64`, or divided by an unsigned
+  integer, where no C operator means what Julia means: convert one side.
+  Beside a narrower unsigned type the comparison is written with the cast
+  it needs, `(int64_t)u > k`.
 
 ## When the transpiler itself goes wrong
 

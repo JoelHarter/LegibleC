@@ -391,4 +391,58 @@ end
     @test_throws ArgumentError csource("gapifelsesign", gapifelsesign)
     @test_throws ArgumentError csource("gapsignvar", gapsignvar)
 end
+
+# An expression has two types, Julia's and the one C computes it in (`src/term.jl`). These are
+# the places where the two differ and a value can tell, each one step to the side of a rule
+# that looked at Julia's type alone (2026-09-21).
+twoinner(a::UInt8) = (a + 1) * 100000000                   # `a + 1` is an `int` in C, and the product outgrows it
+twochain(a::UInt8, b::UInt8, n::Int64) = a + b + n         # two `UInt8` wrap at 256 before the `Int64` is added
+twoproduct(a::Int32, b::Int32) = a * b * 1000              # the `Int32` product wraps before it is widened
+twomod(a::Int8) = mod(a, 3) * 2000000000                   # the `mod` idiom is an `int` in C
+twopick(c::Bool) = ifelse(c, 1, 2) * 2000000000            # so is a choice between two literals
+twoabove(u::UInt32) = u > -1                               # C's `-1` is an `int`, converted to unsigned beside a `uint32_t`
+twosame(u::UInt32) = u == -1
+twounder(u::UInt32, k::Int32) = k < u                      # a type that holds both: `int64_t`
+twoleast(u::UInt32) = max(u, -1)
+twomost(u::UInt32, k::Int32) = max(u, k)                   # Julia converts both to `UInt32`, and so does the C, said out loud
+twoquot(a::Int32) = div(a, -1)                             # the least `Int32` by -1 fits Julia's `Int64`, and overflows C's `int`
+twofloat(n::Int32, x::Float32) = (n == x) + 2 * (n < x)    # beside a `float` an integer is exact to 2^24 only
+twobits(a::Int8, b::UInt8) = (a | b) + 1000                # `Int8(-1) | 0x03` is `0xff` in Julia and -1 in C's `int`
+twonot(a::UInt8) = ~a + 1000
+twoindex(v::SVector{4, Float64}, i::Int64) = v[i + 1] + v[i - 1]
+twowide(u::UInt64, k::Int64) = k < u
+function twobound(n::Int32)
+    s = 0
+    for k in 1:Int64(n)                                    # a cast is not a call: it stays in the header
+        s += k
+    end
+    return s
+end
+@testset "two types" begin
+    src = check("twotypes", [Case(twoinner, 0xff), Case(twoinner, 0x30), Case(twochain, 0xff, 0xff, 5), Case(twochain, 0x01, 0x02, -5),
+        Case(twoproduct, Int32(100000), Int32(100000)), Case(twoproduct, Int32(3), Int32(-4)),
+        Case(twomod, Int8(5)), Case(twomod, Int8(-5)), Case(twopick, true), Case(twopick, false),
+        Case(twoabove, 0x00000005), Case(twoabove, 0xffffffff), Case(twosame, 0xffffffff), Case(twosame, 0x00000001),
+        Case(twounder, 0x00000005, Int32(-1)), Case(twounder, 0xffffffff, Int32(7)), Case(twounder, 0x00000003, Int32(7)),
+        Case(twoleast, 0x00000005), Case(twoleast, 0xffffffff), Case(twomost, 0x00000005, Int32(9)), Case(twomost, 0xfffffff0, Int32(9)),
+        Case(twoquot, typemin(Int32)), Case(twoquot, Int32(7)),
+        Case(twofloat, Int32(16777217), 16777216f0), Case(twofloat, Int32(3), 3f0), Case(twofloat, Int32(-16777217), -16777216f0),
+        Case(twobits, Int8(-1), 0x03), Case(twobits, Int8(5), 0x03), Case(twonot, 0x00), Case(twonot, 0xff),
+        Case(twoindex, SVector(1.0, 2.0, 3.0, 4.0), 2), Case(twobound, Int32(10))])
+    @test occursin("return (int64_t)(a + 1) * 100000000;", src)
+    @test occursin("return (uint8_t)(a + b) + n;", src)
+    @test occursin("return (int64_t)(a * b) * 1000;", src)
+    @test occursin("return (int64_t)(((a % 3) + 3) % 3) * 2000000000;", src)
+    @test occursin("return (int64_t)(c ? 1 : 2) * 2000000000;", src)
+    @test occursin("return (int64_t)u > -1;", src) && occursin("return (int64_t)u == -1;", src) && occursin("return k < (int64_t)u;", src)
+    @test occursin("return ((int64_t)u > -1 ? (int64_t)u : -1);", src)
+    @test occursin("return (u > (uint32_t)k ? u : (uint32_t)k);", src)
+    @test occursin("return (int64_t)a / -1;", src)
+    @test occursin("((double)n == x) + 2 * ((double)n < x)", src)
+    @test occursin("return (uint8_t)(a | b) + 1000;", src) && occursin("return (uint8_t)~a + 1000;", src)
+    @test occursin("return v[i] + v[i - 2];", src)                        # the shift folds into the literal the index has
+    @test occursin("for (int64_t k = 1; k <= (int64_t)n; k++) {", src)
+    # No type holds both a `UInt64` and a negative number: refused, as it was.
+    @test_throws ArgumentError csource("twowide", twowide)
+end
 end

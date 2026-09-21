@@ -26,8 +26,6 @@ struct Choice
     join::Int           # the read, where the sides meet: the value
 end
 
-const COND = 3          # C's `? :`, which binds less tightly than `||`
-
 # Every place the lowered code has that shape exactly, innermost first. Whether each one
 # can be written as an expression is settled with the inlining (`markinlined!`), since it
 # is the same question: may this be written inside what uses it?
@@ -108,22 +106,19 @@ function holds(sc::Scope, c::Choice, effectful, held)
     return true
 end
 
-# The C for it, as `(text, precedence)`. `a || b` is the one whose first side stores a value
-# known to be `true`, `a && b` the one whose second side stores `false`; anything else is
-# C's conditional. A person brackets `&&` under `||` and one conditional inside another.
+# The C for it. `a || b` is the one whose first side stores a value known to be `true`,
+# `a && b` the one whose second side stores `false`; anything else is C's conditional. A
+# person brackets `&&` under `||` and one conditional inside another.
 function chosen(sc::Scope, c::Choice)
     code = sc.ci.code
     known(k, v) = code[k].args[2] === v || (t = sc.ci.ssavaluetypes[k]; t isa Core.Const && t.val === v)
     side(k) = (v = code[k].args[2]; v isa Expr ? render(sc, k, v) : expression(sc, v))
-    wrap((text, p), prec) = p < prec || (prec == LOR && p == LAND) ? "($text)" : text
-    cond = isempty(c.more) ? expression(sc, code[c.test].cond) :
-           (join((wrap(expression(sc, code[t].cond), LAND) for t in [c.test; c.more]), " && "), LAND)
+    both(sym, prec, a, b) = Term(:binary, sym, [a, b], Bool, Bool, prec, limits(Bool))
+    cond = foldl((a, b) -> both("&&", LAND, a, b), [expression(sc, code[t].cond) for t in [c.test; c.more]])
     # `a || b` stores `a` itself where it holds, which Julia knows to be `true` only when `a` is a variable.
-    bool = sc.ci.slottypes[code[c.yes].args[1].id] === Bool          # `&&` and `||` give 0 or 1 in C: right for a truth value only
-    bool && (known(c.yes, true) || isempty(c.more) && code[c.yes].args[2] == code[c.test].cond) && return wrap(cond, LOR) * " || " * wrap(side(c.no), LOR), LOR
-    bool && known(c.no, false) && return wrap(cond, LAND) * " && " * wrap(side(c.yes), LAND), LAND
-    # The condition is bracketed unless it is a comparison or a single thing: `(a | b) ? x : y`,
-    # `(b * c) ? p : q`, as a person writes it and as clang asks.
-    cond = cond[2] >= UNARY || cond[2] in (REL, EQ) ? cond[1] : "(" * cond[1] * ")"
-    return cond * " ? " * wrap(side(c.yes), COND + 1) * " : " * wrap(side(c.no), COND + 1), COND
+    T = sc.ci.slottypes[code[c.yes].args[1].id]
+    bool = T === Bool          # `&&` and `||` give 0 or 1 in C: right for a truth value only
+    bool && (known(c.yes, true) || isempty(c.more) && code[c.yes].args[2] == code[c.test].cond) && return both("||", LOR, cond, side(c.no))
+    bool && known(c.no, false) && return both("&&", LAND, cond, side(c.yes))
+    return choice(cond, side(c.yes), side(c.no), T)
 end

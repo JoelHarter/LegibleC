@@ -459,7 +459,7 @@ function forloop!(lines, sc::Scope, F::For)
     # Julia builds the range once, so its end is read once; C's header reads it every pass.
     # A bound that is a call — `1:ncodeunits(s)` — or that the body can change — `for k in
     # 1:n; n -= 1` is `n` passes in Julia — is taken into a temp before the loop.
-    if F.hi isa Core.SSAValue && F.hi.id in sc.inlined && occursin("(", hi) || F.array === nothing && boundchanges(sc, F)
+    if F.hi isa Core.SSAValue && F.hi.id in sc.inlined && !simple(expression(sc, F.hi)) || F.array === nothing && boundchanges(sc, F)
         t = temp!(sc, nothing, contribution(sc, F.hi))
         emit!(lines, sc, "$T $t = $hi;")
         hi = t
@@ -1175,24 +1175,15 @@ countuses!(uses, x) = x isa Core.SSAValue ? (uses[x.id] = get(uses, x.id, 0) + 1
                       x isa Core.ReturnNode ? (isdefined(x, :val) && countuses!(uses, x.val)) :
                       x isa Core.GotoIfNot ? countuses!(uses, x.cond) : nothing
 
-# The C for an IR value as an expression: `(text, precedence)`. An SSA value that was
-# marked inline is rendered from its call; anything else is its name or literal.
+# The C for an IR value as an expression (a `Term`). An SSA value that was marked inline is
+# rendered from its call; anything else is its name or literal.
 function expression(sc::Scope, x)
     x isa Core.SSAValue && x.id in sc.inlined && haskey(sc.choices, x.id) && return chosen(sc, sc.choices[x.id])
     x isa Core.SSAValue && haskey(sc.alias, x.id) && return sc.alias[x.id] isa Tuple ? render(sc, sc.alias[x.id]...) : expression(sc, sc.alias[x.id])
-    if x isa Core.SSAValue && x.id in sc.inlined
-        return render(sc, x.id, sc.ci.code[x.id])
-    end
-    text = value(sc, x)
-    return text, startswith(text, "-") ? 14 : 15
+    x isa Core.SSAValue && x.id in sc.inlined && return render(sc, x.id, sc.ci.code[x.id])
+    return atom(value(sc, x), valuetype(sc, x))
 end
 
-# An operand of an operator with precedence `prec`, parenthesised if it binds less
-# tightly. `right` operands of equal precedence are parenthesised too (left
-# associativity). Under a shift or a bitwise operator any other operator is
-# parenthesised, and `&&` under `||`: C's precedence there is what nobody remembers,
-# a person writes `(a & b) | (c << 2)`, and clang warns without the parentheses.
-function operand(sc::Scope, x, prec; right::Bool=false)
-    text, p = expression(sc, x)
-    return p < prec || (right && p == prec) || (prec in (SHIFT, BAND, BXOR, BOR) && p < UNARY && p != prec) || (prec == LOR && p == LAND) ? "($text)" : text
-end
+# An operand of an operator with precedence `prec`, bracketed where C's precedence or a
+# reader needs it (`bare`).
+operand(sc::Scope, x, prec; right::Bool=false) = within(expression(sc, x), prec; right)

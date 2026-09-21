@@ -60,6 +60,9 @@ transpile time, never C that compiles and does the wrong thing.
 | `flow.jl` | finding the loops, rendering conditions inline, and writing the control flow as C; the C blocks, where each variable is declared (`homes`), what it is called (`names!`), and the source's `let`s |
 | `tree.jl` | what the jumps of a function mean, recovered whole before any C is written, and the check that the C written from it goes where the lowered code goes |
 | `choice.jl` | `a && b`, `a \|\| b` and `c ? x : y` as values: one C expression where it is used |
+| `term.jl` | an expression until it is written: its parts, the type Julia gives it, the type C computes it in, how far its value can reach, and the one place a cast between the two is decided |
+| `idiom.jl` | scalar functions that are one C expression of their arguments, a row each |
+| `product.jl` | how Julia groups a product of several factors and a power of a matrix: asked of Julia, not copied |
 | `helper.jl` | the helper generators: the axis model (`access`, `contraction`), elementwise and pointwise loops, block placement, `det`, `pivot`/`lu`/`solve`/`inv`, Cholesky, `pinv`, reductions, slices; helper names and parameter names |
 | `prose.jl` | the English comment on each helper |
 | `name.jl` | Julia identifiers to C identifiers, one name at a time; function-name mangling |

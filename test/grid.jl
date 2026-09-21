@@ -11,7 +11,7 @@
 # It is part of the suite (under a minute). `GRID_ONLY=max,min` runs some functions only.
 module Grid
 using Test, LegibleC
-import Main: cc, flags
+import Main: cc, flags, snap
 using LegibleC: ctype
 
 const only = filter(!isempty, split(get(ENV, "GRID_ONLY", ""), ","))
@@ -136,6 +136,7 @@ function run(todo, scope::Module)
         path isa AbstractString || (path = path[1])
         object = joinpath(dir, "g$tag.o")
         if success(pipeline(`$cc $flags -c $(joinpath(dirname(path), "g$tag.c")) -o $object`; stderr=log, stdout=devnull))
+            snap("g$tag", read(joinpath(dirname(path), "g$tag.c"), String))
             append!(ok, batch)
             push!(objects, object)
         elseif length(batch) == 1
