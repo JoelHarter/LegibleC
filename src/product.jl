@@ -124,6 +124,8 @@ end
 # One operand as (type, C text). An integer literal beside a floating array takes the array's
 # element type: `-3A` is `mul_s_2x2(-3.0, A, out)`, not a helper of mixed types and an `int64_t`.
 function coefficient(sc::Scope, x, other)
+    r = irrational(sc, x, other)
+    r === nothing || return r
     x isa Integer && isarray(other) && eltype(other) <: AbstractFloat && return eltype(other), value(sc, eltype(other)(x))
     x isa Integer && isarray(other) && eltype(other) <: Complex && return real(eltype(other)), value(sc, real(eltype(other))(x))   # `2y` on complex: a real 2.0
     return valuetype(sc, x), value(sc, x)
@@ -133,3 +135,14 @@ end
 # several lines, so it is never written inside another expression.
 manyfactors(sc::Scope, st) = st isa Expr && st.head === :call && length(st.args) >= 4 && callee_or_nothing(sc.ci, st.args[1]) === Base.:* &&
                              any(a -> isarray(valuetype(sc, a)), st.args[2:end])
+
+# `π * A`, `v / ℯ`, `π .* v`: an irrational has no type of its own, and Julia gives it the one
+# it meets, the array's floating element type, or `Float64` beside integers. The value is the
+# macro, which the compiler rounds to that type. Nothing for any other operand.
+function irrational(sc::Scope, x, other)
+    v = literal(sc, x)
+    v isa AbstractIrrational || return nothing
+    E = isarray(other) ? eltype(other) : other
+    F = E <: Complex ? real(E) : E <: AbstractFloat ? E : Float64
+    return F, (F === Float32 ? "(float)" : "") * value(sc, v)
+end

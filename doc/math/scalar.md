@@ -72,6 +72,7 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `'a'`, `c + 1`, `c - 'a'`, `Int(c)`, `Char(n)`, `isdigit(c)`, `uppercase(c)` | `'a'`, `c + 1`, `c - 'a'`, `(int64_t)c`, `(char)n`, `isdigit(c)`, `(char)toupper(c)` | a `Char` is an ASCII `char`; the `ctype.h` classes agree with Julia's on all 128, except `ispunct`, which is written with the nine characters Julia calls symbols taken out |
 | `s == "abc"`, `length(s)`, `ncodeunits(s)`, `isempty(s)`, `s[i]` | `strcmp(s, "abc") == 0`, `utf8len(s)`, `(int64_t)strlen(s)`, `s[0] == '\0'`, `s[i - 1]` | a `String` is `const char *`, UTF-8 in both languages |
 | `pi`, `ℯ`, `Base.MathConstants.γ`, `catalan`, your own `Base.@irrational` | `LEGIBLEC_PI`, `LEGIBLEC_E`, `LEGIBLEC_GAMMA`, `LEGIBLEC_CATALAN`, `LEGIBLEC_<NAME>` | any `AbstractIrrational`, by its symbol: a macro named after it, defined in the helper header to 128-bit precision, which the compiler rounds to the nearest double; the `posix` option writes POSIX's `M_PI` and `M_E` for π and ℯ instead |
+| `π * A`, `v / ℯ`, `π .* v` | `mul_s_2x2(LEGIBLEC_PI, A, out)`, `(float)LEGIBLEC_PI` beside a `Float32` array | an irrational has no type of its own; Julia gives it the one it meets, the array's floating element type, or `Float64` beside integers |
 | `abs(x)` | `fabs(x)`; `llabs(x)` for `Int64`, `abs(x)` for `Int32` (`stdlib.h`) | |
 | `max`, `min` on floats | `maxN(a, b)`, `minN(a, b)`, a small helper | a NaN is kept, as in Julia; `fmax` and `fmin` drop it |
 | `max`, `min` on integers | `(a > b ? a : b)` | |

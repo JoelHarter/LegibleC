@@ -520,6 +520,24 @@ end
 
 # Found by the critic who looked for what the other readers had not attacked (2026-09-21).
 gapsizedim(A::SMatrix{2,3,Float64,6}, d::Int64) = 10 * size(A, d) + d
+# An irrational beside an array (2026-09-30): Julia gives `π` the type it meets, the array's
+# floating element type, or Float64 beside integers. It reached the helper's name as
+# `Irrational{:π}`, which has no C spelling, and was refused.
+piscaled(A::SMatrix{2,2,Float64,4}) = π * A
+pishifted(A::SMatrix{2,2,Float64,4}) = π * A .+ SVector(1.0, 2.0)
+pidotted(v::SVector{3,Float64}) = π .* v
+pidivided(v::SVector{3,Float64}) = v / ℯ
+pisingle(v::SVector{3,Float32}) = π * v
+piinteger(v::SVector{3,Int64}) = v * π
+pibroadcastint(v::SVector{3,Int64}) = v .+ π
+@testset "irrational beside an array" begin
+    A = SMatrix{2,2}(1.0, 2.0, 3.0, 4.0)
+    src = check("irrational", [Case(piscaled, A), Case(pishifted, A), Case(pidotted, SVector(1.0, 2.0, 3.0)), Case(pidivided, SVector(1.0, 2.0, 3.0)),
+        Case(pisingle, SVector(1.0f0, 2.0f0, 3.0f0)), Case(piinteger, SVector(1, 2, 3)), Case(pibroadcastint, SVector(1, 2, 3))])
+    @test occursin("mul_s_2x2(LEGIBLEC_PI, A, out);", src) && occursin("mulP_s_3(LEGIBLEC_PI, v, out);", src) && occursin("div_3_s(v, LEGIBLEC_E, out);", src)
+    @test occursin("mul_sF32_3F32((float)LEGIBLEC_PI, v, out);", src)                       # rounded to the type it meets, as Julia rounds it
+    @test occursin("mul_3I64_sF64(v, LEGIBLEC_PI, out);", src) && occursin("addP_3I64_sF64(v, LEGIBLEC_PI, out);", src)   # Float64 beside integers
+end
 @testset "gap" begin
     @test_throws ArgumentError csource("gapsizedim", gapsizedim)
 end

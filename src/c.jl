@@ -1540,6 +1540,10 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     end
     types = [valuetype(sc, a) for a in inputs]
     any(isarray, types) || throw(ArgumentError("a broadcast over scalars only (statement $i)"))
+    # `π .* v`: the irrational is a number of the element type it meets (`irrational`).
+    A = types[findfirst(isarray, types)]
+    texts = [something(irrational(sc, a, A), (nothing, value(sc, a)))[2] for a in inputs]
+    types = [something(irrational(sc, a, A), (t, ""))[1] for (a, t) in zip(inputs, types)]
     bs = broadcastshape(types)
     bs === nothing && throw(ArgumentError("broadcast: shapes don't line up: $(join(dims.(filter(isarray, types)), ", "))"))
     T = widen(ci.ssavaluetypes[i])
@@ -1560,7 +1564,7 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     cfn isa String && cfn != "llabs" && (cfn = mathname(Ein, cfn))        # the `f` family, the `c` family
     declaration && emit!(lines, sc, declare(R, dest) * ";")
     name = broadcasthelper!(sc.helpers, op, cfn, types, R)
-    emit!(lines, sc, "$name($(join((value(sc, a) for a in inputs), ", ")), $dest);")
+    emit!(lines, sc, "$name($(join(texts, ", ")), $dest);")
     spelled = [spell(valuetype(sc, a), value(sc, a)) for a in inputs]
     step!(lines, sc, "$dest = " * (power !== nothing ? "$(spelled[1]) .^ $power" :
                                     length(inputs) == 1 ? (cfn == :neg ? ".-$(spelled[1])" : cfn == :not ? ".!$(spelled[1])" : "$op.($(spelled[1]))") :
