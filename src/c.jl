@@ -926,7 +926,7 @@ function statement!(lines, sc::Scope, i, st)
             emit!(lines, sc, code * ";")
         else
             name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, parts(sc, foreignargs(sc, st)))
-            emit!(lines, sc, "$(ctype(T)) $name = $code;")
+            emit!(lines, sc, "$(declare(T, name)) = $code;")
         end
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.print, Base.println)
         print!(lines, sc, st.args[2:end], callee(ci, st.args[1]) === Base.println)
@@ -946,9 +946,7 @@ function statement!(lines, sc::Scope, i, st)
         text = string(term)
         # `g += f(n)` leaves it to the compiler whether `g` is read before `f` runs, and `f`
         # may write `g`: shortened only when nothing on the right has an effect.
-        effect(x) = x isa Core.SSAValue && (haskey(sc.alias, x.id) ? effect(sc.alias[x.id] isa Tuple ? sc.alias[x.id][2] : sc.alias[x.id]) : effect(ci.code[x.id])) ||
-                    x isa Expr && (x.head === :call && !pure(sc, x) || any(effect, x.args))
-        short = effect(st.args[4]) ? nothing : compound(g.cname, G, term)
+        short = effect(sc, st.args[4]) ? nothing : compound(g.cname, G, term)
         short === nothing ? emitexpr!(lines, sc, "$(g.cname) = ", text) : emit!(lines, sc, short * ";")
         sc.expr[i] = g.cname
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) === Base.sincos && length(st.args) == 2
@@ -1025,8 +1023,13 @@ function statement!(lines, sc::Scope, i, st)
             S = valuetype(sc, st.args[2])
             F = fieldtype(S, literal(sc, st.args[3]))
             target = fieldaccess(sc, st.args[2], st.args[3])
-            isarray(F) ? copy!(lines, sc, value(sc, st.args[4]), valuetype(sc, st.args[4]), target, F) :
-                         emit!(lines, sc, "$target = $(value(sc, st.args[4]));")
+            if isarray(F)
+                copy!(lines, sc, value(sc, st.args[4]), valuetype(sc, st.args[4]), target, F)
+            else
+                # `b.x += e` as `b->x += e`, by the rule for a variable, and with the same guard.
+                short = effect(sc, st.args[4]) ? nothing : compound(target, F, expression(sc, st.args[4]))
+                emit!(lines, sc, something(short, "$target = $(value(sc, st.args[4]))") * ";")
+            end
         elseif f === Base.setindex! && any(k -> literal(sc, k) isa Colon || literal(sc, k) isa AbstractUnitRange || isarray(valuetype(sc, k)), st.args[4:end])
             setslice!(lines, sc, i, st.args[2], st.args[3], st.args[4:end])
         elseif f === Base.setindex!
@@ -1099,7 +1102,7 @@ function statement!(lines, sc::Scope, i, st)
         else
             code = string(render(sc, i, st))
             name = onlyreturned(ci, i) ? result!(sc, i) : temp!(sc, i, callparts(sc, st))
-            emitexpr!(lines, sc, "$(ctype(T)) $name = ", code)
+            emitexpr!(lines, sc, "$(declare(T, name)) = ", code)
             haskey(sc.math, i) && step!(lines, sc, "$name = $(sc.math[i])")
         end
     elseif st isa Expr && st.head === :(=)
@@ -1148,7 +1151,7 @@ function statement!(lines, sc::Scope, i, st)
             # (`onetype!`); an integer literal going into a float variable is spelled as one.
             D = slottype(sc, slot.id)
             D <: AbstractFloat && rhs isa Integer && (text = value(sc, D(rhs)))
-            short === nothing ? emitexpr!(lines, sc, (here ? (k === nothing || isempty(k.cname) ? ctype(D) : k.cname) * " " : "") * "$x = ", text) : emit!(lines, sc, short * ";")
+            short === nothing ? emitexpr!(lines, sc, (here ? (k === nothing || isempty(k.cname) ? declare(D, x) : k.cname * " " * x) : x) * " = ", text) : emit!(lines, sc, short * ";")
         end
         if fresh && !here
             s = slot.id
@@ -1168,14 +1171,14 @@ function statement!(lines, sc::Scope, i, st)
             if isarray(T) && named(sc, slot.id)
                 keep!(lines, sc, t, x, valuetype(sc, slot))
             else
-                emit!(lines, sc, isarray(T) ? "$(declare(valuetype(sc, slot), t));" : "$(ctype(T)) $t = $x;")
+                emit!(lines, sc, isarray(T) ? "$(declare(valuetype(sc, slot), t));" : "$(declare(T, t)) = $x;")
                 isarray(T) && copy!(lines, sc, x, valuetype(sc, slot), t, valuetype(sc, slot))
             end
         end
         isarray(T) && (sc.shapes[i] = valuetype(sc, slot))
     elseif haskey(sc.choices, i)
         # `a && b`, `c ? x : y`, used where it can't be written in place: one line, into a temp.
-        emitexpr!(lines, sc, "$(ctype(T)) $(temp!(sc, i, String[])) = ", string(chosen(sc, sc.choices[i])))
+        emitexpr!(lines, sc, "$(declare(T, temp!(sc, i, String[]))) = ", string(chosen(sc, sc.choices[i])))
     elseif st isa Core.SlotNumber
         # `%i = x`: a read of a variable. Same rule as above.
         x = sc.names[st.id]
@@ -1190,7 +1193,7 @@ function statement!(lines, sc::Scope, i, st)
             if isarray(V) && (named(sc, st.id) || st.id <= ci.nargs && haskey(sc.storage, x))
                 keep!(lines, sc, t, x, V)
             else
-                emit!(lines, sc, isarray(V) ? "$(declare(V, t));" : "$(ctype(T)) $t = $x;")
+                emit!(lines, sc, isarray(V) ? "$(declare(V, t));" : "$(declare(T, t)) = $x;")
                 isarray(V) && copy!(lines, sc, x, V, t, V)
             end
         end

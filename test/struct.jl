@@ -136,8 +136,9 @@ check("placement", [Case(spun, SVector(0.0, 0.0, 1.0), 0.6), Case(spun2, SVector
     @test occursin("Quat q;\n    mul_s_3(s, axis, q.v);\n    q.w = c;", src)
     @test occursin("mul_s_3(s, q.v, temp1_s_q_v);", src) && !occursin("mul_s_3(s, q.v, q.v)", src)      # rebuilt: the temp stays
     @test occursin("mul_s_3(s, axis, temp1_s_axis);", src) && occursin("b.w = vsum(b);", src)             # bagged: the temp stays
-    @test occursin("Bag b;\n    mul_s_3(s, axis, b.v);  // b.v = s * axis\n    Counter * temp1_c = bump(c);", src)          # counted: placed, the effect after it as in Julia
-    @test occursin("Tuple_3_F64 result;\n    mul_s_3(s, axis, result.a);  // result.a = s * axis\n    Counter * temp1_c = bump(c);", src)   # paired: into the tuple's struct
+    @test occursin("Bag b;\n    mul_s_3(s, axis, b.v);  // b.v = s * axis\n    Counter *temp1_c = bump(c);", src)          # counted: placed, the effect after it as in Julia
+    @test occursin("Tuple_3_F64 result;\n    mul_s_3(s, axis, result.a);  // result.a = s * axis\n    Counter *temp1_c = bump(c);", src)   # paired: into the tuple's struct
+    @test occursin("c->n++;", src)                                                                                            # a field store shortened like a variable's
     @test occursin("mul_s_3(s, axis, temp1_s_axis);  // temp1_s_axis = s * axis\n    if (bad) {\n        return b.z;\n    }", src)   # early: the temp stays
 end
 check("struct", [Case(norm2, p), Case(make, 5.0, 6.0), Case(midpoint, Segment(p, q)), Case(momentum, b, v), Case(shifted, b, v),

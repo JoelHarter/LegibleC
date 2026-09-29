@@ -1131,6 +1131,11 @@ const writing = (Base.setindex!, Base.setproperty!, Core.setfield!, Base.push!, 
 const printing = (Base.print, Base.println, Printf.format)
 const known = (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf, :Statistics)
 
+# Does computing this value do anything besides compute: a call with an effect, in it or
+# in what it is built from?
+effect(sc::Scope, x) = x isa Core.SSAValue && (haskey(sc.alias, x.id) ? effect(sc, sc.alias[x.id] isa Tuple ? sc.alias[x.id][2] : sc.alias[x.id]) : effect(sc, sc.ci.code[x.id])) ||
+                       x isa Expr && (x.head === :call && !pure(sc, x) || any(a -> effect(sc, a), x.args))
+
 # Is this call free of effects? Julia's own functions are, except the ones above; a
 # user function is examined (`effects!`).
 function pure(sc::Scope, st::Expr; bring::Bool=true)
