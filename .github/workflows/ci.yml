@@ -1,0 +1,75 @@
+# Every push and pull request runs the test suite. A push to main that passes also
+# regenerates stackmath, compiles every file of it, and pushes the C to the stackmath
+# repository when it changed. That push needs STACKMATH_TOKEN, a fine-grained personal
+# access token with contents write on JoelHarter/stackmath, in this repository's secrets.
+# Without the secret the C is still generated and compiled, and the push is left out with
+# a note, so that a red run always means something is wrong.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  # The C is written for GCC and for Clang. The suite runs under both on Linux, and under
+  # Apple's Clang, so that neither is ever only assumed to work.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cc: gcc
+          - os: ubuntu-latest
+            cc: clang
+          - os: macos-latest
+            cc: clang
+    runs-on: ${{ matrix.os }}
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - run: julia -e 'using Pkg; Pkg.develop(path="."); Pkg.add("StaticArrays")'
+      - run: ${{ matrix.cc }} --version
+      - run: julia test/runtests.jl
+  stackmath:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.STACKMATH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - run: julia -e 'using Pkg; Pkg.develop(path="."); Pkg.add("StaticArrays")'
+      - name: generate
+        run: julia aux/stackmath/stackmath.jl
+      - name: compile every file
+        run: cd aux/stackmath/out && for f in *.c; do cc -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -I. -c "$f" -o /dev/null; done
+      - name: no token, so nothing is published
+        if: env.TOKEN == ''
+        run: echo "::notice::STACKMATH_TOKEN is not set. The C was generated and compiled, and was not pushed to stackmath."
+      - uses: actions/checkout@v4
+        if: env.TOKEN != ''
+        with:
+          repository: JoelHarter/stackmath
+          token: ${{ secrets.STACKMATH_TOKEN }}
+          path: stackmath
+      - name: publish when changed
+        if: env.TOKEN != ''
+        run: |
+          rm -f stackmath/src/*.c stackmath/src/*.h
+          cp aux/stackmath/out/*.c aux/stackmath/out/*.h stackmath/src/
+          cd stackmath
+          git add -A
+          if git diff --cached --quiet; then echo "stackmath unchanged"; exit 0; fi
+          git config user.name "LegibleC"
+          git config user.email "actions@github.com"
+          git commit -m "Regenerated from LegibleC ${GITHUB_SHA::7}"
+          git push

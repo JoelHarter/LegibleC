@@ -1,0 +1,25 @@
+# demo
+
+Worked examples that show what the transpiler does, for people deciding
+whether to use it. Nothing here is a test — `test/` proves it works; this
+folder shows it off. Each example is a folder with a small Julia file that
+reads as a physicist or engineer would write it. Run it — `julia
+showcase.jl` in its folder — and an `out/` appears beside it with the C: a
+header a caller includes, the functions, the helpers. The comment at the
+top of each file says what to look at.
+
+- [orbit/](orbit/orbit.jl) — one step of gravity and a least-squares fit:
+  arrays, a reduction, reassignment with the copy comment, the step comments.
+- [showcase/](showcase/showcase.jl) — a damped oscillator step, an energy,
+  an RMS, an angle wrap: Unicode names, `+=`, a tuple returned as the
+  function's own struct, `&& return` as an `if`.
+- [vecrot/](vecrot/vecrot.jl) — a quaternion as a scalar part and a vector
+  part, with only `*` and `'` defined, and a vector rotated by one: a struct
+  with an array field, `Base.:*` on it coming out as `mul_Quat_Quat` with the
+  dot and cross products as helpers, `q'` as `adjoint_Quat` calling
+  `conj_Quat`, `q * p * q'` as two calls, `sincos` as its two lines.
+- [relativity/](relativity/relativity.jl) — eight physical constants in a
+  module, and two relativistic corrections that read two of them: only
+  `CODATA.c` and `CODATA.G` come out, as `CODATA_c` and `CODATA_G` with their values and the
+  comments from their definitions, the other six are never mentioned, and
+  `schwarzschild` comes along because `dilation` calls it.

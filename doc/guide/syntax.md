@@ -1,0 +1,158 @@
+# Syntax
+
+Every piece of Julia the transpiler accepts, in one place. The other documents
+explain *how* each part is handled; this one only says *what* works, so a
+reader can tell at a glance whether a function will go through. Anything not
+listed here is an error at transpile time, never silently wrong C.
+
+## Calling the transpiler
+
+```julia
+transpile(f, g, (h, Float64, 3, Float64, 2, 3); outfile="name", outpath=dir)
+```
+
+A target is a function with one concrete method, a `MethodInstance`, or a
+tuple of a function and argument types — where a type followed by integers is
+an array of that element type and size. Options: `outfile`, `outpath`,
+`templimit`, `source` (on), `precise`, `posix`, `width`
+(100), `spelling` (your own C names for characters, `../naming.md`). An
+`out/` folder comes out: the functions in `<outfile>.c`, the helpers in
+`helper.h`/`.c` — see `start.md`.
+
+## Functions
+
+| Julia | works |
+|---|---|
+| `f(x, y) = …`, `function f(x, y) … end` | yes; the name is kept in C |
+| argument types: the scalars below, static arrays, `Array{T,N}` with a size given in the call | yes |
+| abstract parameter types, `f(x::Real)`, `g(v::AbstractVector{Float64})`, `h(x::T, y::T) where {T<:AbstractFloat}` | yes: give the types in the target, `(f, Float64)`, since Julia compiles one method for each and that one is what is transpiled |
+| `@inbounds`, `@fastmath`, `@inline`, `@noinline` | yes: they change nothing the code computes. `@simd` rewrites its loop and is refused; leave it out, the C compiler vectorises by itself |
+| the same function at several signatures | yes; each gets the types appended to its name (`poly_I64_I64`) |
+| default arguments, `agm(x, y, e=5)` | yes: the short method Julia makes is a C function that calls the long one, `return agm_F64_F64_I64(x, y, 5);` |
+| keyword arguments | not yet |
+| returning a scalar | `return x;` |
+| returning an array | through a trailing parameter: the returned variable itself when every exit returns the same one, else `out` |
+| `return nothing`, a `Nothing` result | `void` |
+| tuples, multiple return values | yes, as a generated struct (`../struct.md`) |
+| calling another user function | yes; brought in on demand if not listed, recursion included (`../call.md`) |
+| `Base.:*(a::Quaternion, b::Quaternion) = …`, an operator method on your struct | yes, named like a helper: `mul_Quaternion_Quaternion`, `add_Quaternion`, `mul_Quaternion_s`; `a * b * c` is the two calls |
+| `ccall`, `@ccall` | yes: the call itself, with a header or a prototype (`../call.md`) |
+| docstrings and comments | carried into the C (see `../comment.md`) |
+| `print`, `println`, to `stdout` or `stderr`; `"x = $x"`; `@show`; `@printf` | yes, as `printf` and one array helper (`../io.md`) |
+| `@sprintf`, `string(…)` as a value, `show`, `display`, `printstyled`, files | not yet |
+
+## Scalar types
+
+`Bool`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`, `ComplexF32`,
+`ComplexF64`, `Char`, `String`. See `../math/scalar.md` for the C spelling of
+each. `struct` (immutable by value, mutable through a pointer, parametric at
+concrete types) and `Tuple` — see `../struct.md`. Not yet: `Int128`,
+`Float16`, `Rational`, `BigInt`, `@enum`, `Union{T, Nothing}`.
+
+## Characters and strings
+
+Where the two languages agree. A `Char` is C's `char`, so ASCII: a non-ASCII
+character literal is an error. A `String` is `const char *`, UTF-8 bytes in
+both languages, read-only.
+
+| Julia | works |
+|---|---|
+| `'a'`, `'\n'`; `c == 'a'`, `c < 'z'`; `c + 1`, `c - 'a'`; `Int(c)`, `Char(n)` | yes |
+| `isdigit isletter isspace isuppercase islowercase isnumeric ispunct iscntrl isprint isxdigit isascii`, `uppercase`, `lowercase` | yes, from `ctype.h` |
+| `"abc"` as an argument or return value; `s == t`, `s != t` | yes: a literal, `strcmp` |
+| `length(s)` (characters), `ncodeunits(s)`, `sizeof(s)` (bytes), `isempty(s)`, `s[i]`, `codeunit(s, i)` | yes; `s[i]` is the byte |
+| `print(s)`, `print(c)`, `"$s"` | yes, `%s` and `%c` |
+| concatenation, `string(…)`, `@sprintf`, `split`, `for c in s`, a built or returned new string | not yet — needs buffers and an owner |
+
+## Scalar expressions
+
+| Julia | works |
+|---|---|
+| `+ - * / \ ÷ %`, `mod` | yes; `mod` on floats keeps Julia's sign rule |
+| `x^2`, `x^3`, `x^-1`, `x^n` for any literal integer `n`, `x^y` | yes; `powi(x, n)` by squaring from the 4th power |
+| `< <= > >= == !=` | yes |
+| `! & \| xor << >> ~` | yes |
+| `&&`, `\|\|`, `c ? x : y` | yes, in conditions and as values |
+| `sqrt sin cos tan asin acos atan sinh cosh tanh exp exp2 expm1 log log2 log10 log1p cbrt floor ceil trunc round hypot copysign abs atan(y, x)` | yes; the `f` family on `Float32` |
+| `min`, `max` on floats | yes, as the helpers `minN` and `maxN`: Julia's give NaN when either argument is one, where C's `fmin` and `fmax` would give the other number |
+| `isodd`, `iseven`, `inv(x)`, `deg2rad`, `rad2deg`, `>>>`, `eps(x)`, `ifelse(c, a, b)` | yes, each as the C expression it is: `k % 2 != 0`, `1.0 / x`, `x * (LEGIBLEC_PI / 180)` |
+| `gcd`, `lcm`, `isqrt`; `sind`, `cosd`, `tand` | yes, as a small helper each; the degree functions are exact at the multiples of 90, as Julia's are |
+| `zero(x)`, `one(x)` | yes |
+| `s, c = sincos(x)`, `lo, hi = minmax(a, b)` | yes, as the two values; only destructured |
+| `Float64(a)`, `Int64(x)`, `round(Int64, x)`, `floor(Int64, x)`, … | yes, as casts |
+| `pi`, `ℯ`, `Inf`, `NaN`, `Inf32`, `NaN32`, numeric literals | yes |
+| `isnan`, `isinf`, `isfinite`, `signbit`; `typemax`, `typemin`, `floatmax`, `floatmin`, `eps` of a type | yes, as the `math.h`, `stdint.h`, `float.h` names |
+| `length(v)`, `size(A, d)` | yes, as the number |
+| integer overflow | wraps, as in Julia, under `-fwrapv`, which is part of the compiler setting (`start.md`) |
+| `<<`, `>>`, `>>>` | yes. By a literal count within the width, or a loop variable over such a range, C's own shift. By any other count the helpers `shl`, `shr`, `shru`, which give what Julia gives for every count: nothing left once it reaches the width, and the other way for a negative one |
+| `mod(a, b)` on integers | yes: by a small literal the idiom `((a % b) + b) % b`; by a variable the helper `moduloI64`, since the idiom overflows for a large `b` |
+| `div`, `fld` on floats | yes, by Julia's own formulas, which give NaN or Inf at a zero divisor exactly where Julia does |
+| `b * x` with a `Bool` | yes, as `(b ? x : 0.0)`: Julia's `false` is a strong zero, `false * Inf` is 0.0 |
+
+## Control flow
+
+| Julia | works |
+|---|---|
+| `if`, `elseif`, `else` | yes |
+| `while c … end`, `while true` | yes |
+| `for i in a:b`, `a:s:b` with a literal step | yes |
+| `for i in eachindex(v)`, `1:length(v)`, `axes(A, d)` | yes |
+| `for i in 1:2, j in 1:3` | yes |
+| `for x in v` over a vector's elements | yes |
+| `break`, `continue`, `return` anywhere | yes; a `break` inside `for i in 1:n, j in 1:m` leaves the whole nest, by a flag the outer loops test, or by `goto` if the `goto` option allows one |
+| `if a && (b \|\| c)`, `while (a \|\| b) && n > 0`: any mix of `&&`, `\|\|`, `? :` in a condition | yes |
+| a condition part that needs lines of its own, `if a && sum(x .* x) > 1.0 … else` | yes: worked out into a truth value first, `bool temp1 = a; if (temp1) { …; temp1 = …; }`; in a `while` joined by `&&`, each part in turn with `break` |
+| `throw(DomainError(x, "…"))`, `error("…")`, `@assert c` | yes: the exception's name and what it was made from on `stderr`, then `abort()`. C has no exceptions, and Julia that throws is outside what the C is checked against |
+| `let a = …, b = …` … `end` | yes, as a bare `{ … }` block; on one line, or used as a value, its variables come out flat |
+| `for x in A` over a matrix, a non-literal step, a range in a variable, `enumerate`, `zip` | not yet |
+| `try`/`catch`, comprehensions, closures, `do` blocks | not yet |
+
+## Variables
+
+Any Julia name, including Unicode (`ω` → `omega`, `x₁` → `x1`, `ẋ` → `xdot`),
+reassignment, and reassigning a loop variable's name outside the loop. See
+`../naming.md` for the conversion and collision rules.
+
+## Arrays
+
+Arrays are `StaticArrays` types (`SVector`, `SMatrix`, `SArray`, and their
+mutable forms) of any dimension, or `Array{T,N}` with the size supplied in
+the `transpile` call. The size is always
+known at transpile time; dynamic sizes and allocation are not yet supported.
+
+| Julia | works |
+|---|---|
+| `v[i]`, `A[i, j]`, `T[i, j, k]` read and write | yes |
+| `A[k]`, one index into a matrix, read and write | yes: Julia counts down the columns, so it is `A[(k - 1) % m][(k - 1) / m]`; a literal `k` is taken apart when transpiled. A range, `A[2:3]`, not yet |
+| `MVector{3,Float64}(undef)`, `MMatrix{2,3,Float64}(undef)` | yes, as the declaration |
+| `A + B`, `A - B`, `-A`, `s * A`, `A * s` | yes |
+| `A * B`, `A * v`, `v' * A`, `v' * w`, `v * w'`, `A * B'`, `A' * B` | yes |
+| `dot(v, w)`, `cross(v, w)`, `det(A)` | yes |
+| `sum`, `prod`, `maximum`, `minimum`, `any`, `all`, `norm`, `count`, `argmax`, `argmin`, `extrema` | yes |
+| `A^2`, `A^3` on a square matrix | yes, as the products; other powers not yet |
+| `norm(v, 1)`, `norm(v, Inf)`, `norm(v, 2)`; `mean`, `var`, `std` from `Statistics` | yes, each a helper that returns the scalar; `var` and `std` are the corrected ones, as Julia's. `normalize`, `opnorm`, other orders: not yet |
+| `sum(A; dims=1)`, `prod`, `maximum`, `minimum` with `dims`; `diff`, `cumsum`, `cumprod` | yes |
+| `A[i, :]`, `A[:, j]`, `v[2:4]`, `A[1:2, 2:3]`, `A[:, 2:end]`, `A[i, 2:3]`, any dimension (literal ranges) | yes |
+| `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:end] = B`, `v[2:3] = w` into a mutable array | yes |
+| `A \ b`, `A \ B`, `B / A`, `A / s`, `inv(A)`, `cholesky(A) \ b`, `inv(cholesky(A))`, `lu(A) \ b` | yes; 1–3 written out, LU with partial pivoting beyond |
+| `A \ b` with a non-square `A`, `pinv(A)` | yes: least squares / minimum norm through the Gram matrix and Cholesky (full rank only) |
+| `v'`, `A'`, `transpose(…)` | yes, free (0–2 dimensions, as in Julia) |
+| broadcasting: `.+ .- .* ./ .^`, `x .^ 2` with a literal exponent, unary `.-`, `f.(A)` for the `math.h` functions above, any shapes Julia allows | yes |
+| `zeros`, `ones`, `fill`, `zero(A)`, `one(A)`, `SMatrix{n,n}(I)`, `SMatrix{n,n}(2I)` | yes |
+| `A + 2I`, `A - I`, `2I - A` | yes |
+| `fill!(A, x)`, `A .= 0`, `A .= B .* 2` into a mutable array | yes |
+| `[1.0 2.0; 3.0 4.0]`, `[1.0, 2.0]`, `SVector(…)`, `@SMatrix […]`, `SA[…]` | yes |
+| `[A B; C D]`, `[u; v]`, `[u v]`, `[A; B;; C; D]`, `[A;; B]`, `[B;; C;;; D;; E]`, with scalars among the blocks, ragged rows and columns | yes, any dimension |
+| `B = A`, `B = A'`, `A = A * A` | yes (copies, and a temp when the destination is an operand) |
+| `m = v` on a mutable array and then a write through either; `x, xnew = xnew, x` on two buffers; `a, b = b, a` on two parameters; `best = c ? u : w` | yes: a second name is `double *const m = v;`, a name that moves is a pointer, and nothing is copied. Refused: a new array given to a variable while another name may still hold the one it had |
+| a write into an array held by a struct, `h.v[1] = x`, `m = h.v; m[1] = x` | through a `mutable struct`, yes. Through a struct that isn't `mutable`, refused: C copies it by value, its arrays with it |
+| `view(v, 2:4)`, `y .= A * x` | not yet |
+| `.==`, `.<`, `.<=`, `.>`, `.>=`, `.!=`, `.&`, `.\|`, `.!`, `ifelse.` | yes, a `Bool` array |
+| a range in a variable, `A[:, 1] .= 0` | not yet |
+| runtime-sized `Array` arguments | not yet — every array has a size at transpile time; see `../dev/map.md` §3.4 for the VLA design |
+
+## Comments
+
+Every comment before and inside the function is carried into the C, and by
+default each line of code too, as `file:line: code`. A docstring becomes a
+Doxygen block. See `../comment.md`.

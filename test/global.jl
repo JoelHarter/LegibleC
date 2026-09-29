@@ -1,0 +1,237 @@
+# Globals: read by a function and pulled in, or listed by keyword; struct types as
+# targets; the file rule.
+module Global
+using Test, StaticArrays
+import Main: Case, check, csource
+using LegibleC: @transpile
+
+const g = 9.81
+const w = SVector(1.0, 2.0, 3.0)
+k::Float64 = 2.0         # a typed global: mutable in Julia, so in C
+u = 1.0                  # untyped and mutable: no type to compile against
+const title = "LegibleC"
+"A point in the plane."
+struct Point
+    x::Float64
+    y::Float64
+end
+const origin = Point(0.0, 0.0)
+const τ = 2π                       # a full turn: the initializer is the expression, with π as the macro
+const frame = [1.0 0.0; 0.0 π]
+
+const tally = MVector(0, 0, 0)      # `const` fixes the binding, not the contents: a function that writes it needs it writable in C
+function counted(k::Int64)
+    tally[2] += k
+    return tally[2] + 1
+end
+const SHIELD_H = 2.0                # spelled like the include guard of a file named `shield`
+shielded(x::Float64) = x * SHIELD_H
+fall(t::Float64) = 0.5 * g * t^2
+turn(x::Float64) = τ * x + frame[2, 2]
+shifted(v::SVector{3,Float64}) = v + w
+scaled(x::Float64) = k * x
+dist(p::Point) = sqrt((p.x - origin.x)^2 + (p.y - origin.y)^2)
+plain(x::Float64) = x + 1.0
+module Physics
+const c = 3.0e8   # the speed of light, m/s
+speed(t::Float64) = c * t
+end
+module Moon; const a = 1737.0; end
+travel(t::Float64) = Physics.speed(t) + Moon.a + Physics.c
+unstable(x::Float64) = u * x
+energy(m::Float64) = m * Physics.c^2
+
+check("global", [Case(fall, 2.0), Case(shifted, SVector(1.0, 1.0, 1.0)), Case(scaled, 3.0), Case(dist, Point(3.0, 4.0)), Case(energy, 2.0), Case(turn, 1.5)])
+@testset "global" begin
+    # A global a function reads is pulled in and referenced by name; `const` follows Julia.
+    src = csource("pulled", fall, shifted, scaled, dist)
+    @test occursin("const double g = 9.81;", src) && occursin("return 0.5 * g * (t * t);", src)
+    @test occursin("const double w[3] = {1.0, 2.0, 3.0};", src) && occursin("add_3(v, w, out);", src)
+    @test occursin("\ndouble k = 2.0;", src) && occursin("return k * x;", src)
+    @test occursin("const Point origin = {0.0, 0.0};", src) && occursin("origin.x", src)
+    # A global's initializer is its Julia expression where a static initializer can hold it:
+    # `π` is the macro, defined in the helper header, which the header then includes.
+    # An include guard is a macro, and would erase a name spelled like it: the guard gives way.
+    wr = csource("written", counted)
+    @test occursin("\nint64_t tally[3] = {0, 0, 0};", wr) && occursin("extern int64_t tally[3];", wr) && !occursin("const int64_t tally", wr)
+    sh = csource("shield", shielded)
+    @test occursin("#ifndef SHIELD_H_\n#define SHIELD_H_\n", sh) && occursin("static const double SHIELD_H = 2.0;", sh) && occursin("#endif  // SHIELD_H_", sh)
+    sym = csource("symbolic", turn)
+    @test occursin("static const double tau = 2 * LEGIBLEC_PI;", sym) && occursin("static const double frame[2][2] = {\n    {1.0, 0.0},\n    {0.0, LEGIBLEC_PI},\n};", sym)
+    @test occursin("#define LEGIBLEC_PI 3.141592653589793", sym) && !occursin("LEGIBLEC_E", sym) && occursin("#include \"helper.h\"", sym)
+    # Listed by keyword, looked up in `scope`; a struct type on its own, with its docstring.
+    vars = csource("listed", Point, plain; g, k, title, origin, scope=@__MODULE__)   # a type before the functions: after one, it reads as an argument type
+    @test occursin("const double g = 9.81;", vars) && occursin("\ndouble k = 2.0;", vars)
+    @test occursin("const char *title = \"LegibleC\";", vars) && occursin("const Point origin = {0.0, 0.0};", vars)
+    @test occursin("/**\n * A point in the plane.\n */\ntypedef struct {\n    double x;\n    double y;\n} Point;", vars)
+    # A value with no binding in scope is a constant; a pair names one outright.
+    loose = csource("loose", plain, :width => 3.0; q=k + 1, scope=@__MODULE__)
+    @test occursin("const double q = 3.0;", loose) && occursin("const double width = 3.0;", loose)
+    # The macro sets `scope` to where it is written.
+    dir = mktempdir()
+    path = @transpile(plain; k, outfile="mac", outpath=dir)
+    @test occursin("\ndouble k = 2.0;", read(path, String))
+    # A definition typed at the REPL transpiles; it just has no source to comment from.
+    include_string(@__MODULE__, "replfun(x::Float64) = 2x", "REPL[7]")
+    repl = csource("repl", replfun)
+    @test occursin("return 2 * x;", repl) && !occursin("// @REPL", repl)
+    @test_throws ArgumentError csource("abstract", plain, Vector{Float64})
+    @test_throws ArgumentError csource("untyped", unstable)                            # an untyped mutable global
+    @test occursin("\ndouble u = 1.0;", csource("untypedlisted", plain; u, scope=@__MODULE__))   # listed, its value has a type, and the binding isn't const
+    # Names carry their module path, relative to the scope: bare in it, prefixed elsewhere.
+    far = csource("far", travel, energy; scope=@__MODULE__)
+    @test occursin("const double Physics_c = 3.0e8;", far) && occursin("const double Moon_a = 1737.0;", far)
+    # The constant's Julia line comes with it, as a statement's does, its comment along; a
+    # name read twice is written twice, not held in a temp.
+    @test occursin(r"// @global\.jl:\d+: const c = 3\.0e8   # the speed of light, m/s\nstatic const double Physics_c = 3\.0e8;\n", far) && occursin("Moon_a = 1737.0;\n", far)
+    @test occursin("const double Physics_c = 3.0e8;  // the speed of light, m/s", csource("farbare", travel, energy; scope=@__MODULE__, source=false))   # source off: the note after the declaration
+    @test occursin("return m * (Physics_c * Physics_c);", far)
+    @test occursin("double Physics_speed(double t)", far) && occursin("return Physics_speed(t) + Moon_a + Physics_c;", far) && occursin("double travel(double t)", far)
+    near = csource("near", Physics.speed; scope=Physics)
+    @test occursin("const double c = 3.0e8;", near) && occursin("double speed(double t)", near) && occursin("return c * t;", near)
+end
+# A scalar global given a new value: a store into the C global, which for that is not
+# `const`. Julia lowers `global count += k` with a test that the value is already of the
+# global's type, which it has decided, and a variable of its own making to hold the value;
+# neither is any part of the C. A typed local, `local prev::Float64`, lowers the same way.
+counter::Int64 = 0
+level::Float64 = 1.5
+function countup(n::Int64)
+    global counter = 0
+    for k in 1:n
+        global counter += k
+    end
+    return counter
+end
+function relevel(x::Float64)
+    global level = 2.0
+    old = level
+    global level *= x
+    global level -= 1.0
+    return old + level
+end
+bumpcounter!(n::Int64) = (global counter += n; nothing)
+function through(n::Int64)
+    global counter = 10
+    before = counter + 1
+    bumpcounter!(n)                  # writes the global: `before` was read first, and stays read first
+    return before + counter
+end
+function typedlocal(x::Float64)
+    local prev::Float64 = 0.0
+    for k in 1:3
+        prev = prev + x * k
+    end
+    return prev
+end
+@testset "global written" begin
+    check("globalwritten", [Case(countup, 4), Case(relevel, 3.0), Case(through, 5), Case(typedlocal, 2.0)])
+    # The cases above have run, so the globals no longer hold what their defining lines give
+    # them. The author is told, the C says so beside the value, and a value given to
+    # `transpile` starts the global from there instead.
+    src = @test_logs (:warn, r"`counter` holds") (:warn, r"`level` holds") match_mode=:any csource("globalwrittentext", countup, relevel, through, typedlocal)
+    @test occursin(r"int64_t counter = \d+;  // the value when transpiled, not the 0 of the line above", src)
+    fresh = @test_logs min_level=Base.CoreLogging.Warn csource("globalfresh", countup, relevel; counter=0, level=1.5)
+    @test occursin("\nint64_t counter = 0;", fresh) && occursin("\ndouble level = 1.5;", fresh)
+    # Not `const`. The value is the one it has when transpiled, as for every global, and by now the cases above have run.
+    @test occursin(r"\nint64_t counter = \d+;", src) && occursin(r"\ndouble level = [\d.]+;", src)
+    @test occursin("counter = 0;", src) && occursin("counter += k;", src) && occursin("level *= x;", src) && occursin("level -= 1.0;", src)
+    @test occursin("int64_t before = counter + 1;\n", src) && occursin("bumpcounter(n);", src)
+    @test occursin("double prev = 0.0;", src) && occursin("prev += x * k;", src) && !occursin("temp", src)
+end
+
+# Found on 2026-09-21 by readers who attacked the code on paper and wrote what they expected to break:
+# each of these compiled and answered wrongly, or did not compile, or was refused for no reason.
+lowerboundlimit::Int64 = 0
+function lowerbound(n::Int64)
+    global lowerboundlimit = n
+    s = 0
+    for k in 1:lowerboundlimit
+        global lowerboundlimit -= 1
+        s += k
+    end
+    return s + lowerboundlimit
+end
+lowercomptotal::Int64 = 0
+function lowercomppush(n::Int64)
+    global lowercomptotal += n
+    return n
+end
+function lowercompound(n::Int64)
+    global lowercomptotal = 10
+    global lowercomptotal += lowercomppush(n)
+    return lowercomptotal
+end
+lowerreadtally::Int64 = 0
+function lowerreadbump(n::Int64)
+    global lowerreadtally += n
+    return n
+end
+function lowerreadfirst(n::Int64)
+    global lowerreadtally = 10
+    return 1 + lowerreadtally + lowerreadbump(n)^2
+end
+lowerswapp::Float64 = 0.0
+lowerswapq::Float64 = 0.0
+function lowerswap(x::Float64, y::Float64)
+    global lowerswapp = x
+    global lowerswapq = y
+    lowerswapp, lowerswapq = lowerswapq, lowerswapp
+    return lowerswapp - 2.0 * lowerswapq
+end
+arrayglobalticks::Int64 = 0
+function arrayglobaltick()
+    global arrayglobalticks += 1
+    return arrayglobalticks
+end
+function arrayglobalstore(x::Float64)
+    global arrayglobalticks = 0
+    M = MMatrix{2,3,Float64}(undef)
+    fill!(M, 0.0)
+    M[arrayglobaltick()] = x
+    return M[1] + 10.0 * M[2] + 100.0 * M[3] + 1000.0 * M[4] + 10000.0 * arrayglobalticks
+end
+@testset "hunt" begin
+    check("huntglobal", [Case(lowerbound, 6), Case(lowerbound, 1), Case(lowerbound, 0), Case(lowerbound, 9),
+        Case(lowercompound, 3), Case(lowercompound, -4), Case(lowercompound, 0),
+        Case(lowerreadfirst, 3), Case(lowerreadfirst, -2), Case(lowerreadfirst, 0),
+        Case(lowerswap, 1.0, 2.0), Case(lowerswap, 5.0, -1.0), Case(lowerswap, 3.0, 3.0),
+        Case(arrayglobalstore, 3.0), Case(arrayglobalstore, 5.0)])
+end
+
+# Found by the critic who looked for what the other readers had not attacked (2026-09-21).
+gaplo::Int64 = 0
+gaphi::Int64 = 0
+function gapminmaxglobal(a::Int64, b::Int64)
+    global gaplo, gaphi
+    gaplo = a
+    gaphi = b
+    gaplo, gaphi = minmax(gaplo, gaphi)
+    return 10 * gaplo + gaphi
+end
+gaplevel::Float64 = 1.0
+gapraise(x::Float64) = (global gaplevel += x; x)
+function gapmodread(x::Float64)
+    global gaplevel = 1.0
+    return (@__MODULE__).gaplevel + gapraise(x)^2
+end
+@testset "gap" begin
+    check("gapglobal", [Case(gapminmaxglobal, 5, 3), Case(gapminmaxglobal, 1, 2), Case(gapminmaxglobal, 9, -4),
+        Case(gapmodread, 2.0), Case(gapmodread, -3.0), Case(gapmodread, 0.0)])
+end
+
+# A call that writes a global, and a read of that global beside it: Julia's order, left to right.
+extralevel::Float64 = 1.0
+extraraise(x::Float64) = (global extralevel += x; x)
+function extraorder(x::Float64)
+    global extralevel = 1.0
+    return extraraise(x) + extralevel          # Julia reads the global after the call
+end
+function extraorder2(x::Float64)
+    global extralevel = 1.0
+    return extralevel + extraraise(x) + extralevel
+end
+@testset "order" begin
+    check("order", [Case(extraorder, 2.0), Case(extraorder, -3.0), Case(extraorder2, 2.0)])
+end
+end
