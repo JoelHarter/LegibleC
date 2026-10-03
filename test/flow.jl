@@ -729,4 +729,31 @@ end
     jump = csource("nestgototext", nesttriple, nesttwice; goto=true)
     @test occursin("goto done;", jump) && occursin("    done:;\n", jump) && occursin("goto done_;", jump) && !occursin("bool done", jump)
 end
+
+# A function that ends on an assignment, whose value is the function's (2026-10-03). Julia lowers
+# that with its own variable read twice and the author's never read, which came out as an `if`
+# and an `else` into a temp with the author's name gone. It is put in the shape `return b` gives.
+function lastchoice(a::Float64)
+    b = a > 0 ? 3 : 4
+end
+function lastand(a::Float64, c::Bool)
+    ok = a > 0 && c
+end
+function lastor(a::Float64, c::Bool)
+    ok = a > 0 || c
+end
+function lastafter(a::Float64, n::Int64)
+    s = 0.0
+    for k in 1:n
+        s += k
+    end
+    t = s > a ? s : a
+end
+@testset "last line an assignment" begin
+    src = check("lastline", [Case(lastchoice, 1.0), Case(lastchoice, -1.0), Case(lastand, 1.0, true), Case(lastand, 1.0, false), Case(lastand, -1.0, true),
+        Case(lastor, 1.0, false), Case(lastor, -1.0, false), Case(lastor, -1.0, true), Case(lastafter, 2.0, 3), Case(lastafter, 20.0, 3)])
+    @test occursin("int64_t b = a > 0 ? 3 : 4;\n\n    return b;", src) || occursin("int64_t b = a > 0 ? 3 : 4;\n    return b;", src)
+    @test occursin("bool ok = a > 0 && c;", src) && occursin("bool ok = a > 0 || c;", src) && occursin("double t = s > a ? s : a;", src)
+    @test !occursin("temp1", src)
+end
 end

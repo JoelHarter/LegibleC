@@ -301,9 +301,35 @@ function walk!(body, sc::Scope)
     pop!(sc.path)
 end
 
+# An assignment used as a value, `b = c ? 3 : 4` as a function's last line, is lowered two ways.
+# Where the value is read by name afterwards, Julia reads its own variable once and stores that:
+#
+#     %8 = hidden            and where it isn't:        b = hidden
+#     b = %8                                            %9 = hidden
+#
+# The second reads the hidden variable twice and never reads `b`, so the value looked like two
+# uses of something unnamed and a store nobody wanted: an `if` and an `else` into a temp, and
+# the author's `b` gone. It means the same as the first, with the store's own value standing
+# for the second read, so it is put in that form, and everything after sees one shape.
+function canonical!(ci::Core.CodeInfo)
+    code = ci.code
+    aims = Set{Int}(st isa Core.GotoNode ? st.label : st isa Core.GotoIfNot ? st.dest : 0 for st in code)
+    for k in 1:length(code)-1
+        st, next = code[k], code[k+1]
+        st isa Expr && st.head === :(=) && st.args[1] isa Core.SlotNumber && st.args[2] isa Core.SlotNumber || continue
+        h = st.args[2]
+        isempty(string(ci.slotnames[h.id])) && next == h && !((k + 1) in aims) || continue      # a variable of Julia's own, read again at once
+        code[k] = h
+        code[k+1] = Expr(:(=), st.args[1], Core.SSAValue(k))
+        ci.ssavaluetypes[k], ci.ssavaluetypes[k+1] = ci.ssavaluetypes[k+1], ci.ssavaluetypes[k]
+    end
+    return ci
+end
+
 # A function's state, ready to be walked: its types and names settled, its loops found.
 function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templimit, source, first)
     ci, _ = only(Base.code_typed_by_type(mi.specTypes; optimize=false))
+    canonical!(ci)
     sc = Scope(ci, mi, sig, templimit, prog, source)
     prog.walking = sc
     if first === nothing

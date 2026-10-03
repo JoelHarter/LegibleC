@@ -108,6 +108,13 @@ hold are dropped, and the marking is done again until none is dropped.
 
 Implementation: `src/choice.jl`, and `markinlined!` in `src/flow.jl`.
 
+A function may end on such an assignment, `b = a > 0 ? 3 : 4` as its last
+line, the value being the function's. Julia lowers that with its own
+variable read twice and `b` never read, where `return b` afterwards gives
+one read and a store of it. The two mean the same, so the first is put in
+the second's shape before anything else looks at it (`canonical!` in
+`src/c.jl`), and both come out as `int64_t b = a > 0 ? 3 : 4; return b;`.
+
 ## The structure is recovered first, and checked
 
 The C used to be written *while* the structure was being worked out: `block!` met
