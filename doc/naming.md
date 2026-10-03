@@ -122,6 +122,49 @@ from somewhere other than its type (`math/array.md`).
 
 Implementation: `mangled` in `src/name.jl`.
 
+## A type with parameters
+
+A struct with type parameters is one C struct for each set of them, and its
+name is the struct's with the parameters run on after it. The innermost
+list is joined by one `x`. Each list around it is joined by one more `x`
+than the deepest thing it holds. So what belongs together sits closest
+together, and the widest gap is the outermost split. An array's size,
+`3x3`, is the same rule and always was.
+
+| Julia | C |
+|---|---|
+| `Pair2{Float64}` | `Pair2F64` |
+| `Body{3}` | `Body3` |
+| `Tuple{Float64, Int64}` | `TupleF64xI64` |
+| `Obj{Bool, 3, 3}` | `ObjBx3x3` |
+| `Obj{Bool, SMatrix{3,3,Float64}}` | `ObjBxx3x3` |
+| `Obj{SVector{3,Float64}, 3}` | `Obj3xx3` |
+| `Outer{Inner{Bool, 3}, 8}` | `OuterInnerBx3xx8` |
+| `Outer{Inner{Bool}, 8}` | `OuterInnerBxx8` |
+
+Read it by the gaps: split at the longest run of `x` first, then inside each
+piece at the next longest. In `OuterInnerBx3xx8` the `xx` splits `Outer`'s
+two parameters, `InnerBx3` and `8`, and the `x` splits `Inner`'s. An array
+and a struct with one parameter count as a level even where nothing is
+joined inside them, or `Outer{Inner{Bool}, 8}` and `Outer{Inner{Bool, 8}}`
+would be one name.
+
+The number of `x` in a name can change when a parameter becomes a deeper
+type. That is a change to the type itself, so the name is right to change.
+
+There is no underscore in a type's name, because in a function's name `_`
+means "next argument" and nothing else. `scale_ObjBxx3x3_F64` is `scale` of
+an `Obj{Bool, 3×3}` and a `Float64`, with one reading.
+
+The name depends on the type alone. It is not shortened where that happens
+to be unambiguous in one program and lengthened where it isn't, because then
+adding a type somewhere else would rename this one underneath whoever calls
+the C.
+
+What it does not settle: where an author's own name ends, when that name
+itself ends in a digit or holds a capital. `Vec3F64` is `Vec3{Float64}` to
+whoever has the header, and the header always has the `typedef`.
+
 ## Reserved words
 
 A hand-maintained list in `src/reserved.jl`: the C keywords, `main`, and

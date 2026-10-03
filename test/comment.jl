@@ -34,6 +34,34 @@ function brackets(u::SVector{3,Float64}, v::SVector{3,Float64})
 end
 
 src = csource("comment", scaled, project, nodoc, steps, built, single, longexpr, brackets)
+# A multi-line call whose arguments are statements of their own lines (2026-10-01): the
+# statement is one block comment, and the cursor moves to its end, or the inner lines were
+# written again one by one before the next statement.
+function multiline(x::Float64)
+    v = SVector(
+        sin(x),
+        cos(x),
+        x
+    )
+    return v
+end
+# A closure given a name: the name is the C function's, and the line that opens it is a signature, not code.
+Named = () -> begin
+    Γ = @MMatrix [
+        0.0 1.0;
+        1.0 0.5
+    ]
+    return π * Γ
+end
+@testset "multi-line statement" begin
+    src = csource("multiline", multiline, Named)
+    @test occursin(r"    /\* @comment\.jl:\d+-\d+:\n       v = SVector\(\n           sin\(x\),\n           cos\(x\),\n           x\n       \)\n    \*/\n    v\[0\] = sin\(x\);", src)
+    @test !occursin(r"// @comment\.jl:\d+: sin\(x\),", src) && !occursin(r"// @comment\.jl:\d+: cos\(x\),", src)
+    @test occursin("Julia signature: anonymous()", src) && occursin("void anonymous(double out[restrict 2][2]) {", src) && !occursin("-> begin", src)
+    @test occursin(r"    /\* @comment\.jl:\d+-\d+:\n       Γ = @MMatrix \[\n           0\.0 1\.0;\n           1\.0 0\.5\n       \]\n    \*/\n    double Gamma\[2\]\[2\] = \{", src)
+    @test Main.LegibleC.plainname(Symbol("#Outrage")) == "Outrage" && Main.LegibleC.plainname(Symbol("#5")) == "anonymous" && Main.LegibleC.plainname(:f) == "f"
+end
+
 @testset "comment" begin
     @test occursin("/**", src) && occursin("Scales a 2x2 matrix, then adds it to itself.", src)
     @test occursin("Julia signature: scaled(", src) && occursin("@param[in]  A  2×2-matrix", src) && occursin("@param[in]  s  scalar", src)

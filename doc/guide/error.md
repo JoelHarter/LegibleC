@@ -29,6 +29,9 @@ The usual causes:
 - a `dims` keyword that isn't a literal;
 - a mutable array variable given a freshly made array while another name
   may still hold the one it had: give the new array a name of its own;
+- a property the author defines, `getproperty(q::Quaternion, s::Symbol) = s === :x ? … `,
+  read as `q.x`: the method takes the name at run time, which C can't pass. Write
+  what it computes, or read the field itself, `getfield(q, :v)[1]`;
 - a write into an array held by a struct that isn't `mutable`: C copies
   such a struct by value, its arrays with it, so declare it `mutable struct`;
 - a signed integer compared with a `UInt64`, or divided by an unsigned
@@ -39,7 +42,8 @@ The usual causes:
 ## When the transpiler itself goes wrong
 
 A mistake of the transpiler's own is a `LegibleC.Fault`, not an
-`ArgumentError`. It says so, names the function and line it was working on,
+`ArgumentError`. An `ArgumentError` of Julia's own that escapes from inside
+the transpiler counts as a fault too, and is reported as one. It says so, names the function and line it was working on,
 and asks to be reported. The error underneath and its stack are kept in
 `LegibleC.failure[]` for whoever looks into it.
 

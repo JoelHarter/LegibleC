@@ -217,7 +217,7 @@ function cfunction(name::AbstractString, mi::Core.MethodInstance, sig, prog::Pro
         nothing
     catch e
         e isa InterruptException && rethrow()
-        e isa ArgumentError || e isa Fault || (failure[] = (e, catch_backtrace()))
+        refusal(e) || e isa Fault || (failure[] = (e, catch_backtrace()))
         e
     end
     problem === nothing && return made
@@ -241,10 +241,14 @@ const failure = Ref{Any}(nothing)
 # What went wrong, in the author's terms: the function, the file and line, and the line
 # itself. A statement's number, which many messages carry, means nothing to the author; it
 # is how the line is found, and then it is dropped.
+# A refusal is an `ArgumentError` of the transpiler's own, whose message it wrote. One of Julia's,
+# `invalid index: nothing`, says something went wrong inside the transpiler, and is a fault.
+refusal(e) = e isa ArgumentError && e.msg isa String
+
 function explained(e, mi::Core.MethodInstance, sc)
     e isa Fault && return e
     def = mi.def
-    msg = e isa ArgumentError ? e.msg : sprint(showerror, e)
+    msg = refusal(e) ? e.msg : sprint(showerror, e)
     line = 0
     if sc !== nothing
         m = match(r"\(statement (\d+)", msg)
@@ -255,7 +259,7 @@ function explained(e, mi::Core.MethodInstance, sc)
     line == 0 && (line = def.line)
     text = sc !== nothing && sc.src !== nothing && line in eachindex(sc.src.lines) ? strip(sc.src.lines[line]) : ""
     where = "`$(def.name)`, $(basename(string(def.file))):$line" * (isempty(text) ? "" : ":  " * text)
-    e isa ArgumentError && return ArgumentError(replace(msg, r" \(statement \d+[^)]*\)" => "") * "\n  in " * where)
+    refusal(e) && return ArgumentError(replace(msg, r" \(statement \d+[^)]*\)" => "") * "\n  in " * where)
     return Fault("the transpiler went wrong in " * where * "\n  " * msg *
                  "\nThis is a mistake of LegibleC's, not of the Julia. Please report it with the function above; `LegibleC.failure[]` holds the error and its stack.")
 end
@@ -427,7 +431,7 @@ function finish(name, mi::Core.MethodInstance, sc::Scope, head, body)
     # a call to it is known to end there.
     only(Base.code_typed_by_type(mi.specTypes; optimize=false))[2] === Union{} && (signature = "_Noreturn " * signature)
     comments, doc = sc.src === nothing ? (String[], String[]) : leading(sc.src)
-    origin = "$(mi.def.name)($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
+    origin = "$(plainname(mi.def.name))($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
              (sc.src === nothing ? "" : " @$(sc.src.name):$(sc.src.first)")
     what(T) = isarray(T) ? describe(T) : T === Char ? "character" : T <: AbstractString ? "string" : T <: Number ? "scalar" : ""
     params = Tuple{String, String, String}[]
@@ -840,6 +844,9 @@ function annotate!(lines, sc::Scope, line)
         for l in body(sc.src, sc.cursor + 1, line; code=sc.copycode)
             emit!(lines, sc, l)
         end
+        # A statement that began before `line` and runs on past it was carried whole: the
+        # cursor moves to its end, or its inner lines would be written again one by one.
+        line = reach(sc.src, sc.cursor + 1, line)
     end
     sc.cursor = line
 end
@@ -1015,11 +1022,13 @@ function statement!(lines, sc::Scope, i, st)
         isarray(T) && (sc.shapes[i] = widen(ci.ssavaluetypes[i]).parameters[1])
     elseif st isa Expr && st.head === :call && callee_or_nothing(ci, st.args[1]) in (Base.getproperty, Core.getfield, Base.getindex) && !isarray(valuetype(sc, st.args[2])) && (isstruct(valuetype(sc, st.args[2])) || istuple(valuetype(sc, st.args[2])) || isindexediterate(sc, st.args[2]))
         # A field read is just a name: no temp.
+        property(sc, callee_or_nothing(ci, st.args[1]), st.args[2], st.args[3], i)
         sc.expr[i] = isindexediterate(sc, st.args[2]) ? value(sc, st.args[2]) : fieldaccess(sc, st.args[2], st.args[3])
         isarray(T) && (sc.shapes[i] = T)
     elseif st isa Expr && st.head === :call
         f = callee_or_nothing(ci, st.args[1])
         if f === Base.setproperty! || f === Base.setfield!
+            property(sc, f, st.args[2], st.args[3], i)
             S = valuetype(sc, st.args[2])
             F = fieldtype(S, literal(sc, st.args[3]))
             target = fieldaccess(sc, st.args[2], st.args[3])
@@ -1247,6 +1256,7 @@ function store!(lines, sc::Scope, i, x, rhs; declaration::Bool=false)
         making = f in (Base.zeros, Base.ones, Base.fill, Base.zero, Base.one) || isconstruction(f) || f === Base.materialize
         if f in (Core.getfield, Base.getproperty, Base.getindex) && (isindexediterate(sc, rhs.args[2]) || isstruct(valuetype(sc, rhs.args[2])) || istuple(valuetype(sc, rhs.args[2])))
             # An array field of a struct or tuple, copied out: `copy_3(t.a, p);`.
+            property(sc, f, rhs.args[2], rhs.args[3], i)
             T = slottype(sc, slot)
             src = isindexediterate(sc, rhs.args[2]) ? value(sc, rhs.args[2]) : fieldaccess(sc, rhs.args[2], rhs.args[3])
             declaration && emit!(lines, sc, declare(T, x) * ";")
@@ -2398,6 +2408,7 @@ function rendered(sc::Scope, i, ex::Expr)
 
     # Structs and tuples: field reads, and `==` field by field.
     if f in (Base.getproperty, Core.getfield, Base.getindex) && n == 2 && !isarray(valuetype(sc, args[1])) && (isstruct(valuetype(sc, args[1])) || istuple(valuetype(sc, args[1])))
+        property(sc, f, args[1], args[2], i)
         return (isindexediterate(sc, args[1]) ? value(sc, args[1]) : fieldaccess(sc, args[1], args[2])), PRIMARY
     end
     if f === Base.:(==) && n == 2 && (isstruct(valuetype(sc, args[1])) || istuple(valuetype(sc, args[1])))
@@ -2894,6 +2905,23 @@ function fieldaccess(sc::Scope, x, f)
     k = tuplekind(sc, x)
     k !== nothing && return isempty(k.cname) ? k.fields[f] : value(sc, x) * "." * k.fields[f]
     return value(sc, x) * arrow(S) * fieldcname(S, f)
+end
+
+# `q.x` is a field read only while `getproperty` is Julia's own. A method of the author's,
+# `getproperty(q::Quaternion, s::Symbol) = s === :x ? q.v[1] : …`, takes the field's name at run
+# time, which C has no way to pass, so it is refused with the field it is asked for: the
+# author writes what the method would have computed. The same for `setproperty!`.
+function property(sc::Scope, f, x, name, i)
+    f in (Base.getproperty, Base.setproperty!) || return
+    S = valuetype(sc, x)
+    S isa DataType && isstruct(S) || return
+    m = which(f, f === Base.getproperty ? (S, Symbol) : (S, Symbol, Any))
+    nameof(Base.moduleroot(m.module)) in known && return
+    field = literal(sc, name)
+    field isa QuoteNode && (field = field.value)
+    v = x isa Core.SlotNumber ? string(sc.ci.slotnames[x.id]) : "q"
+    sym = f === Base.getproperty ? "$v.$field" : "$v.$field = …"
+    throw(ArgumentError("`$sym` goes through the `$(nameof(f))` method of the author's at $(basename(string(m.file))):$(m.line), which takes the property's name at run time: C has no way to pass a name. Write what that method computes for `$field`, or read the field itself, `getfield($v, :$field)` (statement $i)"))
 end
 
 # Is `x` the result of `indexed_iterate` — a field read in disguise?

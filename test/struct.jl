@@ -130,6 +130,49 @@ check("placement", [Case(spun, SVector(0.0, 0.0, 1.0), 0.6), Case(spun2, SVector
                     Case(bagged, Bag(SVector(1.0, 2.0, 3.0), 4.0), SVector(1.0, 0.0, 0.0), 2.0), Case(counted, Counter(1), SVector(1.0, 0.0, 0.0), 2.0),
                     Case(paired, Counter(1), SVector(1.0, 0.0, 0.0), 2.0),
                     Case(early, Bag3(SVector(1.0, 2.0, 3.0), 4.0, 5.0), SVector(1.0, 0.0, 0.0), 2.0, true), Case(early, Bag3(SVector(1.0, 2.0, 3.0), 4.0, 5.0), SVector(1.0, 0.0, 0.0), 2.0, false)])
+# A property the author defines (2026-10-01): `getproperty(q, s) = s === :x ? … : getfield(q, s)` takes
+# the name at run time, which C can't pass. Refused with the field it was asked for; it was a
+# fault before, and one of Julia's own errors was taken for a refusal and garbled on the way out.
+struct Spinner
+    w::Float64
+    v::SVector{3,Float64}
+end
+Base.getproperty(s::Spinner, f::Symbol) = f === :x ? getfield(s, :v)[1] : getfield(s, f)
+spinx(s::Spinner) = s.x * 2.0
+spinw(s::Spinner) = s.w * 2.0
+spinfield(s::Spinner) = getfield(s, :v)[1] * 2.0
+@testset "property" begin
+    e = try csource("spinx", spinx); nothing catch e; e end
+    @test e isa ArgumentError && occursin("`s.x` goes through the `getproperty` method of the author's at struct.jl:", e.msg) && occursin("getfield(s, :x)", e.msg)
+    @test_throws ArgumentError csource("spinw", spinw)                # the method is asked even where it would fall through
+    check("spinfield", [Case(spinfield, Spinner(1.0, SVector(2.0, 3.0, 4.0)))])
+    @test Main.LegibleC.refusal(ArgumentError("ours")) && !Main.LegibleC.refusal(ArgumentError(LazyString("invalid index: ", nothing)))
+end
+
+# The name of a struct with type parameters (2026-10-03): the parameters run on after the name.
+# The innermost list is joined by one `x`, each list around it by one more than the deepest thing
+# it holds: what belongs together sits closest. An array's `3x3` is the same rule. No underscore,
+# which in a function's name means "next argument".
+struct GBody{N}; a::Float64; end
+struct GObj{A,B,C}; a::Float64; end
+struct GTwo{A,B}; a::Float64; end
+struct GInner{A,B}; a::Float64; end
+struct GOuter{A,B}; a::Float64; end
+gscale(p::Pair2{Float64}, s::Float64) = Pair2(p.first * s, p.second * s)
+@testset "name grammar" begin
+    Main.LegibleC.scope[] = @__MODULE__                  # this module's names are bare, as in a file transpiled from it
+    name(T) = Main.LegibleC.structname(T)
+    @test name(Point) == "Point" && name(GBody{3}) == "GBody3" && name(Pair2{Float64}) == "Pair2F64"
+    @test name(Tuple{Float64,Int64}) == "TupleF64xI64" && name(Tuple{SVector{3,Float64},SVector{3,Float64}}) == "Tuple3xx3"
+    @test name(GObj{Bool,3,3}) == "GObjBx3x3" && name(GTwo{Bool,SMatrix{3,3,Float64,9}}) == "GTwoBxx3x3"      # three parameters, or a truth value and a 3×3
+    @test name(GTwo{SVector{3,Float64},3}) == "GTwo3xx3" && name(GBody{SMatrix{3,3,Float64,9}}) == "GBody3x3" && name(GTwo{SMatrix{3,3,Float64,9},3}) == "GTwo3x3xx3"
+    @test name(GOuter{GInner{Bool,3},8}) == "GOuterGInnerBx3xx8" && name(GOuter{GInner{Bool,GBody{2}},8}) == "GOuterGInnerBxxGBody2xxx8"
+    @test name(GOuter{GBody{Bool},8}) == "GOuterGBodyBxx8" && name(GBody{GInner{Bool,8}}) == "GBodyGInnerBx8"    # one parameter is a level too
+    @test name(GTwo{Tuple{Float64,Int64},Char}) == "GTwoTupleF64xI64xxC" && name(GTwo{SMatrix{2,2,Float32,4},ComplexF64}) == "GTwo2x2F32xxC64"
+    src = check("grammar", [Case(gscale, Pair2(1.0, 2.0), 3.0), Case(swap, Pair2(1.0, 2.0))])
+    @test occursin("Pair2F64 gscale(Pair2F64 p, double s)", src) && !occursin("Pair2_F64", src)
+end
+
 @testset "placement" begin
     src = csource("placement", spun, spun2, rebuilt, bagged, counted, paired, early)
     @test occursin("Quat result;\n    mul_s_3(s, axis, result.v);\n    result.w = c;\n    return result;", src)
@@ -137,7 +180,7 @@ check("placement", [Case(spun, SVector(0.0, 0.0, 1.0), 0.6), Case(spun2, SVector
     @test occursin("mul_s_3(s, q.v, temp1_s_q_v);", src) && !occursin("mul_s_3(s, q.v, q.v)", src)      # rebuilt: the temp stays
     @test occursin("mul_s_3(s, axis, temp1_s_axis);", src) && occursin("b.w = vsum(b);", src)             # bagged: the temp stays
     @test occursin("Bag b;\n    mul_s_3(s, axis, b.v);  // b.v = s * axis\n    Counter *temp1_c = bump(c);", src)          # counted: placed, the effect after it as in Julia
-    @test occursin("Tuple_3_F64 result;\n    mul_s_3(s, axis, result.a);  // result.a = s * axis\n    Counter *temp1_c = bump(c);", src)   # paired: into the tuple's struct
+    @test occursin("Tuple3xxF64 result;\n    mul_s_3(s, axis, result.a);  // result.a = s * axis\n    Counter *temp1_c = bump(c);", src)   # paired: into the tuple's struct
     @test occursin("c->n++;", src)                                                                                            # a field store shortened like a variable's
     @test occursin("mul_s_3(s, axis, temp1_s_axis);  // temp1_s_axis = s * axis\n    if (bad) {\n        return b.z;\n    }", src)   # early: the temp stays
 end
@@ -183,6 +226,6 @@ end
     # Variables returned in any order keep their names; an expression returned has none,
     # so `arrays`, returning `(v, 2.0 * v)`, gets the structural struct with positional fields.
     @test occursin("typedef struct {\n    double b;\n    double a;\n} tswap_t;", src) && occursin("return (tswap_t){b, a};", src)
-    @test occursin("Tuple_3_3 temp1_arrays = arrays(v);", src)
+    @test occursin("Tuple3xx3 temp1_arrays = arrays(v);", src)
 end
 end

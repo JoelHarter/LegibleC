@@ -32,7 +32,11 @@ function Source(m::Method)
     ex, next = try Meta.parse(text, offset) catch; return nothing end
     stop = something(findprev(!isspace, text, prevind(text, next)), offset)
     last = count(==('\n'), SubString(text, 1, stop)) + 1
-    return Source(basename(path), String.(lines), m.line, last, !(ex isa Expr && ex.head === :function))
+    # Short, `f(x) = …`: the body starts on the signature's line. Not `function … end`, and not
+    # `f = () -> begin … end` either, a closure given a name, whose first line is a signature too.
+    rhs = ex isa Expr && ex.head === :(=) ? ex.args[2] : ex
+    short = !(rhs isa Expr && (rhs.head === :function || rhs.head === :-> && last > m.line))
+    return Source(basename(path), String.(lines), m.line, last, short)
 end
 
 # The source line of each IR statement, 0 where there is none.
@@ -208,6 +212,18 @@ function statementend(src::Source, line)
         depth <= 0 && !(occursin(r"[-+*/\\^=,&|?:]$", code) && k < length(src.lines)) && return k
     end
     return line
+end
+
+# The last line of the statement that holds `to`, among the statements starting at `from`
+# or after: `to` itself unless a statement that began earlier runs on past it.
+function reach(src::Source, from, to)
+    k = max(from, 1)
+    while k <= min(to, length(src.lines))
+        e = statementend(src, k)
+        e >= to && return max(e, to)
+        k = e + 1
+    end
+    return to
 end
 
 # The body of a short-form definition line, `f(x) = body`: what follows the `=` at the

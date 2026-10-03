@@ -274,7 +274,7 @@ function build!(instances, synthetics, types, values, fixed, avoid, nomacro; pre
     names = similar(wanted)
     for (k, (mi, _)) in enumerate(instances)
         if haskey(synthetics, mi)
-            names[k] = startswith(string(mi.def.name), "#") ? "anonymous$k" : string(mi.def.name)
+            names[k] = startswith(string(mi.def.name), "#") ? "anonymous$k" : string(mi.def.name)      # a synthetic target's own name
             push!(prog.names, names[k])
         else
             names[k] = claim!(prog, mi, wanted[k], string(mi.def.name))

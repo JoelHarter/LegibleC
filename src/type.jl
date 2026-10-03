@@ -84,19 +84,40 @@ isstruct(T::Type) = T isa DataType && isstructtype(T) && !(T <: AbstractArray) &
 # generated C struct with fields named like helper inputs: `a`, `b`, `c`, …
 istuple(T::Type) = T isa DataType && T <: Tuple && isconcretetype(T)
 
-# The C name of a struct or tuple type: the Julia name, with type parameters appended
-# the way a function's argument types are (`Point_F32`, `Body_3`); a tuple is
-# `Tuple_` and its element types (`Tuple_F64_I64`, `Tuple_3_2x2`).
+# The C name of a struct or tuple type: the Julia name with its type parameters run on after
+# it, `Point{Float32}` is `PointF32`, a tuple `Tuple` and its element types. It is the rule an
+# array's size already follows, `3x3`, made general. The innermost list is joined by one `x`,
+# and each list around it by one more than the deepest thing it holds, so that what belongs
+# together sits closest together and the widest gap is the outermost split.
+#
+#     Body{3}                                  Body3
+#     Tuple{Float64, Int64}                    TupleF64xI64
+#     Obj{Bool, 3, 3}                          ObjBx3x3
+#     Obj{Bool, SMatrix{3,3,Float64}}          ObjBxx3x3
+#     Obj{SVector{3,Float64}, 3}               Obj3xx3
+#     Outer{Inner{Bool, 3}, 8}                 OuterInnerBx3xx8
+#     Outer{Inner{Bool}, 8}                    OuterInnerBxx8
+#
+# No underscore: in a function's name `_` means "next argument" and nothing else, so
+# `scale_ObjBxx3x3_F64` is `scale` of an `Obj{Bool, 3×3}` and a `Float64`. And the name depends
+# on the type alone, never on what else is in the program, so it changes only when the type does.
 function structname(T::Type)
-    istuple(T) && return "Tuple_" * join((typeword(P) for P in T.parameters), "_")
-    base = qualified(string(nameof(T)), T.name.module)
-    isempty(T.parameters) && return base
-    return base * "_" * join((p isa Type ? typeword(p) : string(p) for p in T.parameters), "_")
+    base = istuple(T) ? "Tuple" : qualified(string(nameof(T)), T.name.module)
+    return base * join((typeword(p) for p in T.parameters), "x"^height(T))
 end
 
-# One type as it appears inside a struct's name.
-typeword(T) = T <: AbstractArray ? dims(T) * (eltype(T) === Float64 ? "" : abbrev(eltype(T))) :
-              isstruct(T) || istuple(T) ? structname(T) : abbrev(T)
+# How many levels of parameters a type has under its name: none for a number or a plain struct,
+# one for an array (its size) and for a struct whose parameters have none, and one more than
+# the deepest parameter otherwise. A struct with a single parameter counts as a level although
+# nothing is joined in it, or `Outer{Inner{Bool}, 8}` and `Outer{Inner{Bool, 8}}` would be one name.
+height(p) = !(p isa Type) ? 0 : p <: AbstractArray ? 1 :
+            (isstruct(p) || istuple(p)) && !isempty(p.parameters) ? 1 + maximum(height, p.parameters) : 0
+
+# One type parameter as it appears inside a name: a number as itself, an array as its size, a
+# struct or tuple by its own name, a scalar abbreviated.
+typeword(p) = !(p isa Type) ? string(p) :
+    p <: AbstractArray ? dims(p) * (eltype(p) === Float64 ? "" : abbrev(eltype(p))) :
+    isstruct(p) || istuple(p) ? structname(p) : abbrev(p)
 
 # The C names of a struct's fields, in order; a tuple's are letters.
 fieldcnames(T::Type) = istuple(T) ? inputs(collect(T.parameters)) : identifiers(string.(fieldnames(T)))

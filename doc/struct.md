@@ -39,9 +39,9 @@ another call — and gets a variable when a field of it is read, since
 `f(q).v` reads a field of a temporary, which no one writes.
 
 A parametric struct at a concrete instantiation is one C struct per
-instantiation, named like a function at several signatures: `Pair2_F64`,
-`Body_3`. Field and type names go through the usual conversion
-(`naming.md`), which also drops the `!` from `bump!`.
+instantiation, named by the struct and its parameters run together:
+`Pair2F64`, `Body3` (`naming.md`, *A type with parameters*). Field and type
+names go through the usual conversion, which also drops the `!` from `bump!`.
 
 Not yet: `@kwdef` constructors, structs holding mutable structs, `Union`
 fields, `sizeof`.
@@ -60,7 +60,7 @@ step(…); x = temp1_step.x; ẋ = temp1_step.xdot;`, a tuple kept whole is
 another's tuple straight on returns that function's struct. When what is
 returned isn't plain variables — `(v, 2.0 * v)`, or returns that disagree —
 the fields are positional letters and the struct is the structural
-`Tuple_3_3`.
+`Tuple3xx3`.
 
 A **tuple parameter** is spread into one parameter per element:
 `third(t::NTuple{3,Float64})` is `double third(double t1, double t2, double
@@ -69,7 +69,17 @@ function goes as its elements, `third(a, 2 * a, 3 * a)`, so no struct is
 made for it; a tuple that only feeds a constructor or block construction —
 `SVector(a, b, c)`, `[A B; C D]` — never exists in C either. A tuple held as
 a value elsewhere — a struct field, a tuple of tuples — is the structural
-`Tuple_F64_I64` with fields `a`, `b`, … named like helper inputs.
+`TupleF64xI64` with fields `a`, `b`, … named like helper inputs.
 
 Not yet: a `NamedTuple`, which would name the fields when what's returned
 isn't variables.
+
+## A property the author defines
+
+`q.x` is a field read only while `getproperty` is Julia's own. A method of
+the author's, `getproperty(q::Quaternion, s::Symbol) = s === :x ? q.v[1] : …`,
+takes the property's name at run time, and C has no way to pass a name. Such
+a read, and a `setproperty!` of the author's, is refused by field, with the
+advice to write what the method computes or to read the field itself with
+`getfield`. A C function per property, the method's body with the name
+folded in, is the way to support it later.

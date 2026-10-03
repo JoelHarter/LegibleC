@@ -75,12 +75,21 @@ fname(name::Symbol) = get(operators, name, string(name))
 # a scalar — `mul_Quaternion_Quaternion`, `mul_Quaternion_s`; `add` and `sub` (and the
 # comparisons) on two of a kind write it once, `add_Quaternion`, as `add_2x2` does.
 function operatorname(name::Symbol, sig)
-    haskey(operators, name) || return string(name)
+    haskey(operators, name) || return plainname(name)
     piece(T) = isstruct(T) ? structname(T) : T <: AbstractArray ? dims(T) : "s"
     pieces = [piece(T) for T in sig]
     name === :- && length(sig) == 1 && return "neg_" * pieces[1]
     once = name in (:+, :-, :(==), :!=, :<, :<=, :>, :>=) && allequal(pieces)
     return operators[name] * "_" * (once ? pieces[1] : join(pieces, "_"))
+end
+
+# A closure's name is Julia's own, `#5`, or the variable it was given, `#Outrage`, when it was
+# assigned to one: that variable's name, or `anonymous` where there is none.
+function plainname(name::Symbol)
+    n = string(name)
+    startswith(n, "#") || return n
+    m = match(r"^#([^#\d][^#]*)$", n)
+    return m === nothing ? "anonymous" : m[1]
 end
 
 """
