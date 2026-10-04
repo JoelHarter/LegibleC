@@ -73,6 +73,12 @@ Not yet: LDLT (Julia has no `ldlt` for static matrices to hang it on),
 `cholesky(A).L`, `cholesky(A) \ B` with a matrix `B`, `B / cholesky(A)`, QR,
 eigenvalues, a static SVD.
 
+Against a matrix, `A \ B`, what depends on `A` alone is worked out once:
+the determinant and the cofactors at sizes up to three, the factorization
+from four on. Each column of `B` then costs only its own substitution. A
+column at a time through the vector solve would factor `A` again for every
+column, the same numbers each time.
+
 ## The exponential and powers
 
 `exp(A)` of a square matrix is `exp_NxN(A, out)`, by the algorithm Julia uses

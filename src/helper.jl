@@ -771,8 +771,8 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
         helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=false)
         return name
     end
-    if ndims(B) == 2
-        # A matrix right-hand side: one column at a time through the vector solve.
+    if ndims(B) == 2 && m != n
+        # Not square, against a matrix: one column at a time through the least-squares solve.
         k = extent(B, 2)
         V = shaped(eltype(B), (m,))
         body = ["$(ctype(eltype(B))) column[$m];", "$(ctype(E)) x[$n];",
@@ -787,6 +787,44 @@ function solvehelper!(helpers::Dict{String, String}, T::Type, B::Type, R::Type)
                 "}"]
         helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body;
                                    doc=["$(describe(T)) \\ $(describe(B)) solve, column by column", "out = $A \\ $b"], inline=false)
+        return name
+    end
+    if ndims(B) == 2
+        # A matrix right-hand side. What depends on `A` alone is worked out once, the determinant
+        # and the cofactors or the factorization, and each column then costs only its own part.
+        # A column at a time through the vector solve did all of it again for every column.
+        k = extent(B, 2)
+        t = ctype(E)
+        el(i, j) = access(T, A, [string(i), string(j)])
+        rhs(i) = access(B, b, [string(i), "j"])
+        body = if n == 1
+            ["for (int j = 0; j < $k; j++) {", "    out[0][j] = $(rhs(0)) / $(el(0, 0));", "}"]
+        elseif n == 2
+            ["$t d = $(dethelper!(helpers, T, E))($A);",
+             "for (int j = 0; j < $k; j++) {",
+             "    out[0][j] = ($(el(1, 1)) * $(rhs(0)) - $(el(0, 1)) * $(rhs(1))) / d;",
+             "    out[1][j] = ($(el(0, 0)) * $(rhs(1)) - $(el(1, 0)) * $(rhs(0))) / d;",
+             "}"]
+        elseif n == 3
+            # The cofactors of `A`, transposed: its inverse but for the division by the determinant.
+            cof(i, c) = (r1, r2, c1, c2) = ((c + 1) % 3, (c + 2) % 3, (i + 1) % 3, (i + 2) % 3)
+            entry(i, c) = (q = cof(i, c); "$(el(q[1], q[3])) * $(el(q[2], q[4])) - $(el(q[1], q[4])) * $(el(q[2], q[3]))")
+            vcat(["$t d = $(dethelper!(helpers, T, E))($A);", "$t C[3][3] = {"],
+                 ["    {" * join((entry(i, c) for c in 0:2), ", ") * "}," for i in 0:2], ["};",
+                  "for (int i = 0; i < 3; i++) {",
+                  "    for (int j = 0; j < $k; j++) {",
+                  "        out[i][j] = (C[i][0] * $(access(B, b, ["0", "j"])) + C[i][1] * $(access(B, b, ["1", "j"])) + C[i][2] * $(access(B, b, ["2", "j"]))) / d;",
+                  "    }",
+                  "}"])
+        else
+            vcat(["$t LU[$n][$n];", "int p[$n];", "$t x[$n];", "$(luhelper!(helpers, T))($A, LU, p);        // once, for every column",
+                  "for (int j = 0; j < $k; j++) {"],
+                 "    " .* lusolve(n, "x", access(B, b, ["p[i]", "j"])),
+                 ["    for (int i = 0; i < $n; i++) {", "        out[i][j] = x[i];", "    }", "}"])
+        end
+        doc = [n <= 3 ? "$(describe(T)) \\ $(describe(B)) solve by Cramer's rule, the cofactors worked out once" :
+                        "$(describe(T)) \\ $(describe(B)) solve by LU with partial pivoting, factored once", "out = $A \\ $b"]
+        helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(B, b; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=false)
         return name
     end
     a(i, j) = access(T, A, [string(i), string(j)])

@@ -130,4 +130,25 @@ powreal(A::M(2), x::Float64) = A^x
     e = try csource("powreal", powreal); nothing catch e; e end
     @test e isa ArgumentError && occursin("different types", e.msg)        # real or complex by the eigenvalues: Julia's own type for it is a union
 end
+
+# A solve against a matrix (2026-10-04): what depends on `A` alone, the determinant and the
+# cofactors or the factorization, is worked out once. A column at a time through the vector
+# solve factored `A` again for every column.
+solvem1(A::M(1), B::SMatrix{1,3,Float64,3}) = A \ B
+solvem2(A::M(2), B::SMatrix{2,3,Float64,6}) = A \ B
+solvem3(A::M(3), B::M(3)) = A \ B
+solvem3w(A::M(3), B::SMatrix{3,2,Float64,6}) = A \ B
+solvem4(A::M(4), B::M(4)) = A \ B
+solvem5(A::M(5), B::SMatrix{5,2,Float64,10}) = A \ B
+@testset "solve against a matrix" begin
+    A3 = SMatrix{3,3}(2.0, -1.0, 0.5, 3.0, 1.5, -2.0, 0.25, 4.0, 1.0)
+    A4 = SMatrix{4,4}((sin(1.7k) + (k % 5 == 1 ? 3.0 : 0.0) for k in 1:16)...)
+    A5 = SMatrix{5,5}((cos(0.9k) + (k % 6 == 1 ? 4.0 : 0.0) for k in 1:25)...)
+    check("solvematrix", [Case(solvem1, SMatrix{1,1}(2.5), SMatrix{1,3}(1.0, 2.0, 3.0)), Case(solvem2, SMatrix{2,2}(1.0, 2.0, 3.0, 4.5), SMatrix{2,3}((1.0:6.0)...)),
+                          Case(solvem3, A3, SMatrix{3,3}((1.0:9.0)...)), Case(solvem3w, A3, SMatrix{3,2}((1.0:6.0)...)),
+                          Case(solvem4, A4, SMatrix{4,4}((0.5:0.5:8.0)...)), Case(solvem5, A5, SMatrix{5,2}((1.0:10.0)...))])
+    src = csource("solvematrixtext", solvem3, solvem4)
+    @test occursin("lu_4x4(A, LU, p);        // once, for every column\n    for (int j = 0; j < 4; j++) {", src) && !occursin("solve_4x4_4(A, column, x);", src)
+    @test occursin("double d = det_3x3(A);\n    double C[3][3] = {", src) && occursin("out[i][j] = (C[i][0] * B[0][j] + C[i][1] * B[1][j] + C[i][2] * B[2][j]) / d;", src)
+end
 end
