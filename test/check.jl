@@ -27,7 +27,10 @@ const cxflag = let tried = (["-fno-cx-limited-range"], ["-fno-cx-limited-range",
     k === nothing ? String[] : tried[k]
 end
 println("compiler: ", cc, "   complex division kept safe by: ", isempty(cxflag) ? "nothing this compiler has" : join(cxflag, " "))
-const flags = ["-std=c11", "-O2", "-ffast-math", "-fno-finite-math-only", cxflag..., "-ffp-contract=fast", "-fwrapv", "-march=native",
+# `-march=native` is part of the setting, but a compiler may not know the machine it is run on:
+# Clang has refused a build server's processor outright. Where it is refused, it is left out.
+const native = accepts(["-march=native"]) ? ["-march=native"] : String[]
+const flags = ["-std=c11", "-O2", "-ffast-math", "-fno-finite-math-only", cxflag..., "-ffp-contract=fast", "-fwrapv", native...,
                "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-but-set-variable"]
 
 # One call to check: a function and the values to call it with.

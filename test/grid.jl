@@ -58,6 +58,9 @@ two = [(:add, :(a + b), numbers, numbers), (:sub, :(a - b), numbers, numbers), (
 # for the rest returns a power that has wrapped round. The C stops with the error for all of them.
 allowed(name, combo) = !(startswith(name, "mixed") && any(x -> x isa AbstractFloat && abs(x) == floatmax(typeof(x)), combo)) &&
                        !(occursin("signbit", name) && iszero(combo[1])) &&
+                       !(occursin("flipsign", name) && combo[1] isa AbstractFloat && iszero(combo[1])) &&          # the sign of a zero again: whose sign to flip by
+                       !((occursin("cotd", name) || occursin("cscd", name)) && iszero(combo[1])) &&                 # and one over a zero, whose sign is the infinity's
+
                        !(startswith(name, "row_nextpow") && combo[2] > 1 && combo[1] > 0 && nextpow(big(combo[2]), big(combo[1])) > typemax(Int64))    # the arguments come last first
 
 # One function of the grid: its Julia, its types, and what Julia answers on every combination of values.
