@@ -47,8 +47,9 @@ Options:
   like every irrational: any `AbstractIrrational` — `Base.MathConstants.catalan`, one
   of your own by `Base.@irrational` — is a macro named after it, defined in the helper
   header to 128-bit precision.
-- `tempsuffix`: temps carry what they were computed from, `temp1_a_b = a + b`
-  (`doc/naming.md`); off, they are `temp1`, `temp2`, …
+- `tempsuffix`: temps carry what they were computed from, `temp1_a_b = a + b`, and an
+  unnamed lambda what it captured, `fun3_a_b` (`doc/naming.md`). Off by default: they are
+  `temp1`, `temp2`, … and `fun1`, `fun2`, …
 - `spelling`: your own C spellings for characters in names, `Dict('ħ' => "hred",
   '∂' => "d")`, on top of the built-in ones (Julia's `\\name` completion table).
   Keys are single characters Julia allows in a name, other than ASCII letters,
@@ -84,7 +85,7 @@ function transpile(target::Union{Function, Core.MethodInstance, Tuple{Union{Func
                    width::Integer=100,
                    posix::Bool=false,
                    goto::Bool=false,
-                   tempsuffix::Bool=true,
+                   tempsuffix::Bool=false,
                    spelling::AbstractDict=Dict{Char, String}(),
                    c23floattypes::Bool=false,
                    bool::Type=Bool,

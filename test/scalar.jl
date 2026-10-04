@@ -563,10 +563,10 @@ ufloor(a::Int, b::Int) = fld(a, b) + 10 * cld(a, b) + 100 * mod1(a, b) + 1000 * 
     # Two values at once: each is written where it is read, from what Julia's own two functions give.
     @test occursin("int64_t q = (a / b);", src) && occursin("int64_t q = fld(a, b);", src) && occursin("double s = sind(x);\n    double c = cosd(x);", src)
     @test occursin("double f = copysign(isinf(x) ? 0 : x - trunc(x), x);\n    double i = trunc(x);", src)
-    @test occursin(r"double (temp\d+_x_y) = x \* y \+ 1;\n    double f = copysign\(isinf\(\1\)", src)          # what is read three times is worked out once
-    @test occursin(r"int (temp\d+);\n    double (temp\d+_x) = frexp\(x, &\1\);", src) && occursin("frexpf(x, &", src)
+    @test occursin(r"double (temp\d+) = x \* y \+ 1;\n    double f = copysign\(isinf\(\1\)", src)          # what is read three times is worked out once
+    @test occursin(r"int (temp\d+);\n    double (temp\d+) = frexp\(x, &\1\);", src) && occursin("frexpf(x, &", src)
     # Horner's rule, written out; the point it is evaluated at worked out once.
-    @test occursin("return 1.0 + x * (2.0 + x * 3.0);", src) && occursin(r"return a \+ (temp\d+_x) \* \(b - 1 \+ \1 \* \(2\.0 \+ \1 \* \(a \* b\)\)\);", src)
+    @test occursin("return 1.0 + x * (2.0 + x * 3.0);", src) && occursin(r"return a \+ (temp\d+) \* \(b - 1 \+ \1 \* \(2\.0 \+ \1 \* \(a \* b\)\)\);", src)
     @test occursin("return (int64_t)x;", src) && occursin("return (a < b) + 2 * (a == b);", src)
     @test occursin("return ceil(x) + floor(x) * 10 + trunc(x) * 100 + round(x) * 1000;", src)
     @test occursin("return log(x) / log(2.0) + log(x) / log(10);", src) && occursin("return lgamma((double)(n + 1));", src)

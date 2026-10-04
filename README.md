@@ -25,7 +25,7 @@ Three lines of Julia, and the C each becomes. In each pair, the first box is
 the Julia as its author wrote it, and the second is what LegibleC wrote from
 nothing but that — every character of it, the comments included. Nothing in
 the C boxes was added by a person: the `// @orbit.jl:18:` lines, the
-`// beta = temp1_X \ temp2_X_y` steps, and the `///` helper descriptions
+`// beta = temp1 \ temp2` steps, and the `///` helper descriptions
 are all the transpiler's.
 
 **Julia:** a physicist's line, names and all.
@@ -62,12 +62,12 @@ temps without losing the thread.
 
 ```c
 // @orbit.jl:18: β = (X' * X) \ (X' * y)
-double temp1_X[2][2];
-mul_T4x2_4x2(X, X, temp1_X);  // temp1_X = Xᵀ * X
-double temp2_X_y[2];
-mul_T4x2_4(X, y, temp2_X_y);  // temp2_X_y = Xᵀ * y
+double temp1[2][2];
+mul_T4x2_4x2(X, X, temp1);  // temp1 = Xᵀ * X
+double temp2[2];
+mul_T4x2_4(X, y, temp2);  // temp2 = Xᵀ * y
 double beta[2];
-solve_2x2_2(temp1_X, temp2_X_y, beta);  // beta = temp1_X \ temp2_X_y
+solve_2x2_2(temp1, temp2, beta);  // beta = temp1 \ temp2
 ```
 
 **The helpers**, generated beside the functions in `helper.h`, each under

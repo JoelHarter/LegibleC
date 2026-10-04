@@ -194,20 +194,20 @@ const LEGIBLEC_PI = 3.0                              # the author's own name, wh
 ownpi(x::Float64) = x * π + LEGIBLEC_PI
 # Found by setting agents to write probes against the new naming (2026-09-21).
 const temp1 = 100.0                                  # globals named as the transpiler names its temps
-const temp1_n = 1000.0
-const temp1_A_v = 3.0
+const temp1 = 1000.0
+const temp1 = 3.0
 limit3(n::Int64) = n + 1
 tempbare(n::Int64) = (s = 0.0; for k in 1:limit3(3); s += temp1 * k + n; end; s)
-tempcall(n::Int64) = (s = 0.0; for k in 1:limit3(n); s += temp1_n * k; end; s)
-function tempbound(n::Int64)                         # the bound's own temp would have been `temp1_n`
+tempcall(n::Int64) = (s = 0.0; for k in 1:limit3(n); s += temp1 * k; end; s)
+function tempbound(n::Int64)                         # the bound's own temp would have been `temp1`
     s = 0.0
     for k in 1:n
         n -= 1
-        s += temp1_n * k
+        s += temp1 * k
     end
     return s + n
 end
-temparray(A::SMatrix{2,2,Float64,4}, v::SVector{2,Float64}) = A * (A * v) * temp1_A_v
+temparray(A::SMatrix{2,2,Float64,4}, v::SVector{2,Float64}) = A * (A * v) * temp1
 function letbump(x::Float64)                         # `let x = x`, then the new `x` assigned: not the parameter
     s = 0.0
     let x = x

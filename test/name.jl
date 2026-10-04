@@ -67,7 +67,7 @@ branched(a::Float64, b::Float64) = (if a > b; c = a - b; a = c * 2.0; else; c = 
 
 src = csource("name", looped, rebound, squared, branched, square, bare, chain, blocked, letter, marks, scripts, fallback, keyword, long, named, fun45,
               resulttaken, outtaken, helpertaken, underscored, borrowed, short, bump!, (poly, Float64, Float64), (poly, Int64, Int64),
-              mixedarray, outer, nine, scaled32, crossed, crossed32, crossmixed, dotted, physics)
+              mixedarray, outer, nine, scaled32, crossed, crossed32, crossmixed, dotted, physics; tempsuffix=true)      # the suffixes are what is tested here
 @testset "name" begin
     # A reassigned array parameter is worked on as a copy `x_` made at the top under a
     # comment — in `out`, when that is where it ends up (`outplacement!`); elementwise
@@ -87,12 +87,12 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test occursin("double temp3 = a - b;", src) && occursin("temp1_a_b * temp1_a_b * (temp2_b_a * temp2_b_a) * (temp5_a * temp5_a) + temp3", src)
     # A call's temp: the callee's returned variable when it has one; the callee's name for
     # an unnamed tuple being unpacked; otherwise the operands.
-    calls = csource("calls", sqomega, quad, unpairnamed, unpairbare)
+    calls = csource("calls", sqomega, quad, unpairnamed, unpairbare; tempsuffix=true)
     @test occursin("double temp1_omega = omega(x, y);", calls) && occursin("return temp1_omega * temp1_omega;", calls)
     @test occursin("double temp1_w[3];\n    twiced(v, temp1_w);", calls) && occursin("twiced(temp1_w, out);", calls)
     @test occursin("pairnamed_t temp1_x = pairnamed(y, z);", calls) && occursin("pairbare_t temp1_pairbare = pairbare(y, z);", calls)
     @test occursin("pairnamed_t x = (pairnamed_t){y, z};\n    return x;", calls)
-    plain = csource("plain", sqomega, quad, physics; tempsuffix=false)
+    plain = csource("plain", sqomega, quad, physics)                              # off unless asked for
     @test occursin("double temp1 = omega(x, y);", plain) && occursin("twiced(v, temp1);", plain) && !occursin("temp1_", plain)   # Julia's grouping, exactly
     @test occursin("return omega * Omega + Deltat;", src)
     @test occursin("xhat + xddot + xvec + xprime", src)
@@ -113,7 +113,7 @@ src = csource("name", looped, rebound, squared, branched, square, bare, chain, b
     @test occursin("return x;", src)
     @test occursin("return a + c * c;", src)
     @test occursin("double result_ = fabs(a * result);", src) && occursin("return result_;", src)   # `result` is taken
-    long = csource("long", toolong)
+    long = csource("long", toolong; tempsuffix=true)
     @test occursin("double temp1[3];\n    add_3(", long)                                          # past `templimit`, the suffix is dropped
     @test occursin("void outtaken(const double out[3], const double v[3], double out_[restrict 3])", src)
     @test occursin("double add_3_[3];", src) && occursin("add_3(u, v, add_3_);", src)

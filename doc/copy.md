@@ -43,7 +43,7 @@ kept as a real temp.
 All of this is straight-line only — see below.
 
 1. **Reads.** `%i = x` becomes nothing; uses of `%i` say `x`. Kept as a
-   temp (`temp3_x = x`) only when `x` is reassigned before some use.
+   temp (`temp3 = x`) only when `x` is reassigned before some use.
 2. **Stores.** `%i = (x = rhs)` emits `x = rhs;`, and uses of `%i` say `x`,
    under the same condition.
 3. **SSA aliases and literals.** `%i = %j` and `%i = 5` are forwarded
@@ -73,7 +73,7 @@ All of this is straight-line only — see below.
      (`effects!` in `src/flow.jl`) — moves past nothing that computes, not
      even a read. So in `mutate!(v, 1.0) + mutate!(v, 2.0) + v[1]` both calls
      are pinned as temps in Julia's order, and `shout(a) + shout(b)` comes
-     out `temp1_a + shout(b)`.
+     out `temp1 + shout(b)`.
    `markinlined!` in `src/flow.jl` decides; conditions and loop bounds were
    its first consumers and follow the same rule.
 

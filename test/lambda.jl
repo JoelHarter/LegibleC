@@ -188,13 +188,13 @@ A23 = SMatrix{2,3}(1.0, 2.0, -3.0, 4.0, 5.0, -6.0); A22 = SMatrix{2,2}(1.0, 2.0,
     # The function is called by name, and the function it was handed to says which it was compiled for.
     @test occursin("double newton_f_df(double x) {", src) && occursin("x -= f(x) / df(x);", src)
     # What a lambda captured comes in where the lambda was, and goes first to the lambda's own function.
-    @test occursin("return newton_fun1_a_fun2(a, x0);", src) && occursin("double newton_fun1_a_fun2(double f_a, double x) {", src)
-    @test occursin(r"x -= fun1_a\(f_a, x\) / fun2\(x\);", src) && occursin("double fun1_a(double a, double x) {", src) && occursin("double fun2(double x) {", src)
-    @test occursin("double fun3_a_b(double a, double b, double x) {", src)
+    @test occursin("return newton_fun1_fun2(a, x0);", src) && occursin("double newton_fun1_fun2(double f_a, double x) {", src)
+    @test occursin(r"x -= fun1\(f_a, x\) / fun2\(x\);", src) && occursin("double fun1(double a, double x) {", src) && occursin("double fun2(double x) {", src)
+    @test occursin("double fun3(double a, double b, double x) {", src)
     # A lambda handed on to `sum` inside the function it was handed to is still written in the loop.
-    @test occursin("temp1 += sin(a + (k - 0.5) * h);", src) && occursin(r"temp1 \+= fun\d+_c\(f_c, a \+ \(k - 0\.5\) \* h\);", src)
+    @test occursin("temp1 += sin(a + (k - 0.5) * h);", src) && occursin(r"temp1 \+= fun\d+\(f_c, a \+ \(k - 0\.5\) \* h\);", src)
     # A function only passed on is still known all the way down.
-    @test occursin(r"double thru_fun\d+_a\(double g_a, double x\) \{", src) && occursin(r"return twice_fun\d+_a\(g_a, x\) \+ 1\.0;", src)
+    @test occursin(r"double thru_fun\d+\(double g_a, double x\) \{", src) && occursin(r"return twice_fun\d+\(g_a, x\) \+ 1\.0;", src)
     # Julia's own function is named as Julia names it.
     @test occursin("double twice_sin(double x) {", src) && occursin("return sin(sin(x));", src)
     @test !occursin("(*", src)                                   # no function pointer anywhere
@@ -208,9 +208,9 @@ end
     @test occursin("return g(a, x) + g(a, 2 * x);", src) && occursin("double g(double a, double y) {", src)
     @test occursin(r"double h\(double a, double y\) \{\n(    //[^\n]*\n)*    double z = y \+ a;", src)
     # A returned function is the struct of what it captured; calling it spreads the struct again.
-    @test occursin(r"/// what the function fun\d+_a_b captured: a, b\ntypedef struct \{\n    double a;\n    double b;\n\} fun\d+_a_b_t;", csource("heldtext", useline))
-    @test occursin(r"fun\d+_a_b_t h_? = line\(a, 2\.0\);", src) && occursin(r"return fun\d+_a_b\(h_?\.a, h_?\.b, 3\.0\);", src)
-    @test occursin(r"return \(fun\d+_a_b_t\)\{a, b\};", src)
+    @test occursin(r"/// what the function fun\d+ captured: a, b\ntypedef struct \{\n    double a;\n    double b;\n\} fun\d+_t;", csource("heldtext", useline))
+    @test occursin(r"fun\d+_t h_? = line\(a, 2\.0\);", src) && occursin(r"return fun\d+\(h_?\.a, h_?\.b, 3\.0\);", src)
+    @test occursin(r"return \(fun\d+_t\)\{a, b\};", src)
     @test occursin(r"memcpy\(result\.t, t, sizeof\(double\[3\]\)\);", src)        # an array captured is copied into it
 end
 
@@ -245,20 +245,20 @@ end
     @test occursin("    double s = 0.0;\n    for (int64_t i = 0; i < 4; i++) {\n        s += fabs(v[i]);\n    }\n    return s * 2;", src)
     @test occursin(r"int64_t temp1 = 0;\n    for \(int64_t k = 1; k <= n_?\w*; k\+\+\) \{\n        temp1 \+= k;\n    \}", src)
     # A `do` block of several lines is a function, called in the loop; its lines are shown with it and not twice.
-    @test occursin(r"out\[i\] = fun\d+_a\(a, v\[i\]\);", src) && count("y = x + a", src) == 2
-    @test !occursin(r"fun\d+\(", replace(src, r"fun\d+_\w+\(" => ""))            # a lambda written in place takes no number
+    @test occursin(r"out\[i\] = fun\d+\(a, v\[i\]\);", src) && count("y = x + a", src) == 2
+    @test count(r"\ndouble fun\d+\(", src) == 1                                # the one function; a lambda written in place is none, and takes no number
     check("foldedregular", [Case(mapregular, [1.0, 2.0, 3.0])]; targets=[(mapregular, Float64, 3)])
     src = check("foldededge", [Case(maxabs, 0), Case(maxabs, 3), Case(maxabsof, SVector(1, -5, 3)), Case(hoisted, v3, w3, 2.0), Case(upto, v4), Case(inexpression, v3, 2.0)])
     @test occursin("int64_t result = 1 > n ? 0 : INT64_MIN;", src)
     @test occursin("        int64_t temp1 = llabs(v[i]);\n        result = result > temp1 ? result : temp1;", src)      # written twice, worked out once
-    @test occursin("    double temp1_a = sq(a) + 1;\n    for (int64_t i = 0; i < 3; i++) {\n        out[i] = axpy(temp1_a, v[i], w[i]);", src)
-    @test occursin(r"int64_t temp1_v = short\w*\(v\);\n    for \(int64_t k = 1; k <= temp1_v; k\+\+\) \{", src)
-    @test occursin("double temp1_v = 0.0;", src) && occursin("return a * temp1_v + temp2_v;", src)                   # a temp is named for what it went over
+    @test occursin("    double temp1 = sq(a) + 1;\n    for (int64_t i = 0; i < 3; i++) {\n        out[i] = axpy(temp1, v[i], w[i]);", src)
+    @test occursin(r"int64_t temp1 = short\w*\(v\);\n    for \(int64_t k = 1; k <= temp1; k\+\+\) \{", src)
+    @test occursin("double temp1 = 0.0;", src) && occursin("return a * temp1 + temp2;", src)                   # a temp is named for what it went over
     # A function that prints goes over a matrix in Julia's order, down each column; one that only computes, in C's.
     @test occursin("    for (int64_t j = 0; j < 2; j++) {\n        for (int64_t i = 0; i < 2; i++) {\n            result += fun1(A[i][j]);", csource("printed", printed))
     shown_ = csource("shown", shown)
     @test occursin("        printf(\"%g\\n\", v[i]);", shown_)
-    @test occursin(r"double temp1_v = sq\(v\[0\]\);\n    double temp2_v = 0\.0;", shown_)       # `sq` runs before the loop prints
+    @test occursin(r"double temp1 = sq\(v\[0\]\);\n    double temp2 = 0\.0;", shown_)       # `sq` runs before the loop prints
 end
 
 # What isn't written, said plainly.

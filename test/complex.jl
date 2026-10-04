@@ -50,7 +50,7 @@ check("cx", [Case(zsq, z), Case(parts, z), Case(mag, w), Case(mk, 1.5, -2.0), Ca
     @test occursin("return creal(z) + 2 * cimag(z) + creal(z) - cimag(z);", src)
     @test occursin("return (a + b * I) * CMPLX(b, a) / csqrt(CMPLX(a, b));", src) && occursin("#ifndef CMPLX", src) && occursin("#include <complex.h>", src)
     # Arrays: the same helpers with `C64` in the name; `2y` a real coefficient.
-    @test occursin("mul_s_C3(2.0, y, temp1_y);", src) && occursin("add_C3(x, temp1_y, out);", src)
+    @test occursin("mul_s_C3(2.0, y, temp1);", src) && occursin("add_C3(x, temp1, out);", src)
     # `dot` conjugates its first argument; `norm` sums squared magnitudes into a real.
     @test occursin("sum += conj(a[k]) * b[k];", src) && occursin("double norm_C3(const double complex a[3])", src) && occursin("sum += creal(a[i]) * creal(a[i]) + cimag(a[i]) * cimag(a[i]);", src)
     # `A' * A` is `H`, read conjugated; `transpose(A)` stays `T`.

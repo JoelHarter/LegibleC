@@ -31,7 +31,7 @@ an array of that element type and size. Options: `outfile`, `outpath`,
 | default arguments, `agm(x, y, e=5)` | yes: the short method Julia makes is a C function that calls the long one, `return agm_F64_F64_I64(x, y, 5);` |
 | keyword arguments | not yet |
 | a function handed to a function, `newton(f, df, x)`, `rk4((x, y) -> -c * y, …)` | yes: Julia compiles one `newton` for each function it is handed, and so does the C, which calls it by name, `newton_f_df`. No function pointers (`../call.md`) |
-| `x -> a * x + b`, a `do` block, `g = y -> …` then `g(x)`, a function returned from a function | yes: a lambda is a C function that takes what it captured first, `fun1_a_b(a, b, x)`; a named one keeps its name |
+| `x -> a * x + b`, a `do` block, `g = y -> …` then `g(x)`, a function returned from a function | yes: a lambda is a C function that takes what it captured first, `fun1(a, b, x)`; a named one keeps its name |
 | `sum(abs, v)`, `map(x -> x^2, v)`, `any`, `all`, `count`, `prod`, `maximum`, `minimum`, `foreach` with a function; `sum(f(x) for x in v)`; `[f(x) for x in v]`; `g.(v)` with your own function | yes: the loop, written where the call is, a one-line lambda as its expression |
 | a struct called as a function, `(p::Poly)(x) = …` then `p(x)` | yes: `Poly_call(p, x)` |
 | a lambda that writes into an array it captured; a function kept in a field, a tuple or an array; a captured variable assigned again afterwards | not yet: refused, each with what to write instead |

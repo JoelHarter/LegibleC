@@ -28,7 +28,7 @@ check("operator", [Case(lenb, SVector(1.0, 2.0, 3.0), SVector(1.0, 1.0, 1.0)), C
     # A scalar operator has no helper to promote: a small function under the scheme's name.
     @test occursin("double add_s(double a, double b) {\n    return a + b;\n}", src) && occursin("Julia signature: +(::Float64, ::Float64)", src) && !occursin("@transpile.jl", src)
     # The user's own code calls the promoted function; a user's unary minus is `neg`.
-    @test occursin("add_3(a, b, temp1_a_b);", src) && occursin("Pair2 neg_Pair2(Pair2 p)", src)
+    @test occursin("add_3(a, b, temp1);", src) && occursin("Pair2 neg_Pair2(Pair2 p)", src)
     # Split: the operator's function has a file of its own.
     dir = mktempdir()
     paths = transpile((+, Float64, 3, Float64, 3), lenb; outfile="lib", split=true, outpath=dir, scope=@__MODULE__)

@@ -231,8 +231,8 @@ element of each input, so it writes into the destination directly:
 `add_3(v, temp1, v)`. A product, a solve, an inverse, a cross product, a
 transposed operand (`A = A + A'`) or a construction (`v = [v[3], v[1] + v[2],
 0.0]`) reads elements the output has already overwritten, so those go
-through a temp and are then copied: `mul_2x2_2x2(A, A, temp1_A);
-memcpy(A, temp1_A, sizeof temp1_A);`. The helpers say which they are: an
+through a temp and are then copied: `mul_2x2_2x2(A, A, temp1);
+memcpy(A, temp1, sizeof temp1);`. The helpers say which they are: an
 elementwise helper's `out` is a plain array, the others' is `restrict`
 (`helper.md`).
 
@@ -288,9 +288,9 @@ programmer writes it:
         ...
         xnew[i - 1] = s / A[i - 1][i - 1];
         ...
-        double *temp1_x = x;
+        double *temp1 = x;
         x = xnew;
-        xnew = temp1_x;
+        xnew = temp1;
     }
 ```
 

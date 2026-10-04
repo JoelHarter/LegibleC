@@ -321,8 +321,8 @@ append!(cases, [Case(nested3, true, false, 4), Case(nested3, false, true, 4), Ca
     @test occursin("for (int64_t i = 1; i <= n; i++) {\n        int64_t k = i;", loops)                 # the counting is ours, the variable the body's
     @test occursin("while (n > 0 && m > 0) {", loops) && occursin("while (n > 0 || m > 0) {", loops)
     src = csource("flowtext", each, halve, shrinking, drained, steady)
-    @test occursin("int64_t temp1_n = n;\n    for (int64_t k = 1; k <= temp1_n; k++) {", src)                  # the bound, read once
-    @test occursin("= v[0];\n    for (int64_t k = 1; k <= temp1_v; k++) {", src) && occursin("for (int64_t k = 1; k <= n; k++) {", src)
+    @test occursin("int64_t temp1 = n;\n    for (int64_t k = 1; k <= temp1; k++) {", src)                  # the bound, read once
+    @test occursin("= v[0];\n    for (int64_t k = 1; k <= temp1; k++) {", src) && occursin("for (int64_t k = 1; k <= n; k++) {", src)
     @test occursin("for (int64_t i = 0; i < 3; i++) {\n        double x = v[i];", src)   # `for x in v`: an index Julia never named
     @test occursin("while (true) {", src) && occursin("if (!(sum_3(temp1) > 1.0)) {\n            break;", src)   # a header with array work
 end

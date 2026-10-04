@@ -14,16 +14,16 @@ order never matters and recursion just works.
 
 ```c
 void quad(const double v[3], double out[restrict 3]) {
-    double temp1_v[3];
-    twice(v, temp1_v);
-    twice(temp1_v, out);
+    double temp1[3];
+    twice(v, temp1);
+    twice(temp1, out);
 }
 ```
 
 The shapes follow from the rest: a scalar result is a return value, an
 array result comes through the trailing `out` parameter, a struct or tuple
 result is returned by value. A call made for its effect, or whose result
-goes unused, is a statement (`twice(v, temp1_v);`); `return nothing` and a
+goes unused, is a statement (`twice(v, temp1);`); `return nothing` and a
 `Nothing` result are `void`.
 
 Not yet: passing an eagerly transposed matrix straight to a call (`g(A')` —
@@ -43,17 +43,17 @@ root(a, x0) = newton(x -> x^2 - a, x -> 2x, x0)
 
 ```c
 double root(double a, double x0) {
-    return newton_fun1_a_fun2(a, x0);
+    return newton_fun1_fun2(a, x0);
 }
 
-double newton_fun1_a_fun2(double f_a, double x) {
+double newton_fun1_fun2(double f_a, double x) {
     for (int64_t i = 1; i <= 20; i++) {
-        x -= fun1_a(f_a, x) / fun2(x);
+        x -= fun1(f_a, x) / fun2(x);
     }
     return x;
 }
 
-double fun1_a(double a, double x) {
+double fun1(double a, double x) {
     return x * x - a;
 }
 ```
@@ -70,8 +70,8 @@ calling it is a call to the C function its body became, the captures first.**
   `g = y -> a * y + 1`, it is no C at all: `g(x)` is `g(a, x)`, the captures
   written as the variables they were captured from.
 - A function returned from a function is the one case that must be one value,
-  so it is a struct of its captures, `fun1_a_b_t`, and calling it spreads the
-  struct again: `fun1_a_b(h.a, h.b, 3.0)`.
+  so it is a struct of its captures, `fun1_t`, and calling it spreads the
+  struct again: `fun1(h.a, h.b, 3.0)`.
 - A function that captured a function holds that one's captures in place.
 - A struct of the author's with a method of its own, `(p::Poly)(x) = …`, is
   called as `Poly_call(p, x)`; a second such method says its types,

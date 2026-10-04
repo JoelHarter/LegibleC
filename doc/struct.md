@@ -77,8 +77,8 @@ in `step` gives `step_t` with `x` and `xdot`, and the return is the literal
 `return (step_t){x, xdot};`. C returns small structs in registers and larger
 ones through a hidden pointer the caller provides, so this costs what
 output pointers would have cost, and it keeps the Julia's meaning: one value,
-returned. At a call site `x, ẋ = step(…)` reads `step_t temp1_step =
-step(…); x = temp1_step.x; ẋ = temp1_step.xdot;`, a tuple kept whole is
+returned. At a call site `x, ẋ = step(…)` reads `step_t temp1 =
+step(…); x = temp1.x; ẋ = temp1.xdot;`, a tuple kept whole is
 `step_t t = step(…)` with `t[2]` as `t.xdot`, and a function that returns
 another's tuple straight on returns that function's struct. When what is
 returned isn't plain variables — `(v, 2.0 * v)`, or returns that disagree —

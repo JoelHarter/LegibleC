@@ -16,7 +16,7 @@ Every keyword option of `transpile`.
 | `bool` | `Bool` | the C type for a `Bool`: `Bool` for C's `bool`, or one of Julia's integer types for that integer wherever a `Bool` appears, names included; the C then writes `0` and `1` and reads any nonzero value as true |
 | `width` | `100` | the longest line; a long scalar expression wraps at its loosest operators |
 | `templimit` | `40` | the longest name a temporary may be given before its descriptive suffix is dropped |
-| `tempsuffix` | `true` | temporaries carry what they were computed from, `temp1_a_b = a + b`; off, they are `temp1`, `temp2`, … |
+| `tempsuffix` | `false` | on, temporaries carry what they were computed from, `temp1_a_b = a + b`, and an unnamed lambda what it captured, `fun3_a_b`; off, they are `temp1`, `temp2`, … and `fun1`, `fun2`, … |
 | `spelling` | `Dict()` | your own C spellings for characters in names — see [name.md](name.md) |
 | `scope` | `Main` | the module a keyword variable's name is looked up in, to decide `const`; `@transpile` sets it to the module the call is written in |
 | any other keyword | | a variable to include, named after the keyword — see [target.md](target.md) |

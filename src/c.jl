@@ -65,7 +65,7 @@ struct Kind
     cname::String
     fields::Vector{String}
 end
-function Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true, limit::Integer=40)
+function Program(; precise::Bool=false, width::Integer=100, suffix::Bool=false, limit::Integer=40)
     prog = Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
             suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}(),

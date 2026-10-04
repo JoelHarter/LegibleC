@@ -37,7 +37,7 @@ check("text", [Case(classes, 'a'), Case(classes, '7'), Case(classes, ' '), Case(
     @test occursin("const char *greet(const char *s) {", src) && occursin("printf(\"hello, %s\\n\", s);", src)
     @test occursin("return c - 'a';", src) && occursin("@param[in] c  character", src) && occursin("@param[in] s  string", src)
     counted = csource("counted", count_a)
-    @test occursin("int64_t temp1_s = (int64_t)strlen(s);\n    for (int64_t i = 1; i <= temp1_s; i++) {\n        if (s[i - 1] == 'a') {\n            n++;\n        }\n    }\n    return n;", counted)
+    @test occursin("int64_t temp1 = (int64_t)strlen(s);\n    for (int64_t i = 1; i <= temp1; i++) {\n        if (s[i - 1] == 'a') {\n            n++;\n        }\n    }\n    return n;", counted)
     @test_throws ArgumentError csource("nonascii", (c::Char) -> c == 'é')
 end
 end

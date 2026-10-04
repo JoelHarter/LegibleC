@@ -259,11 +259,11 @@ check("outplaced", [Case(state, SVector(1.0, 0.0, 0.0), SVector(0.0, 1.0, 0.0), 
     src = csource("outplaced", state, whole, grown, swapped, scaled, turned, stacked, sliced, either)
     fn(name) = (i = findfirst("void $name(", src)[1]; src[i:findnext("\n}", src, i)[end]])
     @test occursin("// copy x and v into out, where the function works on them and returns them\n    memcpy(out, x, sizeof(double[3]));\n    double *x_local = out;\n    memcpy(&out[3], v, sizeof(double[3]));\n    double *v_local = &out[3];", src)
-    @test occursin("add_3(x_local, temp2_dt_v, x_local);  // x_local += temp2_dt_v", fn("state")) && !occursin("memcpy(out, x_local", fn("state")) && !occursin("memcpy(&out[3], v_local", fn("state"))
+    @test occursin("add_3(x_local, temp2, x_local);  // x_local += temp2", fn("state")) && !occursin("memcpy(out, x_local", fn("state")) && !occursin("memcpy(&out[3], v_local", fn("state"))
     @test occursin("// copy x into out, where the function works on it and returns it\n    memcpy(out, x, sizeof(double[3]));\n    double *x_local = out;", src) && occursin("mul_3_s(x_local, s, x_local);", src)
     @test occursin("// b and c are built in out, where the function returns them\n    double *b = out;\n    double *c = &out[3];", src) && occursin("mulP_3F64_sI64(a, 2, b);", src) && occursin("addP_3_s(b, 1.0, c);", src)
     @test occursin("double x_local[3];\n    memcpy(x_local, x, sizeof x_local);", src)          # swapped and scaled: the copy stays
-    @test occursin("mul_3x3_3(M, x_local, temp1_M_x);", src) && occursin("memcpy(x_local, temp1_M_x, sizeof temp1_M_x);", src)   # turned: through a temp, into place
+    @test occursin("mul_3x3_3(M, x_local, temp1);", src) && occursin("memcpy(x_local, temp1, sizeof temp1);", src)   # turned: through a temp, into place
     @test occursin("memcpy(out, A, sizeof(double[2][3]));\n    double (*A_local)[3] = out;", src) && occursin("mulP_2x3F64_sI64(A_local, 2, A_local);", src) && occursin("memcpy(out[2], r, sizeof(double[3]));", src)   # stacked
     @test occursin("void sliced(double a[restrict 3])", src) && occursin("a = m[2, :]\n    memcpy(a, m[1], sizeof(double[3]));\n}", src)   # one copy, into the parameter
     @test occursin("double m[3][3] = {\n        {4, 8, 1},\n        {5.0, 9, 2},\n        {4, 8, 0},\n    };", src)   # a literal is declared with its initializer, a row per line
@@ -446,8 +446,8 @@ end
     @test occursin("double *const k = m;", src)
     @test occursin("double x_data[3];\n    memset(x_data, 0, sizeof(double[3]));\n    double *x = x_data;", src) && occursin("double *xnew = xnew_data;", src)
     @test occursin("double x_data[3] = {1.0, 2.0, 3.0};\n    double *x = x_data;", src)                                # built in its own storage, as any array is
-    @test occursin("double *temp1_x = x;\n        x = xnew;\n        xnew = temp1_x;", src)                       # the swap: three pointers, no copy
-    @test occursin("double *temp1_a = a;\n    a = b;\n    b = temp1_a;", src)                                   # two parameters swapped: no declaration at all
+    @test occursin("double *temp1 = x;\n        x = xnew;\n        xnew = temp1;", src)                       # the swap: three pointers, no copy
+    @test occursin("double *temp1 = a;\n    a = b;\n    b = temp1;", src)                                   # two parameters swapped: no declaration at all
     @test occursin("double (*const M)[3] = A;", src)
     @test occursin("double *best = u;", src) && occursin("best = w;", src)
     @test occursin("double a_local[3];", src)                                                                   # the working copy that stays one
@@ -480,7 +480,7 @@ end
                           [Case(cubelinear, T232, k) for k in (1, 2, 3, 7, 12)]; [Case(storedlinear, k) for k in (1, 3, 6)]])
     src = csource("linearindextext", fixedlinear, movinglinear, cubelinear, storedlinear)
     @test occursin("return A[0][2] + 10.0 * A[1][0] + 100.0 * A[1][2];", src)
-    @test occursin("int64_t temp1_k = k + 1;", src) && occursin("A[(k - 1) % 2][(k - 1) / 2]", src)
+    @test occursin("int64_t temp1 = k + 1;", src) && occursin("A[(k - 1) % 2][(k - 1) / 2]", src)
     @test occursin("T[(k - 1) % 2][((k - 1) / 2) % 3][(k - 1) / 6] + T[0][2][1]", src)
     @test occursin("double M[2][3];\n", src) && occursin("M[(k - 1) % 2][(k - 1) / 2] = 7.0;", src) && occursin("M[1][1] = 2.0;", src)
 end

@@ -125,9 +125,9 @@ statement's C ends and the next begins.
     double r = norm_3(x_);
 
     // @demo.jl:10: a = -x / r^3
-    double temp1_r = r * r * r;
+    double temp1 = r * r * r;
     double a[3];
-    div_3_s(x_, -temp1_r, a);
+    div_3_s(x_, -temp1, a);
 ```
 
 ## On the helpers
@@ -192,9 +192,9 @@ steps, alignment would only look like it had failed.
 // @f.jl:12: f(A, b, c, D) = (A .+ b) \ c + D
 double temp1[3][3];
 addP_3x3_3(A, b, temp1);  // temp1 = A .+ b
-double temp2_c[3];
-solve_3x3_3(temp1, c, temp2_c);  // temp2_c = temp1 \ c
-add_3(temp2_c, D, out);  // out = temp2_c + D
+double temp2[3];
+solve_3x3_3(temp1, c, temp2);  // temp2 = temp1 \ c
+add_3(temp2, D, out);  // out = temp2 + D
 ```
 
 The text is a blend of three things — the notation of a textbook, Julia's

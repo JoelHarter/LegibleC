@@ -62,7 +62,7 @@ check("chain", [Case(chain3, SMatrix{2,3}(1.0, 2, 3, 4, 5, 6), SMatrix{3,4}(1.0:
                 Case(sandwich, SMatrix{3,3}(2.0, 1, 0, 1, 3, 1, 0, 1, 4), SMatrix{3,3}(1.0:9...))])
 @testset "chain" begin
     src = csource("chain", chain3)
-    @test occursin("double temp1_A_B[2][4];", src) && occursin("mul_2x3_3x4(A, B, temp1_A_B);", src) && occursin("mul_2x4_4x5(temp1_A_B, C, out);", src)
+    @test occursin("double temp1[2][4];", src) && occursin("mul_2x3_3x4(A, B, temp1);", src) && occursin("mul_2x4_4x5(temp1, C, out);", src)
 end
 # A product of several factors is grouped as Julia groups it, which Julia is asked (`src/product.jl`):
 # `A * B * v` is `A * (B * v)`, three matrices go by cost, a row in front goes first, and `A^5` is
@@ -89,9 +89,9 @@ first_(A::SMatrix{2,2,Float64,4}) = A^1
                       Case(sab, 2.5, A22, A22), Case(outerthen, v2, SVector(2.0, -1.0), A22), Case(literal3, A22), Case(quadin, v3, A33),
                       Case(squared, A22), Case(cubed, A33), Case(fifth, A22), Case(seventh, A22)])
     src = csource("producttext", abv, bycost, fifth)
-    @test occursin("mul_2x2_2(B, v, temp1_B_v);", src) && occursin("mul_2x2_2(A, temp1_B_v, out);", src)             # A * (B * v)
-    @test occursin("mul_9x9_9x1(B, C, temp1_B_C);", src) && occursin("mul_2x9_9x1(A, temp1_B_C, out);", src)         # by cost, from the right
-    @test occursin("mul_2x2_2x2(A, A, temp1_A);", src) && occursin("mul_2x2_2x2(temp1_A, temp1_A, temp2_A);", src) && occursin("mul_2x2_2x2(A, temp2_A, out);", src)
+    @test occursin("mul_2x2_2(B, v, temp1);", src) && occursin("mul_2x2_2(A, temp1, out);", src)             # A * (B * v)
+    @test occursin("mul_9x9_9x1(B, C, temp1);", src) && occursin("mul_2x9_9x1(A, temp1, out);", src)         # by cost, from the right
+    @test occursin("mul_2x2_2x2(A, A, temp1);", src) && occursin("mul_2x2_2x2(temp1, temp1, temp2);", src) && occursin("mul_2x2_2x2(A, temp2, out);", src)
     check("first_", [Case(first_, A22)])                       # `A^1`: once refused, now the integer power helper
 end
 

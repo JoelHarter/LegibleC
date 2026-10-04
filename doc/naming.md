@@ -333,8 +333,9 @@ An intermediate value that has no Julia name becomes a C local called a
 
 **Base.** Temps are numbered in order of creation: `temp1`, `temp2`, `temp3`, …
 
-**Suffix.** The names of the variables used *directly* in the calculation are
-appended, in order of first appearance, separated by `_`:
+**Suffix.** With the `tempsuffix` option on (it is off by default, and a temp
+is then its bare `temp<N>`), the names of the variables used *directly* in the
+calculation are appended, in order of first appearance, separated by `_`:
 
 ```c
 double temp1_a_b = a + b;
@@ -352,9 +353,11 @@ double temp1_a_b = a + b;
   For an unnamed tuple being unpacked, `return x, ẋ`, it is the function
   itself: `temp1_step`. Otherwise — the callee returns an expression — the
   call's operands, like any operation
-- The suffixes are the `tempsuffix` option of `transpile`, on by default;
-  off, every temp is its bare `temp<N>`. Numbering never depends on the
-  suffix, so a name can only ever look odd, not be wrong
+- The suffixes are the `tempsuffix` option of `transpile`, off by default:
+  every temp is then its bare `temp<N>`. Numbering never depends on the
+  suffix, so turning it on changes no number, and a name can only ever look
+  odd, not be wrong. The one option governs everything named this way, an
+  unnamed lambda's `fun<N>` included
 - There is one rule for what a name contributes, and it doesn't care whether
   the name is one of our temps or the user's own: chop a leading `temp<N>_`
   if there is one, then split at `_`. So `temp5_joel_was_here_eh =
@@ -389,11 +392,11 @@ function, and needs one.
 given the same name, in another function, is that function's: `outer_g`.
 
 **Otherwise it follows the temps' rules, on a list of its own.** The base is
-`fun` and a number, and the suffix is what it captured: `fun3_a_b` for
+`fun` and a number: `fun3`. With the `tempsuffix` option on, the same one the
+temps answer to, the suffix is what it captured: `fun3_a_b` for
 `x -> a * x + b`. Its parameters aren't in the name, since its signature shows
-them. The same `tempsuffix` option turns the suffix off, the same `templimit`
-drops a suffix that makes the name too long, and a number is passed over when
-the author has a `fun<N>` of their own.
+them. The same `templimit` drops a suffix that makes the name too long, and a
+number is passed over when the author has a `fun<N>` of their own.
 
 **The list is the file's, not the function's.** Temps are numbered within one
 function, because a temp is seen only there. A C function is seen by the whole
@@ -404,7 +407,7 @@ with `v[i] * v[i]` in it; no function is written, so none is counted.
 
 **A function compiled for the functions it was handed says which.**
 `newton(f, df, x)` is `newton_f_df`, and with two lambdas
-`newton_fun1_a_fun2`. Julia's own are named as Julia names them, `twice_sin`.
+`newton_fun1_fun2`. Julia's own are named as Julia names them, `twice_sin`.
 
 ## Results
 

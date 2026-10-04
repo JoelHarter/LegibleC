@@ -210,12 +210,12 @@ end
     src = csource("placement", spun, spun2, rebuilt, bagged, counted, paired, early)
     @test occursin("Quat result;\n    mul_s_3(s, axis, result.v);\n    result.w = c;\n    return result;", src)
     @test occursin("Quat q;\n    mul_s_3(s, axis, q.v);\n    q.w = c;", src)
-    @test occursin("mul_s_3(s, q.v, temp1_s_q_v);", src) && !occursin("mul_s_3(s, q.v, q.v)", src)      # rebuilt: the temp stays
-    @test occursin("mul_s_3(s, axis, temp1_s_axis);", src) && occursin("b.w = vsum(b);", src)             # bagged: the temp stays
-    @test occursin("Bag b;\n    mul_s_3(s, axis, b.v);  // b.v = s * axis\n    Counter *temp1_c = bump(c);", src)          # counted: placed, the effect after it as in Julia
-    @test occursin("Tuple3xxF64 result;\n    mul_s_3(s, axis, result.a);  // result.a = s * axis\n    Counter *temp1_c = bump(c);", src)   # paired: into the tuple's struct
+    @test occursin("mul_s_3(s, q.v, temp1);", src) && !occursin("mul_s_3(s, q.v, q.v)", src)      # rebuilt: the temp stays
+    @test occursin("mul_s_3(s, axis, temp1);", src) && occursin("temp2.w = vsum(b);", src)             # bagged: the temp stays
+    @test occursin("Bag b;\n    mul_s_3(s, axis, b.v);  // b.v = s * axis\n    Counter *temp1 = bump(c);", src)          # counted: placed, the effect after it as in Julia
+    @test occursin("Tuple3xxF64 result;\n    mul_s_3(s, axis, result.a);  // result.a = s * axis\n    Counter *temp1 = bump(c);", src)   # paired: into the tuple's struct
     @test occursin("c->n++;", src)                                                                                            # a field store shortened like a variable's
-    @test occursin("mul_s_3(s, axis, temp1_s_axis);  // temp1_s_axis = s * axis\n    if (bad) {\n        return b.z;\n    }", src)   # early: the temp stays
+    @test occursin("mul_s_3(s, axis, temp1);  // temp1 = s * axis\n    if (bad) {\n        return b.z;\n    }", src)   # early: the temp stays
 end
 check("struct", [Case(norm2, p), Case(make, 5.0, 6.0), Case(midpoint, Segment(p, q)), Case(momentum, b, v), Case(shifted, b, v),
                  Case(same, p, Point(3.0, 4.0)), Case(same, p, q), Case(swap, Pair2(1.0, 2.0)), Case(bump!, Counter(41)),
@@ -230,12 +230,12 @@ check("struct", [Case(norm2, p), Case(make, 5.0, 6.0), Case(midpoint, Segment(p,
     # is read; and `a + b + c` on arrays accumulates in its destination.
     src = csource("quat", turned)
     @test occursin("return conj_Quat(q);", src)
-    @test occursin("Quat temp2_q_v = mul_Quat_Quat(mul_Quat_Quat(q, temp1_v), adjoint_Quat(q));  // temp2_q_v = q * temp1_v * q'", src)
-    @test occursin("    // temp1_v = Quat(0.0, v)\n    Quat temp1_v;\n", src)
-    @test occursin("memcpy(out, temp2_q_v.v, sizeof(double[3]));", src)
+    @test occursin("Quat temp2 = mul_Quat_Quat(mul_Quat_Quat(q, temp1), adjoint_Quat(q));  // temp2 = q * temp1 * q'", src)
+    @test occursin("    // temp1 = Quat(0.0, v)\n    Quat temp1;\n", src)
+    @test occursin("memcpy(out, temp2.v, sizeof(double[3]));", src)
     # The product's vector part is computed straight into the result's field (`placement`).
-    @test occursin("Quat result;\n    add_3(temp1_a_b_v, temp2_b_a_v, result.v);  // result.v = temp1_a_b_v + temp2_b_a_v", src)
-    @test occursin("add_3(result.v, temp3_a_v_b, result.v);  // result.v += temp3_a_v_b\n    result.w = a.w * b.w - dot_3(a.v, b.v);\n    return result;", src)
+    @test occursin("Quat result;\n    add_3(temp1, temp2, result.v);  // result.v = temp1 + temp2", src)
+    @test occursin("add_3(result.v, temp3, result.v);  // result.v += temp3\n    result.w = a.w * b.w - dot_3(a.v, b.v);\n    return result;", src)
     @test !occursin("temp4", src)
 end
 @testset "operator methods" begin
@@ -252,14 +252,14 @@ end
     @test occursin("typedef struct {\n    double x;\n    double xdot;\n} step_t;", src) && occursin("step_t step(double x, double xdot, double dt)", src)
     @test occursin("return (step_t){x, xdot};", src)
     # Destructured at the call site by name; passed straight on, the callee's struct is inherited.
-    @test occursin("step_t temp1_step = step(x, xdot, dt);\n    x = temp1_step.x;\n    xdot = temp1_step.xdot;", src) && occursin("step_t twice(", src) && occursin("return step(x, xdot, dt);", src)
+    @test occursin("step_t temp1 = step(x, xdot, dt);\n    x = temp1.x;\n    xdot = temp1.xdot;", src) && occursin("step_t twice(", src) && occursin("return step(x, xdot, dt);", src)
     @test occursin("step_t t = step(x, 0.0, dt);", src) && occursin("return t.x * t.xdot;", src)
     # A tuple parameter is spread; a tuple built for a call goes as its elements.
     @test occursin("double third(double t1, double t2, double t3)", src) && occursin("return t1 + t3;", src) && occursin("return third(a, 2 * a, 3 * a);", src)
     # Variables returned in any order keep their names; an expression returned has none,
     # so `arrays`, returning `(v, 2.0 * v)`, gets the structural struct with positional fields.
     @test occursin("typedef struct {\n    double b;\n    double a;\n} tswap_t;", src) && occursin("return (tswap_t){b, a};", src)
-    @test occursin("Tuple3xx3 temp1_arrays = arrays(v);", src)
+    @test occursin("Tuple3xx3 temp1 = arrays(v);", src)
 end
 # A constructor the author wrote is a function of the author's; only the one Julia gives every
 # struct, one argument a field, is the C literal. Each of these was written as the literal

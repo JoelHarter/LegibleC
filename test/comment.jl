@@ -77,11 +77,11 @@ end
     # Steps: one comment per operation of a Julia line that became several, in the
     # helpers' spelling with the C names; a loop gets it above; a single-step line none.
     @test occursin(r"addP_3x3_3\(A, b, temp1\); +// temp1 = A \.\+ b", src)
-    @test occursin(r"solve_3x3_3\(temp1, c, temp2_c\); +// temp2_c = temp1 \\ c", src)
-    @test occursin(r"add_3\(temp2_c, D, out\); +// out = temp2_c \+ D", src)
+    @test occursin(r"solve_3x3_3\(temp1, c, temp2\); +// temp2 = temp1 \\ c", src)
+    @test occursin(r"add_3\(temp2, D, out\); +// out = temp2 \+ D", src)
     @test occursin(r"mul_3x3_T3x3\(A, B, C\); +// C = A \* Bᵀ", src)
-    @test occursin("    // temp1_C_A_B = [C A; B C]\n    for (int i = 0; i < 3; i++) {", src)
-    @test occursin("// out = temp1_C_A_B .* 2.0", src)
+    @test occursin("    // temp1 = [C A; B C]\n    for (int i = 0; i < 3; i++) {", src)
+    @test occursin("// out = temp1 .* 2.0", src)
     @test occursin("mul_3x3_3x3(A, B, out);\n", src) && !occursin("mul_3x3_3x3(A, B, out);  //", src)
     bare = csource("commentless", scaled; source=false)
     @test occursin("// Scale first.", bare) && !occursin("B = A * s      #", bare)
