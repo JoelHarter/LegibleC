@@ -75,6 +75,11 @@ effect. In C it would be a variable declared, set, and warned about.
 
 Implementation: `analyze!` in `src/c.jl` (`sc.folded`, `sc.gone`).
 
+A type parameter compared with a number, `if T == 0` in a function `where T`,
+is decided the moment the type is chosen, so each instantiation gets the
+branch that is its own and no `if`: `b += 2;` for `Obj{0}`, `b += 3;` for
+`Obj{1}`.
+
 ## A value that a test chooses
 
 `a && b`, `a || b` and `c ? x : y` are lowered the same way wherever a value is

@@ -63,6 +63,7 @@ transpile time, never C that compiles and does the wrong thing.
 | `term.jl` | an expression until it is written: its parts, the type Julia gives it, the type C computes it in, how far its value can reach, and the one place a cast between the two is decided |
 | `idiom.jl` | scalar functions that are one C expression of their arguments, a row each |
 | `product.jl` | how Julia groups a product of several factors and a power of a matrix: asked of Julia, not copied |
+| `power.jl` | power by squaring, written once in Julia and translated for each type a power is asked of: a number, a matrix, a struct of the author's |
 | `storage.jl` | one array under two names: which mutable array variables are storage, which are second names and which are moving names, written as pointers |
 | `helper.jl` | the helper generators: the axis model (`access`, `contraction`), elementwise and pointwise loops, block placement, `det`, `pivot`/`lu`/`solve`/`inv`, Cholesky, `pinv`, reductions, slices; helper names and parameter names |
 | `prose.jl` | the English comment on each helper |

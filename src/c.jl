@@ -61,11 +61,15 @@ struct Kind
     cname::String
     fields::Vector{String}
 end
-Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true) =
-    Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
+function Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true)
+    prog = Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
             suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}(),
             Any[], Dict{Any, String}(), Set{String}(), Set{Any}(), Set{String}(), nothing)
+    empty!(programs)                         # one program at a time: the table of helpers says which (`power.jl`)
+    programs[prog.helpers] = prog
+    return prog
+end
 
 # The irrationals the current `transpile` call has met, by the macro each is written as:
 # `"LEGIBLEC_PI" => π`. The helper header defines the ones the output uses.
@@ -168,7 +172,8 @@ mutable struct Scope
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
-    names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])])]
+    # A parameter the author gave no name, `one(::Quat)`, is `unused`.
+    names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) == "#unused#" ? "unused" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])])]
     hidden = Set{Int}(i for (i, s) in enumerate(ci.slotnames) if i > 1 && isempty(string(s)))
     result = "result"
     while result in names
@@ -196,6 +201,7 @@ include("io.jl")
 include("move.jl")
 include("product.jl")   # how Julia groups a product of several factors: asked, not copied
 include("storage.jl")   # one array under two names: which variables are storage, and which are names for it
+include("power.jl")     # x to an integer power, written once in Julia and translated for each type
 
 """
     cfunction(name, mi, sig, helpers, headers; templimit=40, source=true) -> (prototype, definition)
@@ -323,7 +329,77 @@ function canonical!(ci::Core.CodeInfo)
         code[k+1] = Expr(:(=), st.args[1], Core.SSAValue(k))
         ci.ssavaluetypes[k], ci.ssavaluetypes[k+1] = ci.ssavaluetypes[k+1], ci.ssavaluetypes[k]
     end
+    # A local with a declared type, `y::Float64 = 3`, goes through a variable of Julia's own that
+    # is stored twice: the value, and then the value converted, which reads the first:
+    #
+    #     hidden = 3;  hidden = convert(Float64, hidden);  y = hidden
+    #
+    # Where Julia has decided that the conversion runs, the first store is only ever read by the
+    # second. So what it stored is put where it is read, and the variable is stored once, which
+    # is the shape every rule after this knows: `double y = 3.0;`, one line for one line.
+    for h in Int(ci.nargs)+1:length(ci.slotnames)
+        isempty(string(ci.slotnames[h])) || continue
+        stores = [k for (k, st) in enumerate(code) if st isa Expr && st.head === :(=) && st.args[1] == Core.SlotNumber(h)]
+        length(stores) == 2 || continue
+        first_, second = stores
+        V = code[first_].args[2]
+        V isa Union{Number, Core.SSAValue, Core.SlotNumber} || continue
+        reads = [k for (k, st) in enumerate(code) if st == Core.SlotNumber(h)]
+        all(k -> first_ < k, reads) && any(k -> k < second, reads) || continue
+        # Straight down from the first store to the second: no jump but ones Julia has decided, and none in from outside.
+        all(k -> !(code[k] isa Core.GotoNode) && (!(code[k] isa Core.GotoIfNot) || code[k].cond isa Core.SSAValue && ci.ssavaluetypes[code[k].cond.id] isa Core.Const), first_+1:second) || continue
+        any(k -> first_ < k <= second, aims) && !all(k -> !(first_ < k <= second) || any(j -> first_ < j < second && code[j] isa Core.GotoIfNot && code[j].dest == k, eachindex(code)), aims) && continue
+        V isa Core.SlotNumber && any(k -> code[k] isa Expr && code[k].head === :(=) && code[k].args[1] == V, first_+1:second) && continue
+        # What read the first store reads the value itself now, and the store and its reads are no statements.
+        for k in [first_; filter(<(second), reads)]
+            foreach(j -> code[j] = replaced(code[j], Core.SSAValue(k), V), eachindex(code))
+            code[k] = nothing
+        end
+    end
     return ci
+end
+
+# A statement with every use of the value `old` made a use of `new`.
+replaced(st, old, new) = st == old ? new :
+    st isa Expr ? Expr(st.head, (replaced(a, old, new) for a in st.args)...) :
+    st isa Core.GotoIfNot ? Core.GotoIfNot(replaced(st.cond, old, new), st.dest) :
+    st isa Core.ReturnNode && isdefined(st, :val) ? Core.ReturnNode(replaced(st.val, old, new)) : st
+
+"""
+    failing(sc)
+
+Refuse Julia that Julia already knows doesn't work. Inference gives a call the type `Union{}`
+when it can never return for the types it is given: a field of a struct that isn't `mutable`
+assigned, a function with no method for those arguments, `sqrt(-1.0)`. What can't be reached
+is not a call any more (Julia wraps it away), so a call typed that way is one that is reached,
+and throws every time. A `throw` or an `error` the author wrote is the exception, and so is a
+function of the author's that never returns: those are meant. A name that isn't defined where
+it is used is the same kind of thing, and is said the same way.
+
+One rule for all of them, with nothing to list: the C for Julia that throws would be a
+function that promises not to return and then does.
+"""
+function failing(sc::Scope)
+    ci = sc.ci
+    for (i, st) in enumerate(ci.code)
+        # A name that isn't defined where it is used: Julia stops there with an `UndefVarError`.
+        st isa GlobalRef && !isdefined(st.mod, st.name) &&
+            throw(ArgumentError("this Julia doesn't run: `$(st.name)` is not defined in `$(st.mod)`. A function from a package needs that package loaded there, `using LinearAlgebra` for `dot` (statement $i)"))
+        ex = consumer(st)
+        ex isa Expr && ex.head === :call && widen(ci.ssavaluetypes[i]) === Union{} || continue
+        f = callee_or_nothing(ci, ex.args[1])
+        types = [a isa QuoteNode ? typeof(a.value) : try valuetype(sc, a) catch; Any end for a in ex.args[2:end]]
+        # A function of the author's that never returns is meant, if it has a method for these at all.
+        missing = f isa Function && !(f in (Core.throw, Base.error)) && !hasmethod(f, Tuple{types...})
+        throws(sc, i) && !missing && continue
+        S = isempty(types) ? Any : types[1]
+        spelled = "$(f isa Function ? nameof(f) : f)($(join(("::" * replace(string(T), r"\b(\w+\.)+" => "") for T in types), ", ")))"
+        why = f in (Base.setproperty!, Core.setfield!) && S isa DataType && isstructtype(S) && !ismutabletype(S) ?
+                  "`$(nameof(S))` is not `mutable`, so a field of it can't be given a new value. Declare it `mutable struct $(nameof(S))`, or build a new one" :
+              missing ? "no method of `$(nameof(f))` takes these arguments" :
+                  "Julia's own inference finds that it throws for every value of these types"
+        throw(ArgumentError("this Julia doesn't run: `$spelled` never returns. $why (statement $i)"))
+    end
 end
 
 # A function's state, ready to be walked: its types and names settled, its loops found.
@@ -519,6 +595,7 @@ function analyze!(sc::Scope)
         st isa Expr && st.head === :loopinfo &&
             throw(ArgumentError("`@simd` rewrites its loop into a form the transpiler doesn't read (line $(sc.stmtline[i])). Leave it out: it changes nothing the loop computes, and the C compiler vectorises the loop by itself"))
     end
+    failing(sc)
     # A store into a typed global or a typed local, `global count += 1`, `local t::Float64`,
     # is lowered with a test before it: is the value already of that type? If not, convert.
     # Where Julia has decided the test, and it holds, the test and the conversion it guards
@@ -532,7 +609,7 @@ function analyze!(sc::Scope)
     # condition must have no effect, since it is no longer computed. A loop's own tests stay.
     dead(k) = code[k] isa Core.Const || widen(ci.ssavaluetypes[k]) === Union{}
     looptest = union(Set(W.test for W in values(sc.whiles)), (Set([F.start:F.bodylo-1; F.next:F.exit-1; collect(F.machinery)]) for F in values(sc.fors))...)
-    effectfree(x) = !(x isa Core.SSAValue) || (c = code[x.id]; !(c isa Expr) || c.head === :call && pure(sc, c; bring=false) && all(effectfree, c.args))
+    effectfree(x) = !(x isa Core.SSAValue) || (c = code[x.id]; !(c isa Expr) || c.head === :static_parameter || c.head === :call && pure(sc, c; bring=false) && all(effectfree, c.args))
     for (g, st) in enumerate(code)
         st isa Core.GotoIfNot && st.cond isa Core.SSAValue && !(g in looptest) || continue
         t = ci.ssavaluetypes[st.cond.id]
@@ -702,7 +779,8 @@ function analyze!(sc::Scope)
         length(users) == 1 || continue
         # Into a plain store, of a variable or a global: nothing that writes its operand twice.
         u = code[users[1]]
-        (V isa Number || name || u isa Expr && u.head === :(=) && u.args[2] == Core.SSAValue(r) || iscall(u, Core.setglobal!)) || continue   # a literal or a name may be written anywhere, any number of times
+        (V isa Number || name || u isa Expr && u.head === :(=) && u.args[2] == Core.SSAValue(r) || iscall(u, Core.setglobal!) ||
+         u isa Core.ReturnNode) || continue   # a literal or a name may be written anywhere, any number of times; a `return` writes its value once
         name && any(k -> assigns(code[k], V isa Core.SlotNumber ? V.id : code[V.id].id), (V isa Core.SlotNumber ? p : V.id)+1:users[1]-1) && continue
         # A literal or a name can be written past anything; a computation only past what does nothing.
         V isa Number || name || all(k -> k in sc.skipped || silent(sc, k) || widen(ci.ssavaluetypes[k]) === Union{}, p+1:users[1]-1) || continue
@@ -795,7 +873,7 @@ end
 # `x`, one operator, and the rest, so `x = x + y - z` stays as written (`x += y - z` would be
 # a different sum). Nothing if the statement isn't of that shape.
 function compound(x::AbstractString, T::Type, t::Term)
-    t.kind === :binary && t.text in ("+", "-", "*", "/") && string(t.parts[1]) == x || return nothing
+    t.kind === :binary && t.text in ("+", "-", "*", "/", "%", "<<", ">>", "&", "|", "^") && string(t.parts[1]) == x || return nothing
     e = t.parts[2]
     e.kind === :number && e.text == "1" && t.text in ("+", "-") && T <: Integer && return x * t.text^2
     return "$x $(t.text)= $(within(e, t.prec; right=true))"
@@ -933,6 +1011,12 @@ function statement!(lines, sc::Scope, i, st)
     T === Union{} && return                       # unreachable
     if ci.ssavaluetypes[i] isa Core.Const && (ci.ssavaluetypes[i].val isa Char || ci.ssavaluetypes[i].val isa AbstractString)
         sc.expr[i] = value(sc, ci.ssavaluetypes[i].val)   # `Char(97)` is `'a'`; a string literal is itself
+        return
+    end
+    # A struct of the author's that Julia has already worked out, `one(q)`: the value itself.
+    if ci.ssavaluetypes[i] isa Core.Const && st isa Expr && st.head === :call && (v = ci.ssavaluetypes[i].val; isstruct(typeof(v)) && !ismutabletype(typeof(v))) && pure(sc, st; bring=false)
+        structdef!(sc.prog, typeof(v))
+        sc.expr[i] = "($(structname(typeof(v))))" * initializer(v)
         return
     end
     if st isa Core.ReturnNode
@@ -1479,7 +1563,7 @@ function concatenate!(lines, sc::Scope, i, f, args, dest; declaration::Bool=fals
             # Declared here: with its initializer, in one go, as the Julia was written.
             grid = Array{String}(undef, s...)
             for k in eachindex(elems); grid[k] = value(sc, elems[k]); end   # column-major, as they arrive
-            initialize!(lines, sc, declare(R, dest), grid)
+            initialize!(lines, sc, (fixed(sc, i, elems) ? "static const " : "") * declare(R, dest), grid)
         else
             # Elements arrive column-major; write them row by row, as a person would.
             order = length(s) == 1 ? eachindex(elems) : sort(eachindex(elems); by=k -> ((k - 1) % s[1], (k - 1) ÷ s[1]))
@@ -1527,7 +1611,7 @@ function concatenate!(lines, sc::Scope, i, f, args, dest; declaration::Bool=fals
             grid[([off; zeros(Int, ndims(R))][1:ndims(R)] .+ 1)...] = value(sc, blocks[b])
         end
         start = length(lines) + 1
-        initialize!(lines, sc, declare(R, dest), grid)
+        initialize!(lines, sc, (fixed(sc, i, blocks) ? "static const " : "") * declare(R, dest), grid)
         step!(lines, sc, "$dest = $(catnotation(sc, tree, blocks, f))"; from=start)
         sc.shapes[i] = R
         return
@@ -1666,11 +1750,14 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         p = literal(sc, args[3])
         e = p isa Val ? typeof(p).parameters[1] : nothing
         g = e isa Integer ? power(valuetype(sc, args[2]), e) : nothing
+        g === nothing && e isa Integer && return matrixpower!(lines, sc, i, args[2], e, dest; declaration)     # `A^0`, `A^-2`
         g === nothing && throw(ArgumentError("a matrix to the power $(something(e, "of a variable")): a power of 2 or more, written as a literal, is what is supported; write the products out (statement $i)"))
         R, _ = product!(lines, sc, i, args[2:2], g, dest; declaration)
         sc.shapes[i] = R
         return
     end
+    # `A^n` with `n` known only at run time: by squaring, in a helper.
+    f in (Base.:^, Base.power_by_squaring) && length(args) == 2 && isarray(valuetype(sc, args[1])) && return matrixpower!(lines, sc, i, args[1], args[2], dest; declaration)
     # `A * B * v`, `v' * w * A`, `s * A * B * C`: grouped as Julia groups it (`product.jl`).
     if f === Base.:* && length(args) >= 3 && (g = grouping([valuetype(sc, a) for a in args])) !== nothing && unwrapped(g) isa Factor
         R, _ = product!(lines, sc, i, args, g, dest; declaration)
@@ -1683,6 +1770,18 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
         start = length(lines) + 1
         copy!(lines, sc, value(sc, args[1]), R, dest, R)
         step!(lines, sc, "$dest = $(value(sc, args[1]))"; from=start)
+        sc.shapes[i] = R
+        return
+    end
+    # `exp(A)`: the matrix exponential, a helper of its own.
+    if f === Base.exp && length(args) == 1 && isarray(valuetype(sc, args[1]))
+        T = valuetype(sc, args[1])
+        R = widen(sc.ci.ssavaluetypes[i])
+        shape(R) === nothing && (R = shaped(float(eltype(T)), shape(T)))
+        union!(sc.headers, ("stdio.h", "stdlib.h", "math.h", "string.h"))
+        declaration && emit!(lines, sc, declare(R, dest) * ";")
+        emit!(lines, sc, "$(exphelper!(sc.helpers, T, R))($(value(sc, args[1])), $dest);")
+        step!(lines, sc, "$dest = exp($(spell(T, value(sc, args[1]))))")
         sc.shapes[i] = R
         return
     end
@@ -1818,6 +1917,23 @@ function solve!(lines, sc::Scope, i, f, args, dest; declaration::Bool=false)
         emit!(lines, sc, "$name($(value(sc, x)), $(value(sc, args[2])), $dest);")
         step!(lines, sc, "$dest = $(spell(T, value(sc, x))) \\ $(spell(B, value(sc, args[2])))")
     end
+    sc.shapes[i] = R
+end
+
+# `A^n` for an integer `n`: `powi_3x3(A, n, out)`. A real power is no one C type: Julia's
+# `A^0.5` is real or complex by what the eigenvalues turn out to be, which its own inference
+# gives as a union of types, so there is no C function to declare for it.
+function matrixpower!(lines, sc::Scope, i, A, n, dest; declaration::Bool=false)
+    T = valuetype(sc, A)
+    N = n isa Integer ? typeof(n) : valuetype(sc, n)
+    N <: Integer || throw(ArgumentError("a matrix to a power that isn't an integer, `A^$(N)`: in Julia the result is real or complex depending on the matrix's eigenvalues, so it has no one type and no one C function. An integer power is supported, and `exp(A)` (statement $i)"))
+    R = widen(sc.ci.ssavaluetypes[i])
+    R isa DataType && isarray(R) || throw(ArgumentError("a matrix of $(eltype(T)) to an integer power that may be negative has no one type in Julia; convert the matrix to floating point first (statement $i)"))
+    shape(R) === nothing && (R = T)
+    union!(sc.headers, ("stdio.h", "stdlib.h", "math.h", "string.h"))
+    declaration && emit!(lines, sc, declare(R, dest) * ";")
+    emit!(lines, sc, "$(powerhelper!(sc.helpers, T))($(value(sc, A)), $(n isa Integer ? integer(n) : value(sc, n)), $dest);")
+    step!(lines, sc, "$dest = $(spell(T, value(sc, A)))^$(n isa Integer ? n : value(sc, n))")
     sc.shapes[i] = R
 end
 
@@ -2187,6 +2303,13 @@ function rendered(sc::Scope, i, ex::Expr)
     end
     T = widen(ci.ssavaluetypes[i])
     n = length(args)
+    # A struct of the author's that Julia has already worked out, `one(q)` with `one(::Quat)`
+    # returning a fixed value: the value, written as the struct it is.
+    known = ci.ssavaluetypes[i]
+    if known isa Core.Const && isstruct(typeof(known.val)) && !ismutabletype(typeof(known.val)) && pure(sc, ex; bring=false)
+        structdef!(sc.prog, typeof(known.val))
+        return "($(structname(typeof(known.val))))" * initializer(known.val), PRIMARY
+    end
     # With an integer standing in for `bool` (the `bool` option), a truth value read from
     # storage — a parameter, a field, an element, a global — is any nonzero value, so
     # where it enters arithmetic or a comparison it is read as `(b != 0)`. One computed
@@ -2256,7 +2379,7 @@ function rendered(sc::Scope, i, ex::Expr)
         return value(sc, zero(T)), PRIMARY
     end
     # `zero(x)`, `one(T)`: the literal of the result's type.
-    f in (Base.zero, Base.one) && n == 1 && T <: Number && return value(sc, f === Base.zero ? zero(T) : one(T)), PRIMARY
+    f in (Base.zero, Base.one) && n == 1 && T <: Number && !isstruct(T) && return value(sc, f === Base.zero ? zero(T) : one(T)), PRIMARY
 
     # `norm(v, 1)`, `norm(v, Inf)`, `norm(v, 2)` with the order written out; `mean`, `var`, `std`
     # of a real array, which are `Statistics`' and known by name, the package not being loaded here.
@@ -2321,6 +2444,16 @@ function rendered(sc::Scope, i, ex::Expr)
     if any(a -> isstruct(valuetype(sc, a)), args)
         name = usercall!(sc, f, args)
         name === nothing || (sc.math[i] = julian(sc, f, args); return "$name($(callargs(sc, args)))", PRIMARY)
+        # `q^n`, `q^3` and `Base.power_by_squaring(q, n)` where the author wrote no power of their
+        # own: by squaring with their `*`, the one definition translated for their type.
+        if f in (Base.:^, Base.power_by_squaring) && n == 2 && isstruct(valuetype(sc, args[1])) && valuetype(sc, args[2]) <: Integer
+            return "$(powerhelper!(sc.helpers, valuetype(sc, args[1])))($(callargs(sc, args)))", PRIMARY
+        end
+        if f === Base.literal_pow && n == 3 && isstruct(valuetype(sc, args[2])) && literal(sc, args[3]) isa Val
+            e = typeof(literal(sc, args[3])).parameters[1]
+            own = usercall!(sc, Base.:^, Any[args[2], e])
+            return "$(something(own, powerhelper!(sc.helpers, valuetype(sc, args[2]))))($(callargs(sc, args[2:2])), $e)", PRIMARY
+        end
         if n > 2 && (name = usercall!(sc, f, args[1:2])) !== nothing
             sc.math[i] = julian(sc, f, args)
             acc = "$name($(callargs(sc, args[1:2])))"
@@ -2357,10 +2490,9 @@ function rendered(sc::Scope, i, ex::Expr)
     if f === Base.:/
         if all(a -> valuetype(sc, a) <: Integer, args)
             # Julia `/` always produces a float. C promotes an integer operand to the
-            # other's floating type on its own, so only integer-by-integer needs help:
-            # literals get `.0`, anything else a cast to the result type.
-            parts = [a isa Integer ? "$a.0" : "($(ctype(T)))" * operand(sc, a, UNARY) for a in args]
-            return join(parts, " / "), MUL
+            # other's floating type on its own, so only integer-by-integer needs help: each
+            # is cast to the result type, and a literal is written as that type (`cast`).
+            return foldl((a, b) -> arithmetic("/", MUL, a, b, T), [cast(T, expression(sc, a)) for a in args])
         end
         return op("/", MUL)
     end
@@ -2419,16 +2551,21 @@ function rendered(sc::Scope, i, ex::Expr)
         floating || e > 0 || throw(ArgumentError("a negative power of an integer is a DomainError in Julia (statement $i)"))
         x = expression(sc, args[2])
         # Squares, cubes and the reciprocal are written out; anything else is
-        # `powi(x, n)`, by squaring (`powhelper!`).
+        # `powi(x, n)`, by squaring (`powerhelper!`).
         e == 2 && return arithmetic("*", MUL, x, x, T)
         e == 3 && return arithmetic("*", MUL, arithmetic("*", MUL, x, x, T; wrap=false), x, T)
         e == -1 && return "$unit / $(within(x, MUL; right=true))", MUL
-        return "$(powhelper!(sc.helpers, T))($(expression(sc, args[2])), $e)", PRIMARY
+        return "$(powerhelper!(sc.helpers, T))($(expression(sc, args[2])), $e)", PRIMARY
     end
     # `@fastmath x^2` arrives as `pow_fast(x, Val(2))`: the literal power it was written as.
     f === Base.:^ && n == 2 && literal(sc, args[2]) isa Val && return rendered(sc, i, Expr(:call, Base.literal_pow, Base.:^, args[1], args[2]))
+    # An integer to an integer power known only at run time, and `Base.power_by_squaring` of any
+    # number: `powi`, the one definition translated for the type (`power.jl`).
+    if (f === Base.:^ && !floating && !cplx || f === Base.power_by_squaring) && n == 2 && T <: Number && valuetype(sc, args[2]) <: Integer
+        return call(powerhelper!(sc.helpers, T), [expression(sc, args[1]), expression(sc, args[2])], T)
+    end
     if f === Base.:^
-        floating || cplx || throw(ArgumentError("integer ^ with a non-literal exponent is not supported (statement $i)"))
+        floating || cplx || throw(ArgumentError("an integer to a power that isn't an integer is not supported (statement $i)"))
         return fn("pow")
     end
 
@@ -2899,6 +3036,18 @@ function braces(x::AbstractArray{String}, depth::Integer=0)
 end
 
 # `double A[2][2] = {…};`: an array declared with its initializer, a line per row.
+# Is the array built at statement `i` a variable given numbers written out, once, and never
+# written again? Then it is `static const`: what it holds is fixed, as Julia's own literal is,
+# and nothing is copied into it each time the function runs, which for a large table is the
+# whole cost. One rule for every size: a small one loses nothing by it.
+function fixed(sc::Scope, i, elems)
+    st = sc.ci.code[i]
+    st isa Expr && st.head === :(=) && st.args[1] isa Core.SlotNumber && all(e -> e isa Real, elems) || return false
+    s = st.args[1].id
+    return count(x -> x isa Expr && x.head === :(=) && x.args[1] == st.args[1], sc.ci.code) == 1 && !(s in sc.mutated) &&
+           !haskey(sc.storage, sc.names[s]) && !haskey(sc.outplaced, s) && !haskey(sc.rebound, s)
+end
+
 function initialize!(lines, sc::Scope, decl, grid::AbstractArray{String})
     for l in split(decl * " = " * braces(grid) * ";", '\n')
         emit!(lines, sc, l)

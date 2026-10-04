@@ -4,6 +4,7 @@
 # value is the reference; the C has to agree to rounding. Any function whose C won't
 # compile, or whose result differs, fails its test with both values shown.
 using Test, StaticArrays, LinearAlgebra
+using SpecialFunctions          # for the rows of the table that are its functions: `gamma`, `erf`
 using LegibleC
 # The internals the harness needs to build a `main` around the generated C.
 using LegibleC: identifier, identifiers, isarray, isstruct, istuple, structname, declare, normalize, shape, shaped, ctype, arrow, fieldcnames, charliteral, returnkind!, Program, initializer
@@ -53,7 +54,7 @@ cliteral(x) = "{" * join((cliteral(getfield(x, k)) for k in 1:fieldcount(typeof(
 # ---- Julia results as flat lists, in the order the C prints them ----------------------
 
 flat(::Nothing) = Float64[]
-flat(x::Number) = [Float64(x)]
+flat(x::Number) = isstruct(typeof(x)) ? reduce(vcat, (flat(getfield(x, k)) for k in 1:fieldcount(typeof(x))); init=Float64[]) : [Float64(x)]   # a struct of the author's may be a `Number` too
 flat(x::Complex) = [Float64(real(x)), Float64(imag(x))]
 flat(x::Char) = [Float64(codepoint(x))]
 flat(x::Union{Adjoint{<:Any, <:AbstractVector}, Transpose{<:Any, <:AbstractVector}}) = flat(parent(x))
@@ -71,7 +72,7 @@ end
 # C lines printing the value `x` of type `T`, every number as `%.17g` and a space.
 function cprint(T::Type, x)
     T <: Complex && return ["printf(\"%.17g %.17g \", creal($x), cimag($x));"]
-    (T <: Number || T === Char) && return ["printf(\"%.17g \", (double)$x);"]
+    (T <: Number && !isstruct(T) || T === Char) && return ["printf(\"%.17g \", (double)$x);"]
     if T <: AbstractArray
         E = eltype(T)
         E <: Complex && return ["for (int k = 0; k < $(prod(shape(T))); k++) {",
@@ -85,9 +86,11 @@ function cprint(T::Type, x)
     return reduce(vcat, (cprint(F, "$x$(arrow(T))$c") for (F, c) in zip(fields, fieldcnames(T))); init=String[])
 end
 
-# Do two flat results agree? To rounding, with NaN equal to NaN.
-agree(got, want) = length(got) == length(want) &&
-                   all(isapprox(g, w; rtol=1e-9, atol=1e-12) || (isnan(g) && isnan(w)) for (g, w) in zip(got, want))
+# Do two flat results agree? To rounding, with NaN equal to NaN. A single-precision result
+# is held to single precision's rounding.
+agree(got, want; rtol=1e-9, atol=1e-12) = length(got) == length(want) &&
+                   all(isapprox(g, w; rtol, atol) || (isnan(g) && isnan(w)) for (g, w) in zip(got, want))
+single(r) = r isa Union{Float32, ComplexF32} || r isa AbstractArray && eltype(r) <: Union{Float32, ComplexF32}
 
 """
     check(name, cases; targets=functions of the cases, extra="") -> C source
@@ -167,7 +170,8 @@ function check(name, cases::Vector{Case}; targets=nothing, extra::AbstractString
         for (k, c) in enumerate(cases)
             got = parse.(Float64, split(lines[k]))
             want = flat(references[k])
-            @test agree(got, want) || (println("$(nameof(c.f))$(c.args): C gave $got, Julia $want"); false)
+            tol = single(references[k]) ? (rtol=1e-5, atol=1e-6) : (rtol=1e-9, atol=1e-12)
+            @test agree(got, want; tol...) || (println("$(nameof(c.f))$(c.args): C gave $got, Julia $want"); false)
         end
     end
     return snap(name, read(path, String))

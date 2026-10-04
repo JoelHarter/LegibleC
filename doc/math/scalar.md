@@ -62,7 +62,7 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `s, c = sincos(x)` | `s = sin(x); c = cos(x);` | ISO C has no `sincos`; the compiler fuses the two calls. The pair itself is not a value: `t = sincos(x)` is refused |
 | `x^2`, `x^3` | `x * x`, `x * x * x` | `x^0` is `1.0`, `x^1` is `x` |
 | `x^-1` | `1.0 / x` | |
-| `x^n`, any other literal `n` | `powi(x, n)`, one helper by squaring (`powiF32`, `powiI64` off the double) | the exponent is a literal at every call, so at `-O2` the compiler unrolls the helper into the bare multiply chain — five multiplies for `x^13`, no loop, no branch. Julia's `Float64^Int` is a compensated squaring, a bit more accurate; this is the plain one, three times faster |
+| `x^n`, any other literal `n`; `n^m` on integers; `Base.power_by_squaring(x, n)` | `powi(x, n)`, by squaring (`powiF32`, `powiI64`, `powiC64` off the double) | one definition, written in Julia in `src/power.jl` and translated for the type, in the order of Julia's own `power_by_squaring`. With a literal exponent the compiler unrolls it at `-O2` into the bare multiply chain. A float or a complex number takes a negative power through its inverse; an integer doesn't, as in Julia. Julia's `Float64^Int` is a compensated squaring, a bit more accurate; this is the plain one |
 | `x^y` (floats) | `pow(x, y)` | a negative power of an integer is a `DomainError` in Julia, and an error here |
 | `< <= > >= == !=` | the same | |
 | `!`, `&`, `\|`, `xor`, `~` | `!`, `&`, `\|`, `^`, `~` | |
@@ -73,12 +73,16 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `s == "abc"`, `length(s)`, `ncodeunits(s)`, `isempty(s)`, `s[i]` | `strcmp(s, "abc") == 0`, `utf8len(s)`, `(int64_t)strlen(s)`, `s[0] == '\0'`, `s[i - 1]` | a `String` is `const char *`, UTF-8 in both languages |
 | `pi`, `ℯ`, `Base.MathConstants.γ`, `catalan`, your own `Base.@irrational` | `LEGIBLEC_PI`, `LEGIBLEC_E`, `LEGIBLEC_GAMMA`, `LEGIBLEC_CATALAN`, `LEGIBLEC_<NAME>` | any `AbstractIrrational`, by its symbol: a macro named after it, defined in the helper header to 128-bit precision, which the compiler rounds to the nearest double; the `posix` option writes POSIX's `M_PI` and `M_E` for π and ℯ instead |
 | `π * A`, `v / ℯ`, `π .* v` | `mul_s_2x2(LEGIBLEC_PI, A, out)`, `(float)LEGIBLEC_PI` beside a `Float32` array | an irrational has no type of its own; Julia gives it the one it meets, the array's floating element type, or `Float64` beside integers |
+| `factorial(n)` of an integer | `factorial(n)`, a small helper that looks it up | a table of 0! to 20!, the last that fits 64 bits, as Julia's is. Outside it Julia throws, and the C stops with the same words |
+| `gamma(x)`, `loggamma(x)`, `erf(x)`, `erfc(x)` from `SpecialFunctions` | `tgamma(x)`, `lgamma(x)`, `erf(x)`, `erfc(x)` from `math.h`; the `f` family on a `Float32` | known by name, the package not being one the transpiler loads |
 | `abs(x)` | `fabs(x)`; `llabs(x)` for `Int64`, `abs(x)` for `Int32` (`stdlib.h`) | |
 | `max`, `min` on floats | `maxN(a, b)`, `minN(a, b)`, a small helper | a NaN is kept, as in Julia; `fmax` and `fmin` drop it |
 | `max`, `min` on integers | `(a > b ? a : b)` | |
 | `round(x)` | `rint(x)` | both round half to even |
 | `atan(y, x)` | `atan2(y, x)` | |
 | `Float64(a)`, `Int64(x)`, … | `(double)a`, `(int64_t)x` | a cast |
+| `Float64(2)`, `n / 2`, `y::Float64 = 3` | `2.0`, `(double)n / 2.0`, `double y = 3.0;` | a cast is never applied to a number written out: the number is written as the type instead. One rule, whoever asked for the conversion |
+| `y::Float64 = n`, `f(n)::Float64 = n + 1` | `double y = (double)n;`, `return (double)(n + 1);` | a declared type is one line, as it is in the Julia |
 | `round(Int64, x)`, `floor(Int64, x)`, … | `(int64_t)rint(x)`, … | |
 | `Inf`, `NaN`, `Inf32`, `NaN32` | `INFINITY`, `NAN` | from `math.h`; the macros serve both widths |
 | `isnan`, `isinf`, `isfinite`, `signbit` | the same | `math.h` |

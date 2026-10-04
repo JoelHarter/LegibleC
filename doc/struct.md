@@ -74,6 +74,16 @@ a value elsewhere — a struct field, a tuple of tuples — is the structural
 Not yet: a `NamedTuple`, which would name the fields when what's returned
 isn't variables.
 
+## A power of a struct
+
+`q^n`, `q^3` and `Base.power_by_squaring(q, n)` on a struct of the author's
+come out as `powi_Quat(q, n)`, a function beside the author's own that
+squares with their `*`, starts from their `one`, and takes a negative power
+through their `inv` if they wrote one that returns the same struct. Nothing
+is said about the struct anywhere in the transpiler: it is the one
+definition of power by squaring in `src/power.jl`, translated for the type.
+Where the author wrote a `^` of their own, that is what is called.
+
 ## A property the author defines
 
 `q.x` is a field read only while `getproperty` is Julia's own. A method of

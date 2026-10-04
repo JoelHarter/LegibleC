@@ -756,4 +756,59 @@ end
     @test occursin("bool ok = a > 0 && c;", src) && occursin("bool ok = a > 0 || c;", src) && occursin("double t = s > a ? s : a;", src)
     @test !occursin("temp1", src)
 end
+
+# Julia that Julia already knows doesn't run (2026-10-03). Inference types a call `Union{}` when
+# it can never return for its argument types, and what can't be reached is no call any more, so
+# a call typed that way is reached and always throws. One rule refuses them all; it used to come
+# out as a `_Noreturn` function whose body ran off the end. A `throw` the author wrote is meant.
+struct Fixed{T}
+    x::Float64
+end
+mutable struct Loose{T}
+    x::Float64
+    y::Float64
+end
+function failfield(J::Fixed{T}, a::Float64) where T
+    J.x = a
+    return J
+end
+failmethod(a::Float64) = a + nomethodfor(a)
+nomethodfor(s::String) = 1.0
+faildomain() = sqrt(-1.0) + 1.0
+failname(a::Float64) = a + notdefinedanywhere(a)
+function failmeant(a::Float64)
+    a < 0 && throw(DomainError(a, "negative"))
+    return sqrt(a)
+end
+alwaysmeant() = error("never")
+# What the type decides, the C doesn't ask: `T == 0` on a type parameter.
+function bytype(J::Loose{T}, a::Float64) where T
+    b = a > 0 ? 3.0 : 5.0
+    if T == 0
+        b += 2
+    else
+        b += 3
+    end
+    J.x = a
+    J.y = b
+    return J.x + J.y
+end
+@testset "julia that doesn't run" begin
+    for (name, f) in (("failfield", failfield), ("failmethod", failmethod), ("faildomain", faildomain))
+        e = try csource(name, name == "failfield" ? (f, Fixed{0}, Float64) : f); nothing catch e; e end
+        @test e isa ArgumentError && occursin("this Julia doesn't run", e.msg)
+    end
+    e = try csource("failfield", (failfield, Fixed{0}, Float64)); nothing catch e; e end
+    @test occursin("`setproperty!(::Fixed{0}, ::Symbol, ::Float64)` never returns", e.msg) && occursin("Declare it `mutable struct Fixed`", e.msg) && occursin("J.x = a", e.msg)
+    e = try csource("failmethod", failmethod); nothing catch e; e end
+    @test occursin("no method of `nomethodfor` takes these arguments", e.msg)
+    e = try csource("failname", failname); nothing catch e; e end
+    @test e isa ArgumentError && occursin("`notdefinedanywhere` is not defined", e.msg)         # was a fault of the transpiler's
+    src = csource("meant", failmeant, alwaysmeant)
+    @test occursin("abort();", src) && occursin("_Noreturn void alwaysmeant(void)", src)          # a throw the author wrote is C, as it was
+    src = check("bytype", [Case(bytype, Loose{0}(0.0, 0.0), 1.0), Case(bytype, Loose{0}(0.0, 0.0), -1.0)]; targets=[(bytype, Loose{0}, Float64)])
+    @test occursin("b += 2;", src) && !occursin("b += 3;", src) && !occursin("if (", src) && !occursin("0 == 0", src)
+    src = csource("bytype1", (bytype, Loose{1}, Float64))
+    @test occursin("b += 3;", src) && !occursin("b += 2;", src) && !occursin("if (", src)
+end
 end

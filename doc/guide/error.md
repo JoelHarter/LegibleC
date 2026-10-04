@@ -18,6 +18,14 @@ range of a `for` and as an index, `v[2:4]`. Write the range in the `for` itself
 The Julia has to be in working order first. A refusal is about Julia that runs
 and that the transpiler can't yet write as C; it is not a check of the Julia.
 
+Julia that doesn't run is refused before anything else. Julia's own
+inference knows when a call can never return for the types it is given: a
+field assigned on a struct that isn't `mutable`, a call with no method for
+its arguments, `sqrt(-1.0)`. The message starts "this Julia doesn't run",
+names the call and the line, and says why where it can. One rule covers
+them all; nothing is listed. A `throw` or an `error` you wrote is not one
+of these: it is meant, and it is written as C.
+
 The usual causes:
 
 - a call it has no rule for — check [syntax.md](syntax.md); the fix is to

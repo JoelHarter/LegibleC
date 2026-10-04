@@ -725,7 +725,7 @@ const standard = (
     ("stdio.h", r"\b(printf|fprintf|snprintf|fputs|fputc|putchar|puts|fflush|fopen|fclose|FILE|stdout|stderr)\b"),
     ("float.h", r"\b(DBL|FLT)_(EPSILON|MAX|MIN)\b"),
     ("complex.h", r"\b(creal|cimag|conj|cabs|carg|csqrt|cexp|clog|cpow|csin|ccos|ctan|casin|cacos|catan|csinh|ccosh|ctanh|cproj)f?\(|\bCMPLXF?\(|\b(double|float) complex\b|\bI\b"),
-    ("math.h", r"\b(sqrt|cbrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|exp2|expm1|log|log2|log10|log1p|floor|ceil|trunc|rint|round|hypot|copysign|fabs|fmax|fmin|fmod|pow|isnan|isinf|isfinite|signbit)f?\(|\b(M_PI|M_E|INFINITY|NAN)\b"),
+    ("math.h", r"\b(sqrt|cbrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|exp2|expm1|log|log2|log10|log1p|floor|ceil|trunc|rint|round|hypot|copysign|fabs|fmax|fmin|fmod|pow|ldexp|tgamma|lgamma|erf|erfc|isnan|isinf|isfinite|signbit)f?\(|\b(M_PI|M_E|INFINITY|NAN)\b"),
 )
 
 # The helpers in the order they can be defined: alphabetical, except that one that calls
@@ -794,6 +794,17 @@ method above (and would otherwise be ambiguous between the two).
 """
 transpile(f::Function, T1::DataType, T::Union{DataType, Integer}...; kw...) = transpile((f, T1, T...); kw...)
 
+# `SMatrix{3,3,Float64}` as people write it leaves out the last parameter, the number of
+# elements, which the size already says. So does `MMatrix{3,3,Float64}`. It is filled in.
+function completed(P)
+    P isa UnionAll || return P
+    u = Base.unwrap_unionall(P)
+    u isa DataType && u <: StaticArrays.StaticArray && length(u.parameters) == 4 || return P
+    S, E, N, L = u.parameters
+    S isa DataType && isconcretetype(E) && all(d -> d isa Int, S.parameters) && L isa TypeVar || return P
+    return u.name.wrapper{S, E, length(S.parameters), prod(S.parameters; init=1)}
+end
+
 """
     concretemethod(f, T...) -> (MethodInstance, return type)
 
@@ -809,10 +820,10 @@ function concretemethod(f::Function, T::DataType...)
     if isempty(T)
         # No types given: use the function's own signature, which must be concrete.
         # A `where` signature is a UnionAll, so it's not concrete by definition.
-        ms = filter(m -> !(m.sig isa UnionAll) && all(isconcretetype, m.sig.parameters[2:end]), methods(f))
+        ms = filter(m -> !(m.sig isa UnionAll) && all(P -> isconcretetype(completed(P)), m.sig.parameters[2:end]), methods(f))
         isempty(ms) && throw(ArgumentError("$f has no method with concrete argument types; give the types explicitly"))
         length(ms) > 1 && throw(ArgumentError("$f has $(length(ms)) methods with concrete argument types; give the types to pick one"))
-        T = Tuple(only(ms).sig.parameters[2:end])
+        T = Tuple(completed(P) for P in only(ms).sig.parameters[2:end])
     else
         all(isconcretetype, T) || throw(ArgumentError("argument types must all be concrete, got $(T)"))
     end

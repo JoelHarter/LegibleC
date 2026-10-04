@@ -58,7 +58,7 @@ end
     @test occursin(r"    /\* @comment\.jl:\d+-\d+:\n       v = SVector\(\n           sin\(x\),\n           cos\(x\),\n           x\n       \)\n    \*/\n    v\[0\] = sin\(x\);", src)
     @test !occursin(r"// @comment\.jl:\d+: sin\(x\),", src) && !occursin(r"// @comment\.jl:\d+: cos\(x\),", src)
     @test occursin("Julia signature: anonymous()", src) && occursin("void anonymous(double out[restrict 2][2]) {", src) && !occursin("-> begin", src)
-    @test occursin(r"    /\* @comment\.jl:\d+-\d+:\n       Γ = @MMatrix \[\n           0\.0 1\.0;\n           1\.0 0\.5\n       \]\n    \*/\n    double Gamma\[2\]\[2\] = \{", src)
+    @test occursin(r"    /\* @comment\.jl:\d+-\d+:\n       Γ = @MMatrix \[\n           0\.0 1\.0;\n           1\.0 0\.5\n       \]\n    \*/\n    static const double Gamma\[2\]\[2\] = \{", src)
     @test Main.LegibleC.plainname(Symbol("#Outrage")) == "Outrage" && Main.LegibleC.plainname(Symbol("#5")) == "anonymous" && Main.LegibleC.plainname(:f) == "f"
 end
 

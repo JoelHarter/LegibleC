@@ -136,6 +136,9 @@ known at transpile time; dynamic sizes and allocation are not yet supported.
 | `A[2, :] = v`, `A[:, j] = v`, `A[:, 3:end] = B`, `v[2:3] = w` into a mutable array | yes |
 | `A \ b`, `A \ B`, `B / A`, `A / s`, `inv(A)`, `cholesky(A) \ b`, `inv(cholesky(A))`, `lu(A) \ b` | yes; 1–3 written out, LU with partial pivoting beyond |
 | `A \ b` with a non-square `A`, `pinv(A)` | yes: least squares / minimum norm through the Gram matrix and Cholesky (full rank only) |
+| `exp(A)` of a square matrix | yes: `exp_3x3(A, out)`, Julia's algorithm for a static matrix. Real floating elements |
+| `A^3`, `A^n` with `n` an integer variable, `A^-2`, `A^0` | yes: a literal power of 1 or more is the products written out, in Julia's order; any other is `powi_3x3(A, n, out)`, by squaring, a negative one through the inverse |
+| `A^x` with a real `x` | no: in Julia the result is real or complex by the matrix's eigenvalues, so it has no one type |
 | `v'`, `A'`, `transpose(…)` | yes, free (0–2 dimensions, as in Julia) |
 | broadcasting: `.+ .- .* ./ .^`, `x .^ 2` with a literal exponent, unary `.-`, `f.(A)` for the `math.h` functions above, any shapes Julia allows | yes |
 | `zeros`, `ones`, `fill`, `zero(A)`, `one(A)`, `SMatrix{n,n}(I)`, `SMatrix{n,n}(2I)` | yes |

@@ -92,6 +92,42 @@ first_(A::SMatrix{2,2,Float64,4}) = A^1
     @test occursin("mul_2x2_2(B, v, temp1_B_v);", src) && occursin("mul_2x2_2(A, temp1_B_v, out);", src)             # A * (B * v)
     @test occursin("mul_9x9_9x1(B, C, temp1_B_C);", src) && occursin("mul_2x9_9x1(A, temp1_B_C, out);", src)         # by cost, from the right
     @test occursin("mul_2x2_2x2(A, A, temp1_A);", src) && occursin("mul_2x2_2x2(temp1_A, temp1_A, temp2_A);", src) && occursin("mul_2x2_2x2(A, temp2_A, out);", src)
-    @test occursin("a power of 2 or more", sprint(showerror, try csource("first_", first_) catch e; e end))
+    check("first_", [Case(first_, A22)])                       # `A^1`: once refused, now the integer power helper
+end
+
+# The matrix exponential and a matrix to an integer power (2026-10-03). `exp(A)` is Julia's
+# algorithm for a static matrix: `exp` of the element, the closed form two by two, and above
+# that a Padé approximant whose order goes by the 1-norm, with scaling and squaring past the
+# highest. `A^n` with `n` a variable is by squaring, a negative one through the inverse.
+expm1x1(A::M(1)) = exp(A)
+expm2(A::M(2)) = exp(A)
+expm3(A::M(3)) = exp(A)
+expm4(A::M(4)) = exp(A)
+expmscaled(A::M(3), s::Float64) = exp(A * s)
+expm32(A::SMatrix{3,3,Float32,9}) = exp(A)
+expmwritten(A::SMatrix{3,3,Float64}) = exp(A * 2)               # the size without its last parameter, as people write it
+powvar(A::M(3), n::Int64) = A^n
+powvar2(A::M(2), n::Int64) = A^n
+powzero(A::M(3)) = A^0
+powneg(A::M(2)) = A^-2
+powint(A::SMatrix{2,2,Int64,4}, n::Int64) = A^n
+powreal(A::M(2), x::Float64) = A^x
+@testset "exponential and power" begin
+    A2 = SMatrix{2,2}(1.0, 2.0, 3.0, 4.5)                        # two real eigenvalues
+    R2 = SMatrix{2,2}(0.3, 2.0, -2.0, 0.3)                       # a complex pair
+    D2 = SMatrix{2,2}(0.7, 0.0, 1.0, 0.7)                        # one eigenvalue twice
+    A3 = SMatrix{3,3}(0.1, -0.3, 0.0, 0.2, 0.4, 0.5, 0.0, 0.1, -0.2)
+    A4 = SMatrix{4,4}((0.05 * k * (-1)^k for k in 1:16)...)
+    # Every order of approximant by the norm, and the scaling past 2.1: norms from 0.006 to 600.
+    scales = [0.01, 0.2, 0.8, 2.0, 3.5, 9.0, 40.0, 1000.0]
+    src = check("expm", [Case(expm1x1, SMatrix{1,1}(0.7)), Case(expm2, A2), Case(expm2, R2), Case(expm2, D2), Case(expm3, A3), Case(expm4, A4),
+                         (Case(expmscaled, A3, s) for s in scales)..., Case(expmscaled, A3, 0.0),
+                         Case(expm32, SMatrix{3,3,Float32,9}(A3)), Case(expmwritten, A3)])
+    @test occursin("exp_3x3(A, out);", src) && occursin("exp_3x3F32(A, out);", src) && occursin("exp_2x2(A, out);", src)
+    @test occursin("powi_3x3(U, (int64_t)1 << squarings, out);", csource("expmtext", expm3))             # the squaring is the integer power
+    check("powm", [(Case(powvar, A3, n) for n in (-3, -1, 0, 1, 2, 3, 6, 11))..., (Case(powvar2, A2, n) for n in (-2, 0, 1, 5))...,
+                   Case(powzero, A3), Case(powneg, A2), (Case(powint, SMatrix{2,2}(1, 2, 3, 4), n) for n in (0, 1, 2, 7))...])
+    e = try csource("powreal", powreal); nothing catch e; e end
+    @test e isa ArgumentError && occursin("different types", e.msg)        # real or complex by the eigenvalues: Julia's own type for it is a union
 end
 end

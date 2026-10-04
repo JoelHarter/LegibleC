@@ -214,6 +214,13 @@ to the block, so the variable is declared just ahead of the construct — on
 the line above its source comment — and assigned inside. Nothing is declared
 at the top of a function for its own sake.
 
+An array given numbers written out, once, and never written again is
+`static const`: `static const double A[4][4] = {…};`. What it holds is
+fixed, as Julia's literal is, and nothing is copied into it each time the
+function runs, which for a large table is the whole cost. It is one rule for
+every size, since a small array loses nothing by it. An array that is
+written later, or that holds a variable, is declared as before.
+
 ## Assignment and aliasing
 
 `B = -A` writes straight into `B`: `neg_2x2(A, B);`. When the destination is

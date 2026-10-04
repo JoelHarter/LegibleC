@@ -447,4 +447,82 @@ end
     # No type holds both a `UInt64` and a negative number: refused, as it was.
     @test_throws ArgumentError csource("twowide", twowide)
 end
+
+# `factorial` of an integer is a table, as Julia's is, and `gamma` is `math.h`'s `tgamma`
+# (2026-10-04). `gamma` is `SpecialFunctions`', known to the transpiler by name.
+fact(n::Int64) = factorial(n)
+factsmall(n::UInt8) = factorial(n) + 1
+factwide(n::UInt64) = factorial(n)
+binomial5(k::Int64) = div(factorial(5), factorial(k) * factorial(5 - k))
+gammaof(x::Float64) = Main.SpecialFunctions.gamma(x)
+gammasingle(x::Float32) = Main.SpecialFunctions.gamma(x)
+gammaint(n::Int64) = Main.SpecialFunctions.gamma(n)
+errors(x::Float64) = Main.SpecialFunctions.erf(x) + 2.0 * Main.SpecialFunctions.erfc(x) + Main.SpecialFunctions.loggamma(x + 3.0)
+@testset "factorial and gamma" begin
+    src = check("factorial", [(Case(fact, n) for n in (0, 1, 2, 5, 12, 13, 19, 20))..., Case(factsmall, 0x05), Case(factwide, UInt64(20)),
+                              (Case(binomial5, k) for k in 0:5)...,
+                              (Case(gammaof, x) for x in (0.5, 1.0, 4.5, 10.0, -1.5, 170.0))..., Case(gammasingle, 4.5f0), Case(gammaint, 6),
+                              Case(errors, 0.3), Case(errors, -1.2)])
+    @test occursin("return factorial(n);", src) && occursin("return factorial(n) + 1;", src) && occursin("return factorialU64(n);", src)
+    @test occursin("return tgamma(x);", src) && occursin("return tgammaf(x);", src) && occursin("return tgamma(n);", src)
+    @test occursin("erf(x) + 2.0 * erfc(x) + lgamma(x + 3.0)", src)
+    helper = csource("factorialtext", fact)
+    @test occursin("static const int64_t table[] = {\n                          1,    // 0!\n                          1,    // 1!\n                          2,    // 2!", helper)     # a line each, lined up on the units
+    @test occursin("        121645100408832000,    // 19!\n        2432902008176640000     // 20!\n    };", helper)
+    @test occursin("if (n > 20) {", helper) && occursin("return table[n];", helper)
+end
+
+# An integer power by squaring, for every kind of number (2026-10-04): one definition, in
+# Julia, translated for the type. An integer to a power known only at run time was refused.
+powint(n::Int64, m::Int64) = n^m
+powtwo(n::Int64) = 2^n
+powsmall(n::Int32, m::Int64) = n^m
+powunsigned(n::UInt64, m::Int64) = n^m
+powcomplex(z::ComplexF64, n::Int64) = Base.power_by_squaring(z, n)
+powliteral(x::Float64) = x^13 + x^-5
+powliteral32(x::Float32) = x^7
+@testset "integer power" begin
+    src = check("powi", [(Case(powint, b, e) for (b, e) in ((3, 0), (3, 1), (3, 13), (-2, 5), (-2, 62), (7, 22), (1, -4), (-1, -3)))...,
+                         (Case(powtwo, e) for e in (0, 1, 10, 62, 63))..., Case(powsmall, Int32(3), 20), Case(powsmall, Int32(-7), 3),
+                         Case(powunsigned, UInt64(3), 40), Case(powcomplex, 0.6 + 0.8im, 5), Case(powcomplex, 1.5 - 0.5im, 0),
+                         Case(powliteral, 1.3), Case(powliteral, -0.7), Case(powliteral32, 1.3f0)])
+    @test occursin("return powiI64(n, m);", src) && occursin("return powiI64(2, n);", src) && occursin("return powiI32(n, m);", src) && occursin("return powiU64(n, m);", src)
+    @test occursin("return powiC64(z, n);", src) && occursin("powi(x, 13) + powi(x, -5)", src) && occursin("powiF32(x, 7)", src)
+    helper = csource("powitext", powliteral, powint)
+    @test occursin("static inline double powi(double x, int64_t n) {\n    if (n < 0) {\n        x = 1.0 / x;\n        n = -n;\n    }\n    if (n == 0) {\n        return 1.0;\n    }", helper)
+    @test occursin("static inline int64_t powiI64(int64_t x, int64_t n) {\n    if (n == 0) {\n        return 1;\n    }", helper)       # no inverse for an integer, as in Julia
+    @test occursin("    while (n % 2 == 0) {\n        x *= x;\n        n >>= 1;\n    }\n    double y = x;", helper)
+end
+
+# A cast is never applied to a number written out (2026-10-04): the number is written as the
+# type instead, `2.0` and not `(double)2`. One rule, in `cast`, whoever asked for the conversion.
+litdivide(n::Int64) = n / 2 + 2 / n
+function litdeclared(x::Float64)
+    y::Float64 = 3
+    return x * y
+end
+litwritten(x::Float64) = x + Float64(2)
+litfloat(x::Float64) = x - float(2)
+litsingle(y::Float32) = y * Float32(3)
+littruth(x::Float64) = x + Float64(true)
+litvariable(n::Int64) = Float64(n) + 1          # a variable is cast, as it was
+function litfixed(x::Float64)
+    v = @MVector [1.0, 2.0, 3.0]                # written below: an ordinary array
+    v[1] = x
+    w = SVector(1.0, x, 3.0)                    # holds a variable: built each time
+    u = SVector(1.0, 2.0, 3.0)                  # numbers, never written: fixed
+    return v[1] + w[2] + u[3]
+end
+litreturn(n::Int64)::Float64 = n + 1
+@testset "literal as its type" begin
+    src = check("literal", [Case(litdivide, 3), Case(litdeclared, 1.5), Case(litwritten, 1.5), Case(litfloat, 1.5), Case(litsingle, 1.5f0), Case(littruth, 1.5), Case(litvariable, 4)])
+    @test occursin("return (double)n / 2.0 + 2.0 / (double)n;", src) && occursin("    double y = 3.0;\n", src) && !occursin("temp1", src)             # one line for one line
+    @test occursin("return x + 2.0;", src) && occursin("return x - 2.0;", src) && occursin("return y * 3.0f;", src) && occursin("return x + 1.0;", src)
+    @test occursin("return (double)n + 1;", src)
+    @test !occursin(r"\((double|float)\)-?[0-9]", src) && !occursin("(double)true", src)                # no cast of a literal anywhere
+    # An array of numbers written out and never written again is `static const`, whatever its size.
+    src = csource("fixed", litfixed)
+    @test occursin("static const double u[3] = {1.0, 2.0, 3.0};", src) && occursin("    double v[3] = {1.0, 2.0, 3.0};", src) && occursin("    double w[3] = {1.0, x, 3.0};", src)
+    @test occursin("return (double)(n + 1);", csource("declaredreturn", litreturn))            # a declared return type: one line too
+end
 end

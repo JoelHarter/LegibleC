@@ -53,11 +53,11 @@ end
 # and the identity are written inline). Pointwise helpers need no entry, the `P` says it.
 # The tests insist every helper they meet is recognized, so a new one can't be forgotten.
 const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det", "inv", "invLLT", "pinv", "solve", "rsolve", "solveLLT",
-                         "lu", "llt", "pivot", "tr", "norm", "norm1", "normInf", "mean", "var", "std", "sum", "prod", "minimum", "maximum", "extrema", "diff", "cumsum", "cumprod",
+                         "lu", "llt", "pivot", "tr", "exp", "powi", "norm", "norm1", "normInf", "mean", "var", "std", "sum", "prod", "minimum", "maximum", "extrema", "diff", "cumsum", "cumprod",
                          "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
 const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
 # The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
-const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp", "minN", "maxN", "shl", "shr", "shru"])
+const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp", "minN", "maxN", "shl", "shr", "shru", "factorial"])
 
 """
     helpername(op, types; pointwise=false) -> String
@@ -314,30 +314,7 @@ function powexpr(helpers, a::AbstractString, n::Integer, E::Type)
     n == 2 && return "$a * $a"
     n == 3 && return "$a * $a * $a"
     n == -1 && return "$one / $a"
-    return "$(powhelper!(helpers, E))($a, $n)"
-end
-
-# `x^n` for an integer `n`, by squaring: `powi(x, 13)`, one helper per base type
-# (`powiF32`, `powiI64` off the double). The exponent is a literal at every call, so
-# an optimizing compiler inlines this, unrolls the loop over its bits and folds the
-# `1.0` start away, leaving exactly the multiply chain a person would write out —
-# five multiplies for the 13th power — with no loop and no branch. A negative exponent
-# is the reciprocal at the end; for an integer base Julia throws, so it isn't offered.
-# Julia's own `Float64^Int` is a compensated squaring, a little more accurate and
-# about three times the work; speed wins here.
-function powhelper!(helpers::Dict{String, String}, E::Type)
-    name = "powi" * (E === Float64 ? "" : abbrev(E))
-    haskey(helpers, name) && return name
-    t = ctype(E)
-    one = E <: Union{AbstractFloat, Complex} ? (E === Float32 ? "1.0f" : "1.0") : "1"
-    signed = E <: AbstractFloat
-    body = [signed ? ["bool neg = n < 0;", "if (neg) {", "    n = -n;", "}"] : String[];
-            "$t r = $one;"; "while (n > 0) {"; "    if (n & 1) {"; "        r *= x;"; "    }"; "    x *= x;"; "    n >>= 1;"; "}";
-            "return " * (signed ? "neg ? $one / r : r;" : "r;")]
-    helpers[name] = definition(t, name, ["$t x", "int n"], body;
-                               doc=["integer power of $(E === Float64 ? "a scalar" : E <: AbstractFloat ? "a float" : "an integer"), by squaring",
-                                    "returns x^n"])
-    return name
+    return "$(powerhelper!(helpers, E))($a, $n)"
 end
 
 # `gcd`, `lcm`, `isqrt` on integers: Julia's answers for every argument Julia answers for.
@@ -366,6 +343,25 @@ function integerhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
              "while (s * s > (uint64_t)n) {", "    s--;", "}", "while (s < 4294967295u && (s + 1) * (s + 1) <= (uint64_t)n) {", "    s++;", "}", "return ($t)s;"];
             doc=["integer square root: the floating one, then corrected, since a double holds 53 bits", "returns the largest s with s * s <= n"])
     end
+    return name
+end
+
+# `factorial(n)`: a table, as Julia's is, since 20! is the last that fits 64 bits. Outside the
+# table Julia throws, a `DomainError` below zero and an `OverflowError` above 20, and the C stops
+# with the same words, where an index past the table would have read whatever lies there. The
+# result is an `Int64` for every integer type but `UInt64`, whose own it is.
+function factorialhelper!(helpers::Dict{String, String}, E::Type)
+    R = E === UInt64 ? UInt64 : Int64
+    name = "factorial" * (R === Int64 ? "" : abbrev(R))
+    haskey(helpers, name) && return name
+    t = ctype(R)
+    width = ndigits(factorial(20))
+    table = ["    " * lpad(factorial(k), width) * (k < 20 ? "," : " ") * "    // $(k)!" for k in 0:20]       # a line each, lined up on the units
+    below = R === Int64 ? ["if (n < 0) {", "    fprintf(stderr, \"DomainError: factorial of a negative number\\n\");", "    abort();", "}"] : String[]
+    helpers[name] = definition(t, name, ["$t n"],
+        vcat(["static const $t table[] = {"], table, ["};"], below,
+             ["if (n > 20) {", "    fprintf(stderr, \"OverflowError: factorial of a number past 20 doesn't fit 64 bits\\n\");", "    abort();", "}", "return table[n];"]);
+        doc=["n!, looked up: 0! to 20!, the last that fits", "returns factorial(n)"])
     return name
 end
 
@@ -876,6 +872,159 @@ end
 
 # `inv(A)`: `inv_3x3`. Sizes 1–3 by the adjugate over the determinant, written out;
 # from 4 on, `lu_NxN` and one solve per column of the identity.
+"""
+    exphelper!(helpers, T, R) -> name
+
+The matrix exponential, `exp(A)` for a square `A`, by the algorithm Julia uses for a static
+matrix (`StaticArrays`' `expm.jl`, after Higham, "Functions of Matrices", 2008), so that the
+two agree to rounding. One by one it is `exp` of the element. Two by two it is the closed form
+of Bernstein and So. Anything larger is a Padé approximant, of an order chosen by the matrix's
+1-norm; past the norm the highest order is good for, the matrix is halved until it is small
+enough, and the result squared as many times. Julia's method for a regular `Matrix` balances
+the matrix first, which this doesn't: the same value, to rounding, for a matrix that isn't
+badly scaled.
+"""
+function exphelper!(helpers::Dict{String, String}, T::Type, R::Type)
+    n = shape(T)[1]
+    ndims(T) == 2 && allequal(shape(T)) || throw(ArgumentError("exp needs a square matrix, got a $(describe(T))"))
+    E = eltype(R)
+    E <: Union{Float32, Float64} || throw(ArgumentError("exp of a matrix of $(eltype(T)) is not supported yet: real floating elements only"))
+    name = helpername(:exp, (T,))
+    haskey(helpers, name) && return name
+    A = inputs((T,))[1]
+    a(i, j) = access(T, A, [string(i), string(j)])
+    t = ctype(E)
+    m(f) = mathname(E, f)
+    lit(x) = string(x) * (E === Float32 ? ".0f" : ".0")
+    S = shaped(E, (n, n))
+    mul = helper!(helpers, :mul, (S, S), S)
+    each(lines...) = ["for (int i = 0; i < $n; i++) {", "    for (int j = 0; j < $n; j++) {", ("        " * l for l in lines)..., "    }", "}"]
+    body = if n == 1
+        ["out[0][0] = $(m("exp"))($(a(0, 0)));"]
+    elseif n == 2
+        ["$t a = $(a(0, 0)), b = $(a(0, 1)), c = $(a(1, 0)), d = $(a(1, 1));",
+         "$t v = (a - d) * (a - d) + 4 * b * c;      // the discriminant of the characteristic polynomial",
+         "$t mean = (a + d) / 2;",
+         "if (v > 0) {",
+         "    // Two real eigenvalues, mean ± delta. Written with the two exponentials and not with",
+         "    // cosh and sinh, which overflow where their difference doesn't.",
+         "    $t delta = $(m("sqrt"))(v) / 2;",
+         "    $t up = $(m("exp"))(mean + delta);",
+         "    $t down = $(m("exp"))(mean - delta);",
+         "    $t e1 = (up + down) / 2;",
+         "    $t e2 = (up - down) / 2;",
+         "    $t c2 = (a - d) / (2 * delta);",
+         "    out[0][0] = e1 + c2 * e2;",
+         "    out[0][1] = (b / delta) * e2;",
+         "    out[1][0] = (c / delta) * e2;",
+         "    out[1][1] = e1 - c2 * e2;",
+         "} else {",
+         "    // A complex pair, or one eigenvalue twice.",
+         "    $t r = $(m("exp"))(mean);",
+         "    $t z1 = $(lit(1));",
+         "    $t z2 = $(E === Float32 ? "0.5f" : "0.5");",
+         "    if (v < 0) {",
+         "        $t z = $(m("sqrt"))(-v);",
+         "        z1 = $(m("cos"))(z / 2);",
+         "        z2 = $(m("sin"))(z / 2) / z;",
+         "    }",
+         "    out[0][0] = r * (z1 + (a - d) * z2);",
+         "    out[0][1] = r * 2 * b * z2;",
+         "    out[1][0] = r * 2 * c * z2;",
+         "    out[1][1] = r * (z1 - (a - d) * z2);",
+         "}"]
+    else
+        solve = solvehelper!(helpers, S, S, S)
+        vcat(
+        ["// The 1-norm of A, its greatest column sum, decides the approximant and the scaling.",
+         "$t norm = 0;",
+         "for (int j = 0; j < $n; j++) {",
+         "    $t sum = 0;",
+         "    for (int i = 0; i < $n; i++) {",
+         "        sum += $(m("fabs"))($(access(T, A, ["i", "j"])));",
+         "    }",
+         "    if (!(sum <= norm)) {                  // a NaN is kept",
+         "        norm = sum;",
+         "    }",
+         "}",
+         "// Past 2.1 the matrix is halved until its norm is under 5.4, and the result squared as many times.",
+         "int squarings = 0;",
+         "if (norm > $(E === Float32 ? "2.1f" : "2.1") && isfinite(norm)) {",
+         "    $t s = $(m("log2"))(norm / $(E === Float32 ? "5.4f" : "5.4"));",
+         "    if (s > 0) {",
+         "        squarings = (int)$(m("ceil"))(s);",
+         "    }",
+         "}",
+         "$t X[$n][$n], X2[$n][$n];                  // A scaled, and its square",
+         "$t U[$n][$n], V[$n][$n];                   // the odd and the even part of the approximant",
+         "$t P[$n][$n], Q[$n][$n];                   // work",
+         "$t scale = $(m("ldexp"))($(lit(1)), -squarings);"],
+        each("X[i][j] = $(access(T, A, ["i", "j"])) * scale;"),
+        ["$mul(X, X, X2);",
+         "if (norm <= $(E === Float32 ? "2.1f" : "2.1")) {",
+         "    // A lower order is enough for a small norm: orders 3, 5, 7 and 9, coefficients b[0] to b[order].",
+         "    static const $t b3[] = {120, 60, 12, 1};",
+         "    static const $t b5[] = {30240, 15120, 3360, 420, 30, 1};",
+         "    static const $t b7[] = {17297280, 8648640, 1995840, 277200, 25200, 1512, 56, 1};",
+         "    static const $t b9[] = {17643225600, 8821612800, 2075673600, 302702400, 30270240, 2162160, 110880, 3960, 90, 1};",
+         "    const $t *b = norm > $(E === Float32 ? "0.95f" : "0.95") ? b9 : norm > $(E === Float32 ? "0.25f" : "0.25") ? b7 : norm > $(E === Float32 ? "0.015f" : "0.015") ? b5 : b3;",
+         "    int order = norm > $(E === Float32 ? "0.95f" : "0.95") ? 9 : norm > $(E === Float32 ? "0.25f" : "0.25") ? 7 : norm > $(E === Float32 ? "0.015f" : "0.015") ? 5 : 3;",
+         "    // U = X (b[1] I + b[3] X² + b[5] X⁴ + …), V = b[0] I + b[2] X² + b[4] X⁴ + …",
+         "    for (int i = 0; i < $n; i++) {",
+         "        for (int j = 0; j < $n; j++) {",
+         "            P[i][j] = i == j;              // X to the power 2k, from k = 0",
+         "            Q[i][j] = i == j ? b[1] : 0;",
+         "            V[i][j] = i == j ? b[0] : 0;",
+         "        }",
+         "    }",
+         "    for (int k = 1; 2 * k < order; k++) {",
+         "        $mul(P, X2, U);",
+         "        memcpy(P, U, sizeof P);",
+         "        for (int i = 0; i < $n; i++) {",
+         "            for (int j = 0; j < $n; j++) {",
+         "                Q[i][j] += b[2 * k + 1] * P[i][j];",
+         "                V[i][j] += b[2 * k] * P[i][j];",
+         "            }",
+         "        }",
+         "    }",
+         "    $mul(X, Q, U);",
+         "} else {",
+         "    // Order 13, with X⁶ factored out so that the whole takes six matrix products.",
+         "    $t X4[$n][$n], X6[$n][$n];",
+         "    $mul(X2, X2, X4);",
+         "    $mul(X2, X4, X6);",
+         "    for (int i = 0; i < $n; i++) {",
+         "        for (int j = 0; j < $n; j++) {",
+         "            P[i][j] = X6[i][j] + $(lit(16380)) * X4[i][j] + $(lit(40840800)) * X2[i][j];",
+         "        }",
+         "    }",
+         "    $mul(X6, P, Q);",
+         "    for (int i = 0; i < $n; i++) {",
+         "        for (int j = 0; j < $n; j++) {",
+         "            Q[i][j] += $(lit(33522128640)) * X6[i][j] + $(lit(10559470521600)) * X4[i][j] + $(lit(1187353796428800)) * X2[i][j] + (i == j ? $(lit(32382376266240000)) : 0);",
+         "            P[i][j] = $(lit(182)) * X6[i][j] + $(lit(960960)) * X4[i][j] + $(lit(1323241920)) * X2[i][j];",
+         "        }",
+         "    }",
+         "    $mul(X, Q, U);",
+         "    $mul(X6, P, V);",
+         "    for (int i = 0; i < $n; i++) {",
+         "        for (int j = 0; j < $n; j++) {",
+         "            V[i][j] += $(lit(670442572800)) * X6[i][j] + $(lit(129060195264000)) * X4[i][j] + $(lit(7771770303897600)) * X2[i][j] + (i == j ? $(lit(64764752532480000)) : 0);",
+         "        }",
+         "    }",
+         "}",
+         "// exp(X) is (V - U)⁻¹ (V + U), to the accuracy of the type."],
+        each("P[i][j] = V[i][j] - U[i][j];", "Q[i][j] = V[i][j] + U[i][j];"),
+        ["$solve(P, Q, U);",
+         "// Undo the halving: exp(A) = exp(X) to the power 2^squarings.",
+         "$(powerhelper!(helpers, S))(U, (int64_t)1 << squarings, out);"])
+    end
+    doc = [n == 1 ? "$(describe(T)) exponential" : n == 2 ? "$(describe(T)) exponential in closed form" :
+           "$(describe(T)) exponential by scaling and squaring with a Padé approximant", "out = exp($A)"]
+    helpers[name] = definition("void", name, [declare(T, A; constant=true), declare(R, "out"; restrict=true)], body; doc, inline=false)
+    return name
+end
+
 function invhelper!(helpers::Dict{String, String}, T::Type, R::Type)
     n = shape(T)[1]
     ndims(T) == 2 && allequal(shape(T)) || throw(ArgumentError("inv needs a square matrix, got a $(describe(T))"))

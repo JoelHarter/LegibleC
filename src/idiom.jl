@@ -12,7 +12,7 @@
 # An argument that the C writes twice is an argument evaluated twice, so such a row's
 # arguments are never written in place (`duplicates` reads that off the row).
 struct Idiom
-    f::Any
+    f::Any                  # the function, or `:Module => :name` for one in a package that isn't loaded here
     applies::Function       # (result type, argument types) -> Bool
     c::String
     operand::Int            # the precedence the arguments are written at
@@ -33,6 +33,11 @@ const idioms = Idiom[
     Idiom(Base.round,    mathematical, "{m:rint}({a})", 0, PRIMARY, "math.h"),
     Idiom(Base.abs,      (T, A) -> T <: Union{Float32, Float64}, "{m:fabs}({a})", 0, PRIMARY, "math.h"),
     Idiom(Base.atan,     mathematical, "{m:atan2}({a}, {b})", 0, PRIMARY, "math.h"),
+    # `SpecialFunctions`' own, known by name since the package isn't loaded here: what `math.h` has.
+    Idiom(:SpecialFunctions => :gamma,    (T, A) -> T <: Union{Float32, Float64} && real64(A[1]), "{m:tgamma}({a})", 0, PRIMARY, "math.h"),
+    Idiom(:SpecialFunctions => :loggamma, (T, A) -> T <: Union{Float32, Float64} && real64(A[1]), "{m:lgamma}({a})", 0, PRIMARY, "math.h"),
+    Idiom(:SpecialFunctions => :erf,      (T, A) -> T <: Union{Float32, Float64} && real64(A[1]), "{m:erf}({a})", 0, PRIMARY, "math.h"),
+    Idiom(:SpecialFunctions => :erfc,     (T, A) -> T <: Union{Float32, Float64} && real64(A[1]), "{m:erfc}({a})", 0, PRIMARY, "math.h"),
     Idiom(Base.hypot,    mathematical, "{m:hypot}({a}, {b})", 0, PRIMARY, "math.h"),
     Idiom(Base.copysign, (T, A) -> T <: Union{Float32, Float64} && all(real64, A), "{m:copysign}({a}, {b})", 0, PRIMARY, "math.h"),
     # `abs` of an integer: nothing to do for one that can't be negative, else `stdlib.h`'s by
@@ -56,6 +61,8 @@ const idioms = Idiom[
     Idiom(Base.iseven,  (T, A) -> A[1] <: Base.BitInteger64,                         "{a} % 2 == 0", MUL, EQ),
     # `inv(x)` is `one(x) / x`, a float whatever `x` is.
     Idiom(Base.inv,     (T, A) -> T <: Union{Float32, Float64} && A[1] <: Union{Base.BitInteger64, Float32, Float64}, "{1} / {a}", MUL, MUL),
+    Idiom(Base.inv,     (T, A) -> T === ComplexF64 && A[1] === ComplexF64, "1.0 / {a}", MUL, MUL),
+    Idiom(Base.inv,     (T, A) -> T === ComplexF32 && A[1] === ComplexF32, "1.0f / {a}", MUL, MUL),
     # Julia's own definitions: `x * (π / 180)`, `x * (180 / π)`, with π rounded to the type first.
     Idiom(Base.deg2rad, (T, A) -> T === Float64 && A[1] === Float64,        "{a} * ({pi} / 180)", MUL, MUL),
     Idiom(Base.rad2deg, (T, A) -> T === Float64 && A[1] === Float64,        "{a} * (180 / {pi})", MUL, MUL),
@@ -67,14 +74,19 @@ const idioms = Idiom[
     Idiom(Base.gcd,     (T, A) -> A[1] <: Base.BitInteger64 && A[1] === A[2],        "{h}({a}, {b})", 0, PRIMARY, "", (h, E) -> integerhelper!(h, :gcd, E)),
     Idiom(Base.lcm,     (T, A) -> A[1] <: Base.BitInteger64 && A[1] === A[2],        "{h}({a}, {b})", 0, PRIMARY, "", (h, E) -> integerhelper!(h, :lcm, E)),
     Idiom(Base.isqrt,   (T, A) -> A[1] <: Base.BitInteger64,                         "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> integerhelper!(h, :isqrt, E)),
+    # `n!` from a table, as Julia's is: 20! is the last that fits.
+    Idiom(Base.factorial, (T, A) -> A[1] <: Base.BitInteger64,                       "{h}({a})", 0, PRIMARY, "stdio.h stdlib.h", (h, E) -> factorialhelper!(h, E)),
     Idiom(Base.sind,    (T, A) -> A[1] === Float64,                         "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> degreehelper!(h, :sind)),
     Idiom(Base.cosd,    (T, A) -> A[1] === Float64,                         "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> degreehelper!(h, :cosd)),
     Idiom(Base.tand,    (T, A) -> A[1] === Float64,                         "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> degreehelper!(h, :tand)),
 ]
 
+# Is `f` the function this row is for: the function itself, or one of that name in that package?
+named(r::Idiom, f) = r.f isa Pair ? f isa Function && nameof(f) === r.f[2] && nameof(parentmodule(f)) === r.f[1] : r.f === f
+
 function idiom(f, T, A)
     T isa DataType && all(X -> X isa DataType, A) || return nothing       # a union of number types is no one C type
-    k = findfirst(r -> r.f === f && length(A) == count(p -> occursin(p, r.c), ("{a}", "{b}", "{c}")) && r.applies(T, A), idioms)
+    k = findfirst(r -> named(r, f) && length(A) == count(p -> occursin(p, r.c), ("{a}", "{b}", "{c}")) && r.applies(T, A), idioms)
     return k === nothing ? nothing : idioms[k]
 end
 

@@ -68,7 +68,17 @@ end
 paren(t::Term) = Term(:paren, "", [t], t.julia, t.c, PRIMARY, t.reach)
 
 # `(int64_t)x`. The value is kept where it fits, and wraps where it doesn't.
-cast(J, t::Term) = Term(:cast, ctype(J), [t], J, J, UNARY, fits(t.reach, J) ? t.reach : limits(J))
+#
+# A number written out is never cast to a floating type. It is written as that type: `2.0` and
+# `2.0f`, never `(double)2`. One rule, here, for every way a literal comes to be a float, with
+# nothing to tell apart: `n / 2`, a declared type's `convert`, `Float64(2)`, `float(2)`.
+function cast(J, t::Term)
+    if J isa DataType && J <: AbstractFloat
+        t.kind === :number && return atom(initializer(J(t.reach[1])), J)
+        t.kind === :atom && t.julia === Bool && t.text in ("true", "false") && return atom(initializer(J(t.text == "true")), J)
+    end
+    return Term(:cast, ctype(J), [t], J, J, UNARY, fits(t.reach, J) ? t.reach : limits(J))
+end
 
 call(name::AbstractString, args, J) = Term(:call, String(name), collect(Term, args), J, J, PRIMARY, limits(J))
 

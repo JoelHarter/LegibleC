@@ -1129,7 +1129,7 @@ end
 # (a `ccall`) counts as both.
 const writing = (Base.setindex!, Base.setproperty!, Core.setfield!, Base.push!, Base.pop!, Base.fill!, Base.copyto!, Base.materialize!, Core.setglobal!)
 const printing = (Base.print, Base.println, Printf.format)
-const known = (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf, :Statistics)
+const known = (:Core, :Base, :LinearAlgebra, :StaticArrays, :Printf, :Statistics, :SpecialFunctions)
 
 # Does computing this value do anything besides compute: a call with an effect, in it or
 # in what it is built from?

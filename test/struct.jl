@@ -1,6 +1,7 @@
 # Structs by value, mutable structs through a pointer, parametric structs, and tuples.
 module Struct
 using Test, StaticArrays
+using LinearAlgebra: dot, cross
 using LinearAlgebra: ⋅, ×
 import Main: Case, check, csource
 
@@ -171,6 +172,38 @@ gscale(p::Pair2{Float64}, s::Float64) = Pair2(p.first * s, p.second * s)
     @test name(GTwo{Tuple{Float64,Int64},Char}) == "GTwoTupleF64xI64xxC" && name(GTwo{SMatrix{2,2,Float32,4},ComplexF64}) == "GTwo2x2F32xxC64"
     src = check("grammar", [Case(gscale, Pair2(1.0, 2.0), 3.0), Case(swap, Pair2(1.0, 2.0))])
     @test occursin("Pair2F64 gscale(Pair2F64 p, double s)", src) && !occursin("Pair2_F64", src)
+end
+
+# A struct of the author's to an integer power (2026-10-04): by squaring, with their own `*`,
+# `one` and `inv`. Nothing about the struct is known to the transpiler; power by squaring is
+# written once, in Julia (`src/power.jl`), and translated for the type.
+struct Gauss <: Number            # a + b i
+    a::Float64
+    b::Float64
+end
+Base.:*(x::Gauss, y::Gauss) = Gauss(x.a * y.a - x.b * y.b, x.a * y.b + x.b * y.a)
+Base.one(::Gauss) = Gauss(1.0, 0.0)
+Base.inv(x::Gauss) = Gauss(x.a / (x.a^2 + x.b^2), -x.b / (x.a^2 + x.b^2))
+gausspow(x::Gauss, n::Int64) = x^n
+gausscube(x::Gauss) = x^3
+gausssquaring(x::Gauss, n::Int64) = Base.power_by_squaring(x, n)
+struct Turn                       # a struct that holds an array, and has no inverse
+    w::Float64
+    v::SVector{3,Float64}
+end
+Base.:*(a::Turn, b::Turn) = Turn(a.w * b.w - dot(a.v, b.v), a.w * b.v + b.w * a.v + cross(a.v, b.v))
+Base.one(::Turn) = Turn(1.0, SVector(0.0, 0.0, 0.0))
+Base.copy(q::Turn) = q            # Julia's `power_by_squaring` copies its argument for the first power
+turnpow(q::Turn, n::Int64) = Base.power_by_squaring(q, n)
+@testset "power of a struct" begin
+    g = Gauss(0.6, 0.8)
+    t = Turn(cos(0.3), SVector(0.0, sin(0.3), 0.0))
+    # Julia's own `^` on a number of the author's takes no negative power (it throws), so none is tried.
+    src = check("structpower", [(Case(gausspow, g, n) for n in (0, 1, 2, 7))..., Case(gausscube, Gauss(1.5, -0.5)),
+                                (Case(gausssquaring, g, n) for n in (0, 1, 6))..., (Case(turnpow, t, n) for n in (0, 1, 2, 5))...])
+    @test occursin("return powi_Gauss(x, n);", src) && occursin("return powi_Gauss(x, 3);", src) && occursin("return powi_Turn(q, n);", src)
+    @test occursin("x = mul_Gauss_Gauss(x, x);", src) && occursin("x = inv(x);", src) && occursin("return (Gauss){1.0, 0.0};", src)
+    @test occursin("return (Turn){1.0, {0.0, 0.0, 0.0}};", src) && occursin("y = mul_Turn_Turn(y, x);", src)
 end
 
 @testset "placement" begin

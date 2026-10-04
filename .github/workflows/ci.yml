@@ -32,7 +32,7 @@ jobs:
         with:
           version: '1'
       - uses: julia-actions/cache@v2
-      - run: julia -e 'using Pkg; Pkg.develop(path="."); Pkg.add("StaticArrays")'
+      - run: julia -e 'using Pkg; Pkg.develop(path="."); Pkg.add(["StaticArrays", "SpecialFunctions"])'
       - run: ${{ matrix.cc }} --version
       - run: julia test/runtests.jl
   stackmath:
@@ -47,7 +47,7 @@ jobs:
         with:
           version: '1'
       - uses: julia-actions/cache@v2
-      - run: julia -e 'using Pkg; Pkg.develop(path="."); Pkg.add("StaticArrays")'
+      - run: julia -e 'using Pkg; Pkg.develop(path="."); Pkg.add(["StaticArrays", "SpecialFunctions"])'
       - name: generate
         run: julia aux/stackmath/stackmath.jl
       - name: compile every file

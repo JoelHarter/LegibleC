@@ -98,10 +98,12 @@ function items()
     # its author didn't think of.
     for r in LegibleC.idioms
         n = count(p -> occursin(p, r.c), ("{a}", "{b}", "{c}"))
+        # A row for a package's function, known to the transpiler by name: tried when the package is here.
+        f = r.f isa Pair ? (isdefined(Main, r.f[1]) ? getfield(getfield(Main, r.f[1]), r.f[2]) : continue) : r.f
         for A in Iterators.product(fill((numbers..., Char), n)...)
-            T = Base.promote_op(r.f, A...)
+            T = Base.promote_op(f, A...)
             T isa DataType && isconcretetype(T) && r.applies(T, collect(A)) || continue
-            add("row_$(nameof(r.f))_$(join(A, "_"))", Expr(:call, r.f, (:a, :b, :c)[1:n]...), A)
+            add("row_$(nameof(f))_$(join(A, "_"))", Expr(:call, f, (:a, :b, :c)[1:n]...), A)
         end
     end
     return out

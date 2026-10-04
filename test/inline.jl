@@ -48,7 +48,7 @@ src = csource("inline", hyp, poly, cubed, modded, signs, inloop, folded, cancell
     # Powers other than 2, 3 and -1 go through `powi`, by squaring; an expression base
     # is passed once, so it needs no temp.
     @test occursin("return powi(x, 5) + powi(x + y, -4) + powi(x * y, -2);", src)
-    @test occursin("/// integer power of a scalar, by squaring\n/// returns x^n\nstatic inline double powi(double x, int n) {\n    bool neg = n < 0;", src)
+    @test occursin("/// a scalar to an integer power, by squaring\n/// returns x^n\nstatic inline double powi(double x, int64_t n) {\n    if (n < 0) {\n        x = 1.0 / x;", src)
     # A long expression wraps at its loosest operators, continuation lines led by the operator.
     @test occursin("    return alpha * beta + beta * gamma_ + gamma_ * delta + delta * alpha + alpha * gamma_\n           + beta * delta + alpha + beta + gamma_ + delta;", src)
     @test all(length(l) <= 100 for l in split(src, "\n") if startswith(l, "    ") && (endswith(l, ";") || endswith(l, "{") || endswith(l, "}")))   # code lines; a quoted Julia line may be longer
