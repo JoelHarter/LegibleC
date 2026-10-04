@@ -154,6 +154,7 @@ const idioms = Idiom[
     Idiom(Base.isqrt,   (T, A) -> A[1] <: Base.BitInteger64,                         "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> integerhelper!(h, :isqrt, E)),
     # `n!` from a table, as Julia's is: 20! is the last that fits.
     Idiom(Base.factorial, (T, A) -> A[1] <: Base.BitInteger64,                       "{h}({a})", 0, PRIMARY, "stdio.h stdlib.h", (h, E) -> factorialhelper!(h, E)),
+    [Idiom(getfield(Base, g), (T, A) -> A[1] <: Union{Float32, Float64}, "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> pihelper!(h, g, E)) for g in (:sinpi, :cospi, :tanpi, :sinc)]...,
     Idiom(Base.sind,    (T, A) -> A[1] === Float64,                         "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> degreehelper!(h, :sind)),
     Idiom(Base.cosd,    (T, A) -> A[1] === Float64,                         "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> degreehelper!(h, :cosd)),
     Idiom(Base.tand,    (T, A) -> A[1] === Float64,                         "{h}({a})", 0, PRIMARY, "math.h", (h, E) -> degreehelper!(h, :tand)),

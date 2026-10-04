@@ -94,6 +94,7 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `q, r = divrem(a, b)`, `fldmod`, `s, c = sincosd(x)`, `f, i = modf(x)`, `m, e = frexp(x)` | each value written where it is read: `a / b` and `a % b`, …; `frexp(x, &e)` into temps | two values are no value in C: destructured only, as `sincos` |
 | `evalpoly(x, (a, b, c))` | `a + x * (b + x * c)` | Horner's rule written out; `x` worked out once if it is more than a name |
 | `unsafe_trunc(Int64, x)` | `(int64_t)x` | the cast and nothing else |
+| `sinpi(x)`, `cospi(x)`, `tanpi(x)`, `sinc(x)` | `sin_pi(x)`, `cos_pi(x)`, `tan_pi(x)`, `sinc(x)`, a small helper each | `sin(π * x)` rounds the product before the sine sees it: six digits gone at a million, and not zero at 1. The helper takes the nearest half off first, which is exact, as Julia does. C23 has a `sinpi` of its own on a few systems, so the helpers aren't called that |
 | `logfactorial(n)` from `SpecialFunctions` | `lgamma((double)(n + 1))` | |
 | `max`, `min` on floats | `maxN(a, b)`, `minN(a, b)`, a small helper | a NaN is kept, as in Julia; `fmax` and `fmin` drop it |
 | `max`, `min` on integers | `(a > b ? a : b)` | |

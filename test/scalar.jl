@@ -577,4 +577,32 @@ ufloor(a::Int, b::Int) = fld(a, b) + 10 * cld(a, b) + 100 * mod1(a, b) + 1000 * 
     @test occursin("nextafter(x, INFINITY)", src) && occursin("nextafter(x, -INFINITY)", src) && occursin("asin(x / 40) * (180 / LEGIBLEC_PI)", src) && occursin("1.0 / cosd(x)", src)
 end
 
+# `sinpi` and its kin: written as `sin(π * x)` the product is rounded before the sine sees it,
+# so the argument is brought to within a quarter of zero first, as Julia does. Exact at the
+# whole and half numbers, and to the last digit at a million and a hair off one, where the
+# plain product loses six.
+vsinpi(x::Float64) = sinpi(x)
+vcospi(x::Float64) = cospi(x)
+vtanpi(x::Float64) = tanpi(x)
+vsinc(x::Float64) = sinc(x)
+vsinpi32(x::Float32) = sinpi(x) + cospi(x)
+@testset "sine of pi times" begin
+    xs = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, -0.25, -0.5, -1.0, -1.5, 0.1, 7.7, 1000000.25, 1.0000000001, 0.9999999999,
+          123456.789, -98765.4321, 1e-8, 1e15 + 0.5, 4.5e15, 1e300, NaN]
+    src = check("sinepi", [[Case(g, x) for g in (vsinpi, vcospi, vtanpi, vsinc) for x in xs]; [Case(vsinpi32, x) for x in (0.5f0, 1f0, 0.3f0, 1000.25f0)]])
+    @test occursin("return sin_pi(x);", src) && occursin("return tan_pi(x);", src) && occursin("return sinc(x);", src) && occursin("sin_piF32(x) + cos_piF32(x)", src)
+    # The harness lets a tiny answer be a little off; these are held to the last digits.
+    dir = mktempdir()
+    path = Main.LegibleC.transpile(vsinpi, vcospi; outfile="tight", outpath=dir, scope=@__MODULE__)
+    out = dirname(path)
+    tight = [1000000.25, 1.0000000001, 0.9999999999, 123456.789, 0.1, 7.7, 1e-8]
+    write(joinpath(dir, "main.c"), "#include <stdio.h>\n#include \"tight.h\"\nint main(void) { double xs[] = {" * join(repr.(tight), ", ") *
+          "}; for (int i = 0; i < $(length(tight)); i++) { printf(\"%.17g %.17g\\n\", vsinpi(xs[i]), vcospi(xs[i])); } return 0; }\n")
+    run(`$(Main.cc) $(Main.flags) -I$out $(joinpath(dir, "main.c")) $([joinpath(out, f) for f in readdir(out) if endswith(f, ".c")]) -o $(joinpath(dir, "main")) -lm`)
+    for (x, line) in zip(tight, readlines(`$(joinpath(dir, "main"))`))
+        s, c = parse.(Float64, split(line))
+        @test isapprox(s, sinpi(x); rtol=1e-14) && isapprox(c, cospi(x); rtol=1e-14)
+    end
+end
+
 end

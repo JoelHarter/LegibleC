@@ -57,7 +57,7 @@ const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det
                          "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
 const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
 # The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
-const fixedhelpers = Set(["mantissa", "hypot3", "fld", "cld", "mod1", "fld1", "count_ones", "leading_zeros", "trailing_zeros", "bswap", "bitreverse", "bitrotate",
+const fixedhelpers = Set(["sin_pi", "cos_pi", "tan_pi", "sinc", "mantissa", "hypot3", "fld", "cld", "mod1", "fld1", "count_ones", "leading_zeros", "trailing_zeros", "bswap", "bitreverse", "bitrotate",
                           "binomial", "invmod", "powermod", "nextpow", "prevpow", "cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp", "minN", "maxN", "shl", "shr", "shru", "factorial"])
 
 """
@@ -362,7 +362,8 @@ function roundedhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
         body = ["$t q = ($t)(a / b);", signed ? "return a % b != 0 && (a < 0) == (b < 0) ? ($t)(q + 1) : q;" : "return a % b != 0 ? ($t)(q + 1) : q;"]
         doc = ["a / b rounded up, where C's `/` rounds toward zero", "returns cld(a, b)"]
     elseif op === :mod1
-        body = vcat(["$t m = ($t)(a % b);"], signed ? ["if (m != 0 && (m < 0) != (b < 0)) {", "    m = ($t)(m + b);", "}"] : String[], ["return m == 0 ? b : m;"])
+        # The most negative number over -1 is a trap on some processors, in `%` as in `/`; Julia's answer there is 0.
+        body = vcat([signed && sizeof(E) >= 4 ? "$t m = b == -1 ? 0 : ($t)(a % b);" : "$t m = ($t)(a % b);"], signed ? ["if (m != 0 && (m < 0) != (b < 0)) {", "    m = ($t)(m + b);", "}"] : String[], ["return m == 0 ? b : m;"])
         doc = ["a modulo b counted from one: in 1 to b, where `mod` gives 0 to b - 1", "returns mod1(a, b)"]
     else
         # Julia's own definition for integers: the quotient, and one more where the signs agree and it didn't go evenly.
@@ -436,8 +437,9 @@ function numberhelper!(helpers::Dict{String, String}, op::Symbol)
     elseif op === :invmod
         params = ["int64_t n", "int64_t m"]
         body = vcat(["if (m == 0) {"], stop("DomainError: invmod with a modulus of zero"), ["}",
+                     "if (m == 1 || m == -1) {", "    return 0;", "}",
                      "int64_t a = n % m;", "int64_t b = m;", "int64_t x = 1;", "int64_t y = 0;",
-                     "while (b != 0) {", "    int64_t q = a / b;", "    int64_t r = a - q * b;", "    a = b;", "    b = r;",
+                     "while (b != 0) {", "    int64_t q = b == -1 ? -a : a / b;       // the most negative number over -1 is a trap on some processors", "    int64_t r = a - q * b;", "    a = b;", "    b = r;",
                      "    r = x - q * y;", "    x = y;", "    y = r;", "}",
                      "if (a != 1 && a != -1) {"], stop("DomainError: invmod of a number that shares a factor with the modulus"), ["}",
                      "if (a < 0) {", "    x = -x;", "}",
@@ -573,6 +575,50 @@ function hypothelper!(helpers::Dict{String, String}, E::Type)
             "return m * sqrt$f(x * x + y * y + z * z);"]
     helpers[name] = definition(t, name, ["$t x", "$t y", "$t z"], body;
                                doc=["length of (x, y, z), scaled by the largest so that nothing overflows on the way", "returns hypot(x, y, z)"])
+    return name
+end
+
+# `sinpi`, `cospi`, `tanpi`, `sinc`: the sine of π times `x`, and its kin. Written as
+# `sin(π * x)` the product is rounded before the sine sees it, and that error grows with `x`:
+# six digits are gone at a million, and `sinpi(1.0)` isn't zero. So `x` is brought to within a
+# quarter of zero first, by taking off the nearest half, which is exact, and the half it was
+# says which of sine and cosine to take and with which sign. Julia does the same.
+#
+# C23 has `sinpi`, `cospi` and `tanpi` of its own in `math.h`, on the few systems that have
+# caught up, so the helpers aren't called that.
+function pihelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
+    name = (op === :sinc ? "sinc" : replace(string(op), "pi" => "_pi")) * (E === Float64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t, f = ctype(E), E === Float32 ? "f" : ""
+    lit(x) = E === Float32 ? "$(x)f" : string(x)
+    whole = E === Float32 ? "16777216.0f" : "9007199254740992.0"      # from here up every float is a whole even number
+    k = E === Float32 ? "(float)" * macroname(π) : macroname(π)
+    reduce = ["$t a = fabs$f(x);",
+              "$t n = rint$f(2 * a);" * " "^(E === Float32 ? 6 : 8) * "// the nearest half, counted in halves",
+              "$t r = a - $(lit(0.5)) * n;" * " "^6 * "// what is left: exact, and within a quarter of zero",
+              "int q = (int)((int64_t)n & 3);"]
+    if op === :sinpi
+        body = vcat(["if (isnan(x)) {", "    return x;", "}", "if (fabs$f(x) >= $whole) {", "    return copysign$f($(lit(0.0)), x);", "}"], reduce,
+                    ["$t s = q == 0 ? sin$f($k * r) : q == 1 ? cos$f($k * r) : q == 2 ? $(lit(0.0)) - sin$f($k * r) : $(lit(0.0)) - cos$f($k * r);",
+                     "return signbit(x) ? -s : s;"])
+        doc = ["sin(π x), exact at the whole and half numbers and accurate however large x is", "returns sinpi(x)"]
+    elseif op === :cospi
+        body = vcat(["if (isnan(x)) {", "    return x;", "}", "if (fabs$f(x) >= $whole) {", "    return $(lit(1.0));", "}"], reduce,
+                    ["return q == 0 ? cos$f($k * r) : q == 1 ? $(lit(0.0)) - sin$f($k * r) : q == 2 ? $(lit(0.0)) - cos$f($k * r) : sin$f($k * r);"])
+        doc = ["cos(π x), exact at the whole and half numbers and accurate however large x is", "returns cospi(x)"]
+    elseif op === :tanpi
+        body = vcat(["if (isnan(x)) {", "    return x;", "}", "if (fabs$f(x) >= $whole) {", "    return copysign$f($(lit(0.0)), x);", "}"], reduce,
+                    ["if (r == 0 && (q == 1 || q == 3)) {", "    return (q == 1) != (x < 0) ? INFINITY : -INFINITY;       // at a half the cosine is zero", "}",
+                     "$t s = sin$f($k * r);", "$t c = cos$f($k * r);",
+                     "$t t = q == 0 || q == 2 ? s / c : c / -s;",
+                     "return x < 0 ? -t : t;"])
+        doc = ["tan(π x), exact at the whole numbers, infinite at the halves", "returns tanpi(x)"]
+    else
+        s_ = pihelper!(helpers, :sinpi, E)
+        body = ["if (x == 0) {", "    return $(lit(1.0));", "}", "if (isinf(x)) {", "    return $(lit(0.0));", "}", "return $s_(x) / ($k * x);"]
+        doc = ["sin(π x) / (π x), and 1 at zero", "returns sinc(x)"]
+    end
+    helpers[name] = definition(t, name, ["$t x"], body; doc)
     return name
 end
 
