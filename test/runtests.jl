@@ -5,7 +5,7 @@ using Test
 include("check.jl")
 
 @testset "LegibleC" begin
-    for file in ("scalar", "flow", "array", "linear", "reduce", "call", "struct", "name", "comment", "print", "inline", "text", "global", "file", "option", "operator", "complex", "scope", "grid", "shape")
+    for file in ("scalar", "flow", "array", "linear", "reduce", "call", "lambda", "struct", "name", "comment", "print", "inline", "text", "global", "file", "option", "operator", "complex", "scope", "grid", "shape")
         include("$file.jl")
     end
     # Every helper any test produced has a name the reservation knows (`ishelpername`).

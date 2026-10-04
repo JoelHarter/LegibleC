@@ -267,8 +267,8 @@ function names!(sc::Scope, first::Scope)
     sc.outer = Set(String(w) for w in inside[1] if w in filescope(sc.prog))
     # One variable per name of the first walk: slots Julia made for one variable share it.
     groups = Dict{String, Vector{Int}}()
-    for s in 2:length(ci.slotnames)
-        isempty(string(ci.slotnames[s])) || push!(get!(groups, first.names[s], Int[]), s)
+    for s in 1:length(ci.slotnames)
+        isempty(string(ci.slotnames[s])) || first.names[s] == "#self#" || push!(get!(groups, first.names[s], Int[]), s)
     end
     vars = map(collect(groups)) do (marked, slots)
         julia = string(ci.slotnames[minimum(slots)])
@@ -868,6 +868,7 @@ function mark!(sc::Scope)
         end
         get(count, i, 0) == 1 || continue
         !choice && manyfactors(sc, st) && continue      # its arrays on the way take lines: never inside another expression
+        !choice && folded(sc, st) !== nothing && continue      # so does a loop
         T = widen(ci.ssavaluetypes[i])
         u = findfirst(s -> uses(s, i), code)
         use = code[u]
@@ -1145,7 +1146,37 @@ function pure(sc::Scope, st::Expr; bring::Bool=true)
     f isa Type && return true
     r = userinstance!(sc, f, st.args[2:end]; bring)   # the user's method, even of a Julia operator
     r === nothing || return isempty(effects!(sc.prog, r[1]))
+    # Julia's own, handed a function: as free of effects as that function is. Reading a field
+    # of one, or comparing it, doesn't call it.
+    if !(f isa Core.Builtin)
+        handed = [functiontype(sc, a) for a in st.args[2:end]]
+        all(F -> F === nothing || isempty(handedeffects!(sc.prog, F)), handed) || return false
+    end
     return nameof(Base.moduleroot(parentmodule(f))) in known
+end
+
+# What a function handed to one of Julia's own does besides compute, whatever it is called
+# with: every method it has is looked at. Julia's own functions do nothing.
+function handedeffects!(prog::Program, F::Type)
+    nameof(Base.moduleroot(F.name.module)) in known && return Set{Symbol}()
+    found = Set{Symbol}()
+    for match in Base._methods_by_ftype(Tuple{F, Vararg{Any}}, -1, Base.get_world_counter())
+        ci = try Base.uncompressed_ast(match.method) catch; (push!(found, :unknown); continue) end
+        for st in ci.code
+            ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+            ex isa Expr || continue
+            ex.head === :foreigncall && push!(found, :foreign)
+            ex.head === :call || continue
+            g = ex.args[1]
+            g isa Core.SSAValue && (g = ci.code[g.id])
+            g = g isa GlobalRef && isdefined(g.mod, g.name) ? getfield(g.mod, g.name) : nothing
+            # Untyped, so only a function of Julia's own that is named outright is known to do nothing.
+            g isa Function && nameof(Base.moduleroot(parentmodule(g))) in known && !(g in writing) && !(g in printing) && continue
+            g isa Type && continue
+            push!(found, g in writing ? :write : g in printing ? :print : :unknown)
+        end
+    end
+    return found
 end
 
 # What a user function does besides compute: `:write` (a store into an array or
@@ -1155,7 +1186,7 @@ end
 function effects!(prog::Program, mi::Core.MethodInstance)
     haskey(prog.effects, mi) && return prog.effects[mi]
     prog.effects[mi] = Set{Symbol}()
-    ci = only(Base.code_typed_by_type(mi.specTypes; optimize=false))[1]
+    ci = canonical!(only(Base.code_typed_by_type(mi.specTypes; optimize=false))[1])
     rawtype(t) = t isa Core.Const ? typeof(t.val) : t isa Core.PartialStruct ? t.typ : t
     argtype(a) = a isa GlobalRef ? typeof(getfield(a.mod, a.name)) : rawtype(valuetype_ir(ci, a))
     found = Set{Symbol}()
@@ -1169,9 +1200,14 @@ function effects!(prog::Program, mi::Core.MethodInstance)
         f in writing && push!(found, :write)
         f in printing && push!(found, :print)
         f isa Type && continue
-        nameof(Base.moduleroot(parentmodule(f))) in known && continue
         types = [argtype(a) for a in ex.args[2:end]]
-        m = all(T -> T isa Type && isconcretetype(T), types) ? Base.method_instance(f, Tuple(types)) : nothing
+        if nameof(Base.moduleroot(parentmodule(f))) in known
+            # Julia's own, handed a function: what that function does.
+            f isa Core.Builtin || foreach(T -> isfunction(T) && union!(found, handedeffects!(prog, T)), types)
+            continue
+        end
+        m = !all(T -> T isa Type && isconcretetype(T), types) ? nothing :
+            f isa Called ? lookup(types[1], types[2:end]) : exact(Base.method_instance(f, Tuple(types)), Tuple{typeof(f), types...})
         m === nothing ? push!(found, :unknown) : union!(found, effects!(prog, m))
     end
     prog.effects[mi] = found

@@ -2172,3 +2172,53 @@ anonymous storage everywhere. Not yet: `view`, and `y .= A * x`.
 **The method to keep.** Freeze the output, build the structure beside the old
 code, switch, and read every difference. Then attack what was built. Each of
 the three structures found bugs older than itself within the hour.
+
+## 2026-10-04 — A function as a value
+
+**The question.** How a function handed to another, `newton(f, df, x)`, a
+lambda, a `do` block and `sum(abs, v)` should come out in C. The three ways on
+the table were to unroll at the call, to generate a function per closure, or
+to pass a function pointer and a context.
+
+**The rule.** A function value is what it captured, and calling it is a call
+to a function known by name. Julia gives every function a type of its own and
+compiles the receiving function once for each, so nothing is decided at run
+time that Julia doesn't decide when it compiles. The C does the same and
+needs no function pointer. The cost is one copy of `newton` per function it
+is handed, which Julia pays as well.
+
+**Captures travel as a tuple does.** The first design held two or more
+captures in a struct. Built, it turned out that the machinery for tuples
+already spreads a value into one C argument per element, and a function value
+fits it exactly: a named function is a tuple of nothing, a lambda the tuple of
+its captures. So captures are separate arguments everywhere, `f_a`, `f_b`, and
+a struct appears only where a function is returned, the one place it must be
+one value. A lambda made and used in one function is no C at all.
+
+**Why it always agrees with Julia.** Julia boxes a captured variable that is
+assigned again after the function is made (`Core.Box`), and a box has no type,
+so it is refused. What reaches C is a capture that never changes while its
+function lives, and writing it as the variable it came from is exact. A
+function made in a loop is the exception, since its captures move on with the
+next pass: it must be used before any branch, or it is refused by line.
+
+**Names.** The author's ruling: an unnamed lambda is named as a temp is, on a
+list of its own, `fun3_a_b`, the suffix being what it captured and not its
+parameters, under the temps' own options. A lambda given a name keeps it. The
+list is counted through the file, since a C function is seen by all of it.
+
+**Julia's own, handed a function.** `sum`, `prod`, `any`, `all`, `count`,
+`maximum`, `minimum`, `map`, `foreach`, generators, comprehensions, and a
+broadcast of the author's function are the loop, written at the call. A lambda
+of one expression is written as that expression: its body is walked with its
+parameter named as the element, and taken when what comes out is one `return`.
+
+**Found on the way.** Julia does not specialise a function on a function it
+only passes on, so `thru(g, x) = twice(g, x)` came back typed `Any`; the
+instance is now asked for at exactly the function's type. A function handed to
+one of Julia's own may print or write, so purity looks into it.
+
+**Left out, each refused with what to write instead.** A lambda that writes
+into an array it captured. A function kept in a field, a tuple or an array. A
+struct called as a function as a target of `transpile`. Keywords on the
+reductions.

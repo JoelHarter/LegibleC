@@ -263,7 +263,7 @@ end
 # One attempt at the whole program: the listed functions, whatever they call, and the
 # operator targets that turn out to be a helper. `fixed` and `avoid` come from `audit`.
 function build!(instances, synthetics, types, values, fixed, avoid, nomacro; precise, width, suffix, templimit, source)
-    prog = Program(; precise, width, suffix)
+    prog = Program(; precise, width, suffix, limit=templimit)
     merge!(prog.fixed, fixed)
     union!(prog.avoid, avoid)
     empty!(macroavoid); union!(macroavoid, nomacro)
@@ -774,9 +774,9 @@ function resolve(f::Function, spec)
     # Arrays are static if the function takes them that way, else regular arrays of
     # the same size, which the transpiler treats identically.
     regular = [isempty(d) ? T : Array{T, length(d)} for (T, d) in groups]
-    mi = Base.method_instance(f, Tuple(static))
+    mi = exact(Base.method_instance(f, Tuple(static)), Tuple{typeof(f), static...})
     mi === nothing || return (mi, static)
-    mi = Base.method_instance(f, Tuple(regular))
+    mi = exact(Base.method_instance(f, Tuple(regular)), Tuple{typeof(f), regular...})
     mi === nothing && throw(ArgumentError("$f has no method accepting $(Tuple(static)) or $(Tuple(regular))"))
     return (mi, shapedsig)
 end

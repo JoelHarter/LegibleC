@@ -42,6 +42,7 @@ function ctype(T::Type)
     isstruct(T) && return structname(T) * (ismutabletype(T) ? " *" : "")
     istuple(T) && return structname(T)
     T <: AbstractArray && throw(ArgumentError("arrays are not yet supported (got $T)"))
+    T isa Type && Function <: T && throw(ArgumentError("a value typed `$T` could be any function, so which one runs would be decided while the program runs, and the C would need a function pointer. Pass the function as an argument instead, where Julia knows which it is"))
     throw(ArgumentError("no C type for $T"))
 end
 
@@ -82,7 +83,55 @@ isstruct(T::Type) = T isa DataType && isstructtype(T) && !(T <: AbstractArray) &
 
 # A concrete tuple type — `Tuple{Float64, Int64}`, a multiple return value — which is a
 # generated C struct with fields named like helper inputs: `a`, `b`, `c`, …
-istuple(T::Type) = T isa DataType && T <: Tuple && isconcretetype(T)
+#
+# A function held as a value is one too: `x -> a * x + b` is what it captured, `a` and `b`, and
+# a function that captured nothing is a tuple of nothing (`lambda.jl`).
+istuple(T::Type) = T isa DataType && isconcretetype(T) && (T <: Tuple || T <: Function)
+
+# The types a tuple holds, in order: a tuple's elements, what a function captured.
+# A function that captured another holds what that one captured, in its place.
+#
+# Written as plain loops, and not specialised on the type: a closure over `T` would be a new
+# type for every function there is, and Julia would compile each of these again for each.
+function elements(@nospecialize(T::Type))
+    T <: Tuple && return collect(Any, T.parameters)
+    out = Any[]
+    for k in 1:fieldcount(T)
+        F = fieldtype(T, k)
+        isfunction(F) ? append!(out, elements(F)) : push!(out, F)
+    end
+    return out
+end
+isfunction(@nospecialize(T)) = T isa DataType && isconcretetype(T) && T <: Function
+
+# The names of what a function captured, a captured function's own behind its name: `g_a`.
+function capturenames(@nospecialize(T::Type))
+    out = String[]
+    for k in 1:fieldcount(T)
+        F = fieldtype(T, k)
+        name = string(fieldname(T, k))
+        if isfunction(F)
+            for n in capturenames(F)
+                push!(out, name * "_" * n)
+            end
+        else
+            push!(out, name)
+        end
+    end
+    return out
+end
+
+# Where the capture named `f` sits among them all.
+function capturerange(@nospecialize(T::Type), f::Symbol)
+    before = 0
+    for k in 1:fieldcount(T)
+        F = fieldtype(T, k)
+        n = isfunction(F) ? length(elements(F)) : 1
+        fieldname(T, k) === f && return before+1:before+n
+        before += n
+    end
+    throw(ArgumentError("$T captured nothing called $f"))
+end
 
 # The C name of a struct or tuple type: the Julia name with its type parameters run on after
 # it, `Point{Float32}` is `PointF32`, a tuple `Tuple` and its element types. It is the rule an
@@ -102,6 +151,7 @@ istuple(T::Type) = T isa DataType && T <: Tuple && isconcretetype(T)
 # `scale_ObjBxx3x3_F64` is `scale` of an `Obj{Bool, 3×3}` and a `Float64`. And the name depends
 # on the type alone, never on what else is in the program, so it changes only when the type does.
 function structname(T::Type)
+    T <: Function && return functionname(T) * "_t"      # what a function captured, held as one value
     base = istuple(T) ? "Tuple" : qualified(string(nameof(T)), T.name.module)
     return base * join((typeword(p) for p in T.parameters), "x"^height(T))
 end
@@ -110,17 +160,17 @@ end
 # one for an array (its size) and for a struct whose parameters have none, and one more than
 # the deepest parameter otherwise. A struct with a single parameter counts as a level although
 # nothing is joined in it, or `Outer{Inner{Bool}, 8}` and `Outer{Inner{Bool, 8}}` would be one name.
-height(p) = !(p isa Type) ? 0 : p <: AbstractArray ? 1 :
+height(p) = !(p isa Type) || p <: Function ? 0 : p <: AbstractArray ? 1 :
             (isstruct(p) || istuple(p)) && !isempty(p.parameters) ? 1 + maximum(height, p.parameters) : 0
 
 # One type parameter as it appears inside a name: a number as itself, an array as its size, a
 # struct or tuple by its own name, a scalar abbreviated.
-typeword(p) = !(p isa Type) ? string(p) :
+typeword(p) = !(p isa Type) ? string(p) : p <: Function ? functionname(p) :
     p <: AbstractArray ? dims(p) * (eltype(p) === Float64 ? "" : abbrev(eltype(p))) :
     isstruct(p) || istuple(p) ? structname(p) : abbrev(p)
 
 # The C names of a struct's fields, in order; a tuple's are letters.
-fieldcnames(T::Type) = istuple(T) ? inputs(collect(T.parameters)) : identifiers(string.(fieldnames(T)))
+fieldcnames(T::Type) = T <: Tuple ? inputs(collect(T.parameters)) : T <: Function ? identifiers(capturenames(T)) : identifiers(string.(fieldnames(T)))
 
 # The C name of field `f` (a symbol or a 1-based position) of `T`.
 fieldcname(T::Type, f) = fieldcnames(T)[f isa Integer ? f : findfirst(==(f), fieldnames(T))]

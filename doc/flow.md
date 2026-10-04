@@ -52,8 +52,8 @@ be inlined, the loop becomes `while (true) { …; if (!(c)) break; … }`.
 (`v[2:4]`); a range stored in a variable is an error, and a step must be a
 literal.
 
-Not yet: `for x in A` over a matrix's elements, `try`/`catch`, comprehensions,
-closures, `do` blocks, `@goto`.
+Not yet: `for x in A` over a matrix's elements, `try`/`catch`, `@goto`.
+Comprehensions, lambdas and `do` blocks are in [call.md](call.md).
 
 Implementation: `findfors`, `findwhiles`, `markinlined!`, `block!` in
 `src/flow.jl`; the structure itself in `src/tree.jl`.

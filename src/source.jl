@@ -36,6 +36,13 @@ function Source(m::Method)
     # `f = () -> begin … end` either, a closure given a name, whose first line is a signature too.
     rhs = ex isa Expr && ex.head === :(=) ? ex.args[2] : ex
     short = !(rhs isa Expr && (rhs.head === :function || rhs.head === :-> && last > m.line))
+    # A `do` block: Julia gives the line its body starts on, and the line above, `map(v) do x`,
+    # is its signature. It ends where its last statement is.
+    if startswith(string(m.name), "#") && m.line > 1 && !occursin("->", lines[m.line]) && !occursin(r"\bfunction\b", lines[m.line]) && occursin(r"\bdo\b", lines[m.line-1])
+        inner = try Base.uncompressed_ast(m) catch; nothing end
+        last = inner === nothing ? m.line : maximum((Base.IRShow.getdebugidx(inner.debuginfo, j)[1] for j in eachindex(inner.code)); init=Int(m.line))
+        return Source(basename(path), String.(lines), m.line - 1, last, false)
+    end
     return Source(basename(path), String.(lines), m.line, last, short)
 end
 

@@ -380,6 +380,32 @@ double temp11 = thisisahugelongvariablename + andanotherreallylongname;
 The limit applies to the whole name, base included. A temp that lost its suffix
 this way passes nothing along to later temps, same as any bare temp.
 
+## Lambdas
+
+A function written without a name, `x -> …` or a `do` block, becomes a C
+function, and needs one.
+
+**Given a name, it has it.** `g = y -> a * y + 1` is `g`. A second lambda
+given the same name, in another function, is that function's: `outer_g`.
+
+**Otherwise it follows the temps' rules, on a list of its own.** The base is
+`fun` and a number, and the suffix is what it captured: `fun3_a_b` for
+`x -> a * x + b`. Its parameters aren't in the name, since its signature shows
+them. The same `tempsuffix` option turns the suffix off, the same `templimit`
+drops a suffix that makes the name too long, and a number is passed over when
+the author has a `fun<N>` of their own.
+
+**The list is the file's, not the function's.** Temps are numbered within one
+function, because a temp is seen only there. A C function is seen by the whole
+file, so lambdas are counted through the file, in the order they are needed.
+
+**A lambda written in place takes no number.** `sum(x -> x^2, v)` is a loop
+with `v[i] * v[i]` in it; no function is written, so none is counted.
+
+**A function compiled for the functions it was handed says which.**
+`newton(f, df, x)` is `newton_f_df`, and with two lambdas
+`newton_fun1_a_fun2`. Julia's own are named as Julia names them, `twice_sin`.
+
 ## Results
 
 If the function returns a named variable — `return x`, or `x` as the last

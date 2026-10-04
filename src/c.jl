@@ -41,6 +41,10 @@ mutable struct Program
     written::Set{Any}                                              # globals some function writes into, as (module, name): not `const` in C
     yielded::Set{String}                                           # names of the author's that a name of ours (a macro, a tuple's struct) keeps clear of
     walking::Any                                                   # the `Scope` of the function being written, for saying where a refusal happened
+    lambdas::Dict{Any, String}                                     # a lambda's type name -> its C name (`lambdaname`)
+    bindings::Dict{Any, Tuple{String, String}}                     # a lambda's type name -> the variable it was given, if any, and the function it is in
+    limit::Int                                                     # the longest name a lambda's captures may make it
+    made::Set{Any}                                                 # the type names of the lambdas written inside a function that is transpiled
 end
 
 # A global variable in the output: its C name, the Julia binding it came from (module and
@@ -61,11 +65,11 @@ struct Kind
     cname::String
     fields::Vector{String}
 end
-function Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true)
+function Program(; precise::Bool=false, width::Integer=100, suffix::Bool=true, limit::Integer=40)
     prog = Program(Dict{String, String}(), Set(["stdint.h", "stdbool.h"]), Dict{Core.MethodInstance, String}(),
             Tuple{Core.MethodInstance, Vector{Type}, String}[], Set{String}(), Dict{String, String}(), Pair{Type, String}[], precise, width,
             suffix, Dict{Core.MethodInstance, Union{String, Nothing}}(), Dict{Core.MethodInstance, Set{Symbol}}(), Dict{Core.MethodInstance, Any}(), Pair{String, String}[], Any[], Set{String}(),
-            Any[], Dict{Any, String}(), Set{String}(), Set{Any}(), Set{String}(), nothing)
+            Any[], Dict{Any, String}(), Set{String}(), Set{Any}(), Set{String}(), nothing, Dict{Any, String}(), Dict{Any, Tuple{String, String}}(), limit, Set{Any}())
     empty!(programs)                         # one program at a time: the table of helpers says which (`power.jl`)
     programs[prog.helpers] = prog
     return prog
@@ -169,11 +173,16 @@ mutable struct Scope
     moving::Set{Int}                    # array variables that are names moved between arrays: pointers
     storage::Dict{String, String}       # a C name that may hold the same array as others -> the one name that stands for them all
     data::Dict{Int, String}             # a moving name that starts out with an array of its own -> that storage's C name
+    inner::Vector{UnitRange{Int}}       # the source lines of functions written inside this one: theirs to show, not this one's
 end
 
 function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, prog::Program, copycode::Bool)
     # A parameter the author gave no name, `one(::Quat)`, is `unused`.
-    names = ["#self#"; identifiers([isempty(string(s)) ? "#s$i" : string(s) == "#unused#" ? "unused" : string(s) for (i, s) in enumerate(ci.slotnames[2:end])])]
+    # The first slot is the function itself, with no name in C, unless it is a value the author
+    # named: the struct in `(p::Poly)(x)`.
+    own = string(ci.slotnames[1]) != "#self#"
+    names = identifiers([isempty(string(s)) ? "#s$i" : string(s) == "#unused#" ? "unused" : string(s) for (i, s) in enumerate(ci.slotnames[(own ? 1 : 2):end])])
+    own || pushfirst!(names, "#self#")
     hidden = Set{Int}(i for (i, s) in enumerate(ci.slotnames) if i > 1 && isempty(string(s)))
     result = "result"
     while result in names
@@ -193,7 +202,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
                  Tuple{Int, Int, String, Int}[], 0, Dict{Int, String}(), Dict{Int, Int}(), Set{Int}(), Int[1],
                  Tuple{Int, Int, Any}[], Set{Int}(), Dict{Int, Tuple{String, String}}(), nothing, Dict{Int, Kind}(), Dict{Int, Kind}(), Dict{Int, String}(), Dict{Int, Any}(), Dict{Int, Int}(), Set{String}(),
                  Block[], Int[], Dict{Int, Int}(), Tuple{Int, String}[], Dict{Int, String}(), "", Set{String}(), Dict{Int, Vector{NTuple{3, Int}}}(), nothing, Dict{Int, Any}(), Set{Int}(), Dict{Int, Any}(), Dict{Int, String}(), Set{Int}(), Dict{Int, String}(),
-                 Dict{Int, Int}(), Set{Int}(), Dict{String, String}(), Dict{Int, String}())
+                 Dict{Int, Int}(), Set{Int}(), Dict{String, String}(), Dict{Int, String}(), UnitRange{Int}[])
 end
 
 include("flow.jl")
@@ -202,6 +211,8 @@ include("move.jl")
 include("product.jl")   # how Julia groups a product of several factors: asked, not copied
 include("storage.jl")   # one array under two names: which variables are storage, and which are names for it
 include("power.jl")     # x to an integer power, written once in Julia and translated for each type
+include("lambda.jl")    # a function as a value: what it captured, and the call that names it
+include("fold.jl")      # a function handed to `sum`, `map`, `any`: the loop, written where the call is
 
 """
     cfunction(name, mi, sig, helpers, headers; templimit=40, source=true) -> (prototype, definition)
@@ -356,6 +367,20 @@ function canonical!(ci::Core.CodeInfo)
             code[k] = nothing
         end
     end
+    # `v(x)` where `v` holds something, a function with captures or a struct with a method of
+    # its own: the call of `Called`, with `v` the first argument (`lambda.jl`).
+    held(c) = begin
+        t = c isa Core.SlotNumber ? ci.slottypes[c.id] : c isa Core.SSAValue ? ci.ssavaluetypes[c.id] : nothing
+        t isa Core.Const && return nothing
+        t isa Core.PartialStruct && (t = t.typ)
+        t isa DataType && isconcretetype(t) && fieldcount(t) > 0 && (t <: Function || isstruct(t)) ? t : nothing
+    end
+    for (k, st) in enumerate(code)
+        ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+        ex isa Expr && ex.head === :call || continue
+        T = held(ex.args[1])
+        T === nothing || (ex.args = Any[Called{T}(); ex.args])
+    end
     return ci
 end
 
@@ -411,8 +436,8 @@ function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templ
     if first === nothing
         # The first walk names every variable unmistakably, `v5__omega`, so that its text
         # shows, block by block, which variables and which outer names are mentioned.
-        for i in 2:length(sc.names)
-            isempty(string(ci.slotnames[i])) || (sc.names[i] = "v$(i)__" * sc.names[i])
+        for i in 1:length(sc.names)
+            isempty(string(ci.slotnames[i])) || sc.names[i] == "#self#" || (sc.names[i] = "v$(i)__" * sc.names[i])
         end
     else
         names!(sc, first)
@@ -423,13 +448,22 @@ function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templ
     sc.rettype = rettype
     istuple(sc.rettype) && (sc.kind = returnkind!(prog, mi, name))
     # A tuple parameter is spread into one parameter per element: `t1`, `t2`, …
-    for i in 2:ci.nargs
-        istuple(slottype(sc, i)) && (sc.slotkinds[i] = Kind("", [sc.names[i] * string(k) for k in 1:length(slottype(sc, i).parameters)]))
+    # A function is spread the same way, into what it captured: `f_a`, `f_b`; one that captured
+    # nothing into nothing. The function being written is itself the first of them, and what it
+    # captured comes in under the names it was captured by.
+    bindings!(prog, mi, ci)
+    sc.inner = innerlines(mi, ci)
+    for i in 1:ci.nargs
+        T = slottype(sc, i)
+        istuple(T) || continue
+        T <: Function && boxed(T, i == 1 ? "inside another" : "elsewhere")
+        sc.slotkinds[i] = T <: Tuple ? Kind("", [sc.names[i] * string(k) for k in 1:length(T.parameters)]) :
+                          i == 1 ? Kind("", [free(c, sc.names) for c in fieldcnames(T)]) : Kind("", [sc.names[i] * "_" * c for c in fieldcnames(T)])
     end
     # The typedefs the signature needs. A tuple is spread (a parameter) or has its own
     # struct (the return, `returnkind!`), so only its element types need one.
-    for T in [sig; sc.rettype]
-        istuple(T) ? foreach(P -> structdef!(prog, P), T.parameters) : structdef!(prog, T)
+    for T in [slottype(sc, 1); sig; sc.rettype]
+        istuple(T) ? foreach(P -> structdef!(prog, P), elements(T)) : structdef!(prog, T)
     end
     if sc.resultparam
         # An array comes out through a parameter, and an output parameter is `out` —
@@ -447,6 +481,10 @@ function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templ
     end
     return sc
 end
+
+# The slots that are parameters in C. The first, the function itself, is one when it holds
+# something: what a lambda captured, or the struct in `(p::Poly)(x)`.
+parameters(sc::Scope) = (haskey(sc.slotkinds, 1) || isstruct(slottype(sc, 1)) ? 1 : 2):Int(sc.ci.nargs)
 
 # The walked body, made into the function: comments, declarations, the prologue of copies,
 # the signature and its documentation.
@@ -511,10 +549,10 @@ function finish(name, mi::Core.MethodInstance, sc::Scope, head, body)
     append!(lines, body)
 
     params = String[]
-    for i in 2:ci.nargs
+    for i in parameters(sc)
         T = slottype(sc, i)
         if haskey(sc.slotkinds, i)
-            for (P, n) in zip(T.parameters, sc.slotkinds[i].fields)
+            for (P, n) in zip(elements(T), sc.slotkinds[i].fields)
                 push!(params, declare(P, n; constant=isarray(P)))
             end
         else
@@ -532,14 +570,16 @@ function finish(name, mi::Core.MethodInstance, sc::Scope, head, body)
     # Every path through it throws: C11's word for that, so that a caller's `if` that ends in
     # a call to it is known to end there.
     only(Base.code_typed_by_type(mi.specTypes; optimize=false))[2] === Union{} && (signature = "_Noreturn " * signature)
-    comments, doc = sc.src === nothing ? (String[], String[]) : leading(sc.src)
+    # What is written above a lambda inside a function is about that function's line, and is shown there.
+    inside = mi.specTypes.parameters[1].name in prog.made
+    comments, doc = sc.src === nothing || inside ? (String[], String[]) : leading(sc.src)
     origin = "$(plainname(mi.def.name))($(join(("$(ci.slotnames[i])::$(widen(ci.slottypes[i]))" for i in 2:ci.nargs), ", ")))" *
              (sc.src === nothing ? "" : " @$(sc.src.name):$(sc.src.first)")
     what(T) = isarray(T) ? describe(T) : T === Char ? "character" : T <: AbstractString ? "string" : T <: Number ? "scalar" : ""
     params = Tuple{String, String, String}[]
-    for i in 2:ci.nargs
+    for i in parameters(sc)
         if haskey(sc.slotkinds, i)
-            for (P, n) in zip(slottype(sc, i).parameters, sc.slotkinds[i].fields)
+            for (P, n) in zip(elements(slottype(sc, i)), sc.slotkinds[i].fields)
                 push!(params, ("in", n, what(P)))
             end
         else
@@ -595,6 +635,7 @@ function analyze!(sc::Scope)
         st isa Expr && st.head === :loopinfo &&
             throw(ArgumentError("`@simd` rewrites its loop into a form the transpiler doesn't read (line $(sc.stmtline[i])). Leave it out: it changes nothing the loop computes, and the C compiler vectorises the loop by itself"))
     end
+    folds!(sc)
     failing(sc)
     # A store into a typed global or a typed local, `global count += 1`, `local t::Float64`,
     # is lowered with a test before it: is the value already of that type? If not, convert.
@@ -657,6 +698,13 @@ function analyze!(sc::Scope)
         # the binding and not the contents, so that in C it can't be `const` at all.
         globalof(a) = (a isa Core.SSAValue && (a = code[a.id]); a isa GlobalRef && getfield(a.mod, a.name) isa AbstractArray ? (a.mod, a.name) : nothing)
         if f in (Base.setindex!, Base.fill!, Base.materialize!)
+            # An array this function captured: it comes in read-only, as what the function holds.
+            t = ex.args[2]
+            if t isa Core.SSAValue && code[t.id] isa Expr && code[t.id].head === :call && length(code[t.id].args) == 3 && code[t.id].args[2] == Core.SlotNumber(1) &&
+               isfunction(slottype(sc, 1)) && callee_or_nothing(ci, code[t.id].args[1]) in (Core.getfield, Base.getproperty)
+                name = code[t.id].args[3] isa QuoteNode ? code[t.id].args[3].value : code[t.id].args[3]
+                throw(ArgumentError("`$name` is an array captured by the function written at line $(sc.stmtline[1]), and that function writes into it. Writing into a captured array is not supported yet: write the loop out, or give the array to a function of its own as an argument"))
+            end
             s = ex.args[2] isa Core.SlotNumber ? ex.args[2].id : slotof(sc, ex.args[2])
             s === nothing || push!(sc.mutated, s)
             T = valuetype(sc, ex.args[2])
@@ -945,7 +993,16 @@ function annotate!(lines, sc::Scope, line)
     # so its continuation lines come before its C, not after.
     sc.src !== nothing && (line = statementend(sc.src, line))
     if sc.src !== nothing
-        for l in body(sc.src, sc.cursor + 1, line; code=sc.copycode)
+        # Leaving out the lines of a function written inside this one, a `do` block's body:
+        # they are shown where that function is written.
+        from = sc.cursor + 1
+        for r in sort(sc.inner; by=first)
+            last(r) < from || first(r) > line || isempty(r) || begin
+                foreach(l -> emit!(lines, sc, l), body(sc.src, from, first(r) - 1; code=sc.copycode))
+                from = last(r) + 1
+            end
+        end
+        for l in body(sc.src, from, line; code=sc.copycode)
             emit!(lines, sc, l)
         end
         # A statement that began before `line` and runs on past it was carried whole: the
@@ -968,13 +1025,47 @@ slotdecl(sc::Scope, i) = haskey(sc.slotkinds, i) ? sc.slotkinds[i].cname * " " *
                           named(sc, i) ? pointer(slottype(sc, i), sc.names[i]) : declare(slottype(sc, i), sc.names[i])
 
 # The layout of the tuple an IR value holds, if it is one of a known layout.
-tuplekind(sc::Scope, x) = x isa Core.SSAValue ? get(sc.kinds, x.id, nothing) : x isa Core.SlotNumber ? get(sc.slotkinds, x.id, nothing) : nothing
+function tuplekind(sc::Scope, x)
+    x isa Core.SlotNumber && return get(sc.slotkinds, x.id, nothing)
+    x isa Core.SSAValue || return nothing
+    haskey(sc.kinds, x.id) && return sc.kinds[x.id]
+    # A function read out of the function that captured it: its own captures among the other's.
+    st = sc.ci.code[x.id]
+    st isa Core.SlotNumber && isfunction(slottype(sc, st.id)) && return get(sc.slotkinds, st.id, nothing)
+    if st isa Expr && st.head === :call && length(st.args) == 3 && callee_or_nothing(sc.ci, st.args[1]) in (Core.getfield, Base.getproperty)
+        S = valuetype(sc, st.args[2])
+        f = st.args[3] isa QuoteNode ? st.args[3].value : st.args[3]
+        if isfunction(S) && f isa Symbol && isfunction(fieldtype(S, f))
+            k = tuplekind(sc, st.args[2])
+            k === nothing && return nothing
+            r = capturerange(S, f)
+            return Kind("", isempty(k.cname) ? k.fields[r] : [value(sc, st.args[2]) * "." * c for c in k.fields[r]])
+        end
+    end
+    return nothing
+end
 
 # Emit the C for one IR statement, appending to `lines`.
 function statement!(lines, sc::Scope, i, st)
-    ci = sc.ci
     sc.current = i
     st === nothing && return
+    st isa Expr && st.head === :(=) && lambda!(sc, i, st) && return
+    # `s = sum(abs, v)`: the loop goes after the line that declares `s`; anywhere else, before.
+    after = fold!(lines, sc, i, st)
+    after === :done && return
+    written!(lines, sc, i, st)
+    after === nothing || after()
+end
+
+function written!(lines, sc::Scope, i, st)
+    ci = sc.ci
+    # A read of a function made here: it stands for what it captured (`lambda!`). So does one
+    # read out of the function that captured it.
+    if st isa Core.SlotNumber && haskey(sc.slotkinds, st.id) && isempty(sc.slotkinds[st.id].cname) && slottype(sc, st.id) <: Function
+        sc.kinds[i] = sc.slotkinds[st.id]
+        return
+    end
+    st isa Expr && st.head === :call && isfunction(widen(ci.ssavaluetypes[i])) && callee_or_nothing(ci, st.args[1]) in (Core.getfield, Base.getproperty) && return
     # `v' * A * w`: a number, but its arrays on the way take lines of their own, written here;
     # the number itself is then a call like any other (`rendered` finds it in `sc.ready`).
     if manyfactors(sc, consumer(st)) && !isarray(widen(ci.ssavaluetypes[i])) && !haskey(sc.ready, i)
@@ -1022,6 +1113,24 @@ function statement!(lines, sc::Scope, i, st)
     if st isa Core.ReturnNode
         if valuetype(sc, st.val) === Nothing
             i == length(ci.code) || emit!(lines, sc, "return;")
+            return
+        end
+        # A function made here that captured an array: C can't write an array into a struct in
+        # one expression, so the struct is filled field by field, and returned.
+        k = tuplekind(sc, st.val)
+        F = valuetype(sc, st.val)
+        if k !== nothing && isempty(k.cname) && F <: Function && any(isarray, elements(F))
+            # Julia's function would go on sharing a mutable array with whoever else holds it; a copy wouldn't.
+            m = findfirst(E -> isarray(E) && ismutabletype(E), elements(F))
+            m === nothing || throw(ArgumentError("the function returned at line $(sc.stmtline[i]) captured `$(fieldcnames(F)[m])`, an array that can be written into. In Julia the function shares that array; the C would hold a copy, and the two could come apart. Capture an array that can't change, an `SVector`, or return the values and not a function"))
+            structdef!(sc.prog, F)
+            name = isempty(sc.result) ? temp!(sc, nothing, String[]) : sc.result
+            sc.result = ""
+            emit!(lines, sc, "$(ctype(F)) $name;")
+            for (E, c, text) in zip(elements(F), fieldcnames(F), k.fields)
+                isarray(E) ? copy!(lines, sc, text, E, "$name.$c", E) : emit!(lines, sc, "$name.$c = $text;")
+            end
+            emit!(lines, sc, "return $name;")
             return
         end
         v = value(sc, st.val)
@@ -1108,7 +1217,7 @@ function statement!(lines, sc::Scope, i, st)
             # A returned tuple with an array in it: the function's struct, field by field. A
             # field computed into its place (`placement`) is there already.
             haskey(sc.placed, i) || emit!(lines, sc, "$(sc.kind.cname) result;")
-            for (F, c, a) in zip(T.parameters, sc.kind.fields, st.args[2:end])
+            for (F, c, a) in zip(elements(T), sc.kind.fields, st.args[2:end])
                 value(sc, a) == "result.$c" && continue
                 isarray(F) ? copy!(lines, sc, value(sc, a), valuetype(sc, a), "result.$c", F) : emit!(lines, sc, "result.$c = $(value(sc, a));")
             end
@@ -1637,7 +1746,10 @@ end
 function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
     ci = sc.ci
     node = ci.code[root.id]                       # broadcasted(f, args...)
-    f = callee(ci, node.args[2])
+    # A function of the author's, `g.(v)`, or a lambda: the loop, with the function in it (`fold.jl`).
+    F = functiontype(sc, node.args[2])
+    own = F !== nothing && !(nameof(Base.moduleroot(F.name.module)) in known)
+    f = own ? nothing : callee(ci, node.args[2])
     args = node.args[3:end]
     # `x .^ 2`: a literal exponent is part of the operation, not an operand.
     power = nothing
@@ -1676,6 +1788,17 @@ function broadcast!(lines, sc::Scope, i, root, dest; declaration::Bool=false)
         E = promote_type((isarray(t) ? eltype(t) : t for t in types)...)
         R = all(t -> !isarray(t) || istransposed(t), types) ?
             (nd = maximum(ndims(t) for t in types if isarray(t)); Transposed{E, Tuple(reverse(bs)[1:nd]), nd}) : shaped(E, bs)
+    end
+    if own
+        if !isarray(T)
+            # Inside another broadcast Julia has no array type for it yet: the elements are what the function returns.
+            Ef = try widen(only(Base.code_typed_by_type(Tuple{F, (isarray(t) ? eltype(t) : t for t in types)...}; optimize=false))[2]) catch; Any end
+            Ef <: Number && isconcretetype(Ef) || throw(ArgumentError("`$(F.name.singletonname).(…)` gives $(Ef) for each element, and only a number can be held in an array here (line $(sc.stmtline[i]))"))
+            R = shaped(Ef, bs)
+        end
+        maploop!(lines, sc, i, node.args[2], inputs, R, dest; declaration)
+        sc.shapes[i] = R
+        return
     end
     op, cfn = power === nothing ? broadcastop(f, length(inputs), E) : (Symbol("pow", power < 0 ? "m" : "", abs(power)), power)
     cfn isa String && push!(sc.headers, cfn == "llabs" ? "stdlib.h" : "math.h")
@@ -1734,7 +1857,9 @@ function arraycall!(lines, sc::Scope, i, ex::Expr, dest; declaration::Bool=false
     f = callee(sc.ci, ex.args[1])
     args = ex.args[2:end]
     E = eltype(widen(sc.ci.ssavaluetypes[i]))
-    if f === LinearAlgebra.cross
+    if folded(sc, ex) !== nothing
+        return maploop!(lines, sc, i, ex, dest; declaration)
+    elseif f === LinearAlgebra.cross
         types = (valuetype(sc, args[1]), valuetype(sc, args[2]))
         R = retype(types[1], E)
         declaration && emit!(lines, sc, declare(R, dest) * ";")
@@ -2119,12 +2244,12 @@ function returnkind!(prog::Program, mi::Core.MethodInstance, cname::AbstractStri
     kind = inherited !== nothing && names === nothing ? inherited :
            names !== nothing ? Kind(free(identifier(cname) * "_t", union(prog.names, Set(structname(T) for (T, _) in prog.structs), prog.yielded, reserved)), identifiers(names)) : fallback
     if kind.cname != fallback.cname && !any(p -> p.first == kind.cname, prog.tupledefs) && inherited === nothing
-        for F in R.parameters
+        for F in elements(R)
             structdef!(prog, F)
         end
         listed = length(kind.fields) == 1 ? kind.fields[1] : length(kind.fields) == 2 ? join(kind.fields, " and ") : join(kind.fields[1:end-1], ", ") * ", and " * kind.fields[end]
         push!(prog.tupledefs, kind.cname => "/// the return value of $cname: $listed, as one struct since C returns one value\n" *
-                                            "typedef struct {\n" * join("    " .* declare.(collect(R.parameters), kind.fields) .* ";", "\n") * "\n} $(kind.cname);\n")
+                                            "typedef struct {\n" * join("    " .* declare.(elements(R), kind.fields) .* ";", "\n") * "\n} $(kind.cname);\n")
     end
     kind.cname == fallback.cname && structdef!(prog, R)
     prog.kinds[mi] = kind
@@ -2214,6 +2339,7 @@ function contribution(sc::Scope, x)
     x isa GlobalRef && (v = getfield(x.mod, x.name); !builtin(x, v)) &&
         return filter(!isempty, split(global!(sc.prog, owner(x), x.name, v).cname, "_"))
     x isa Core.SSAValue || x isa Core.SlotNumber || return String[]
+    valuetype(sc, x) <: Function && return String[]                 # a function passed on: no value to be named after
     x isa Core.SSAValue && !(x.id in sc.inlined) && !haskey(sc.expr, x.id) && return String[]   # a constant load
     x isa Core.SSAValue && haskey(sc.choices, x.id) && return String[]
     x isa Core.SSAValue && haskey(sc.alias, x.id) && return sc.alias[x.id] isa Tuple ? String[] : contribution(sc, sc.alias[x.id])
@@ -3061,12 +3187,15 @@ initializer(x) = "{" * join((initializer(getfield(x, k)) for k in 1:fieldcount(t
 function structdef!(prog::Program, T::Type)
     (isstruct(T) || istuple(T)) || return
     any(p -> p.first === T, prog.structs) && return
-    fields = istuple(T) ? collect(T.parameters) : [fieldtype(T, k) for k in 1:fieldcount(T)]
+    isstruct(T) && (k = findfirst(F -> F isa Type && F <: Function, collect(Any, fieldtypes(T))); k !== nothing) &&
+        throw(ArgumentError("the struct `$(nameof(T))` holds a function in its field `$(fieldname(T, k))`, which is not supported yet. Pass the function as an argument instead"))
+    fields = elements(T)
     for F in fields
         structdef!(prog, F)
     end
     lines = ["    " * declare(F, c) * ";" for (F, c) in zip(fields, fieldcnames(T))]
-    doc = istuple(T) ? "/// a tuple held as one value: $(join(fieldcnames(T), ", "))\n" : ""
+    doc = T <: Function ? "/// what the function $(functionname(T)) captured: $(join(fieldcnames(T), ", "))\n" :
+          istuple(T) ? "/// a tuple held as one value: $(join(fieldcnames(T), ", "))\n" : ""
     push!(prog.structs, T => doc * "typedef struct {\n" * join(lines, "\n") * "\n} $(structname(T));\n")
 end
 
@@ -3078,6 +3207,7 @@ function fieldaccess(sc::Scope, x, f)
     f isa QuoteNode && (f = f.value)
     x isa Core.SSAValue && haskey(sc.pair, x.id) && return sc.pair[x.id][f]   # `sincos`: sin or cos
     k = tuplekind(sc, x)
+    f isa Symbol && S <: Function && (f = first(capturerange(S, f)))      # a capture, by its name
     k !== nothing && return isempty(k.cname) ? k.fields[f] : value(sc, x) * "." * k.fields[f]
     return value(sc, x) * arrow(S) * fieldcname(S, f)
 end
@@ -3133,7 +3263,7 @@ function compound!(lines, sc::Scope, i, T::Type, args, dest; declared::Bool)
     end
     start = length(lines) + 1
     declared || emit!(lines, sc, "$(ctype(T)) $dest;")
-    fields = istuple(T) ? collect(T.parameters) : [fieldtype(T, k) for k in 1:fieldcount(T)]
+    fields = elements(T)
     copied = false
     for (F, c, a) in zip(fields, fieldcnames(T), args)
         value(sc, a) == "$dest.$c" && continue          # computed into its place (`placement`)
@@ -3296,7 +3426,8 @@ function register!(prog::Program, f, spec; bring::Bool=true)
     nameof(Base.moduleroot(parentmodule(f))) in known &&
         !any(T -> T isa Type && isstruct(T), spec) && return nothing
     mi, sig = try
-        any(x -> x isa Integer, spec) ? resolve(f, spec) : (m = Base.method_instance(f, Tuple(spec)); m === nothing ? (nothing, nothing) : (m, argtypes(m)))
+        any(x -> x isa Integer, spec) ? resolve(f, spec) :
+        f isa Called ? (m = lookup(spec[1], spec[2:end]); m === nothing ? (nothing, nothing) : (m, argtypes(m))) : (m = exact(Base.method_instance(f, Tuple(spec)), Tuple{typeof(f), spec...}); m === nothing ? (nothing, nothing) : (m, argtypes(m)))
     catch e
         e isa ArgumentError ? (nothing, nothing) : rethrow()
     end
@@ -3304,9 +3435,19 @@ function register!(prog::Program, f, spec; bring::Bool=true)
     nameof(Base.moduleroot(mi.def.module)) in known && return nothing
     haskey(prog.calls, mi) && return (mi, sig, prog.calls[mi])
     bring || return (mi, sig, "")          # only asked about: a function is brought in by a call that is written
-    base = qualified(operatorname(mi.def.name, sig), mi.def.module)
+    # A lambda is named by its own rule; a struct called as a function, `p(x)`, is its type and `call`.
+    self = mi.specTypes.parameters[1]
+    base = islambda(self) ? lambdaname(prog, self) : isstruct(self) ? structname(self) * "_call" : qualified(operatorname(mi.def.name, sig), mi.def.module)
     typed = join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_")
-    name = claim!(prog, mi, base, string(mi.def.name), typed)
+    # Compiled for the functions it was handed, it says which: `newton_f_df`.
+    base = join([base; [functionname(T) for T in sig if T <: Function]], "_")
+    # A lambda, or a struct called, at a second set of types all `double`: the types are said all the same.
+    held = islambda(self) || isstruct(self)
+    held && typed == base && (typed = join([base; filter(!isempty, [describe(T, 2, false) for T in sig])], "_"))
+    # The same lambda made with captures of other types is told apart by them.
+    islambda(self) && (typed = join([base; filter(!isempty, [describe(fieldtype(self, k), 2, false) for k in 1:fieldcount(self)]); filter(!isempty, [describe(T, 2, false) for T in sig])], "_"))
+    # A lambda's name is the transpiler's to give, and it has given each a different one (`lambdaname`).
+    name = claim!(prog, mi, base, islambda(self) ? base : string(mi.def.name), typed)
     prog.calls[mi] = name
     push!(prog.pending, (mi, sig, name))
     return (mi, sig, name)
@@ -3510,7 +3651,7 @@ function value(sc::Scope, x)
         # The `N` of `where {N}` used as a number: known when transpiled.
         (st = sc.ci.code[x.id]; st isa Expr && st.head === :static_parameter && sc.ci.ssavaluetypes[x.id] isa Core.Const && sc.ci.ssavaluetypes[x.id].val isa Number) &&
             return value(sc, sc.ci.ssavaluetypes[x.id].val)
-        sc.ci.code[x.id] isa Core.SlotNumber && return sc.names[sc.ci.code[x.id].id]   # a read inside a loop header
+        sc.ci.code[x.id] isa Core.SlotNumber && return value(sc, sc.ci.code[x.id])   # a read inside a loop header; a function read whole
         throw(ArgumentError("value of statement $(x.id) is not available in C"))
     end
     if x isa Core.SlotNumber && haskey(sc.slotkinds, x.id) && isempty(sc.slotkinds[x.id].cname)
@@ -3541,6 +3682,7 @@ function value(sc::Scope, x)
             throw(ArgumentError("the global $(x.name) is neither const nor typed, so its type isn't known where it is used; write `const $(x.name) = …` or `$(x.name)::T = …`"))
         return g.cname
     end
+    x isa Function && throw(ArgumentError("the function `$(nameof(x))` is kept as a value here, in a tuple, an array or a field. A function can be handed to another function and called; it can't be stored among other values, since which function runs would then be decided while the program runs"))
     throw(ArgumentError("unsupported value: $(repr(x))"))
 end
 
@@ -3592,12 +3734,19 @@ function callee(ci, x)
     if x isa Core.SSAValue
         t = ci.ssavaluetypes[x.id]
         t isa Core.Const && (t.val isa Function || t.val isa Type) && return plain(t.val)
+        t isa DataType && t <: Function && isdefined(t, :instance) && return plain(t.instance)     # a function that holds nothing, wherever it was read from
         return callee(ci, ci.code[x.id])
     end
     x isa GlobalRef     && return plain(getfield(x.mod, x.name))
     # The function itself: how a method with a default argument, `agm(x, y, e=5)`, calls the
     # long one from the short one Julia makes for it, `agm(x, y) = agm(x, y, 5)`.
     x isa Core.SlotNumber && x.id == 1 && ci.slottypes[1] isa Core.Const && ci.slottypes[1].val isa Function && return ci.slottypes[1].val
+    # A function passed in, `newton(f, df, x)` calling `f(x)`: Julia compiled this `newton` for that `f`.
+    if x isa Core.SlotNumber
+        t = ci.slottypes[x.id]
+        t isa Core.Const && t.val isa Function && return plain(t.val)
+        t isa DataType && t <: Function && isdefined(t, :instance) && return plain(t.instance)
+    end
     x isa Expr && x.head === :call && ci.ssavaluetypes !== nothing && return throw(ArgumentError("unsupported callee: $x"))
     (x isa Function || x isa Type || x isa Colon) && return x
     throw(ArgumentError("unsupported callee: $x"))

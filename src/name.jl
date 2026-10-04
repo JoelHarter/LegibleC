@@ -206,6 +206,7 @@ end
 
 # The mangled description of one argument type at a given level.
 function describe(T::Type, level, alldouble)
+    T <: Function && return functionname(T)             # a function passed in: its own name
     (isstruct(T) || istuple(T)) && return structname(T)
     if T <: AbstractArray
         d = dims(T)
@@ -216,4 +217,4 @@ function describe(T::Type, level, alldouble)
 end
 
 # Are all of a signature's types Float64, counting an array by its element type?
-alldouble(sig) = all(T -> (T <: AbstractArray ? eltype(T) : T) === Float64, sig)
+alldouble(sig) = all(T -> T <: Function || (T <: AbstractArray ? eltype(T) : T) === Float64, sig)
