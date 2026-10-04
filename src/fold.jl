@@ -203,7 +203,7 @@ function inlined(sc::Scope, F::Type, captures, texts, types)
 end
 
 # C text that can stand as an operand anywhere: a name, an element, a call.
-operandtext(t) = occursin(r"^[\w.]+(\[[^\]]*\])*$", t) || occursin(r"^\w+\([^()]*\)$", t) ? t : "($t)"
+operandtext(t) = occursin(r"^[\w.]+(\[[^\]]*\])*$", t) || occursin(r"^\w*\([^()]*\)$", t) ? t : "($t)"
 
 # The value-producing ones, at statement `i`: the loop is written here. Returns the lines to
 # write after the statement, when the statement itself declares what the loop works on.
@@ -370,4 +370,57 @@ function maploop!(lines, sc::Scope, i, fv, inputs, R::Type, dest; declaration::B
     for _ in sp.headers
         sc.depth -= 1; emit!(lines, sc, "}")
     end
+end
+
+
+# A function of Julia's that gives two values, read by destructuring, `q, r = divrem(a, b)`:
+# each is written where it is read, as `sincos` is (`pair!`). An argument that is more than a
+# name is worked out once first, since each value reads it.
+function paired!(lines, sc::Scope, i, st::Expr)
+    ci = sc.ci
+    f = callee_or_nothing(ci, st.args[1])
+    f in (Base.sincosd, Base.divrem, Base.fldmod, Base.modf, Base.frexp) || return false
+    args = st.args[2:end]
+    P = widen(ci.ssavaluetypes[i])
+    P isa DataType && P <: Tuple && length(P.parameters) == 2 || return false
+    types = [valuetype(sc, a) for a in args]
+    ok = f in (Base.divrem, Base.fldmod) ? length(args) == 2 && types[1] <: Base.BitInteger64 && types[1] === types[2] :
+         f === Base.sincosd ? types == [Float64] : length(args) == 1 && types[1] <: Union{Float32, Float64}
+    ok || return false
+    # What each value reads: the argument itself when it is a name or a number, else a temp.
+    names = Any[]
+    for (a, A) in zip(args, types)
+        t = expression(sc, a)
+        if t.kind in (:atom, :number)
+            push!(names, a)
+        else
+            name = temp!(sc, nothing, contribution(sc, a))
+            emit!(lines, sc, "$(declare(A, name)) = $t;")
+            push!(names, standin!(sc, name, A))
+        end
+    end
+    one(g, R) = operandtext(synthetic(sc, i, Expr(:call, g, names...), R))
+    first, second = if f === Base.divrem
+        one(Base.div, P.parameters[1]), one(Base.rem, P.parameters[2])
+    elseif f === Base.fldmod
+        one(Base.fld, P.parameters[1]), one(Base.mod, P.parameters[2])
+    elseif f === Base.sincosd
+        one(Base.sind, Float64), one(Base.cosd, Float64)
+    else
+        x = value(sc, names[1])
+        s = types[1] === Float32 ? "f" : ""
+        push!(sc.headers, "math.h")
+        if f === Base.modf
+            # The part past the point with the number's sign, and the whole part; an infinity has no part past the point.
+            "copysign$s(isinf($x) ? 0 : $x - trunc$s($x), $x)", "trunc$s($x)"
+        else
+            # `frexp` hands the exponent back through a pointer, and says nothing of it for a NaN or an infinity, where Julia says 0.
+            m, e = temp!(sc, nothing, contribution(sc, names[1])), temp!(sc, nothing, String[])
+            emit!(lines, sc, "int $e;")
+            emit!(lines, sc, "$(declare(types[1], m)) = frexp$s($x, &$e);")
+            m, "(int64_t)(isfinite($x) ? $e : 0)"
+        end
+    end
+    pair!(lines, sc, i, args, first, second)
+    return true
 end

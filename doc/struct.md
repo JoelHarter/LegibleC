@@ -38,6 +38,29 @@ the whole struct goes there — `return conj_Quat(q);`, or as an argument to
 another call — and gets a variable when a field of it is read, since
 `f(q).v` reads a field of a temporary, which no one writes.
 
+Only the constructor Julia gives every struct, one argument a field, is the
+compound literal, and Julia's converting form of it with it: `Point(n, n)` on
+integers is `(Point){n, n}`, C converting as Julia does. A constructor the
+author wrote is a function of the author's, since it can do anything:
+
+```julia
+Made(n::Int64) = Made(Float64(n), n)
+```
+
+```c
+Made Made_from_I64(int64_t n) {
+    return (Made){(double)n, n};
+}
+```
+
+It can't have the typedef's name, so it is the struct it makes, the word
+`from`, and what it makes it from, always said, since that is all that tells
+two constructors apart: `Made_from_I64`, `Made_from_F64`, `Pair2F64_from_F64`.
+An inner constructor is the same, and its `new(…)` is the literal. Which one
+a call runs is asked of Julia, by the argument types, and which is the default
+is read off what the method does (`fieldwise`), not off where it was written,
+since an inner constructor sits on the struct's own lines.
+
 A parametric struct at a concrete instantiation is one C struct per
 instantiation, named by the struct and its parameters run together:
 `Pair2F64`, `Body3` (`naming.md`, *A type with parameters*). Field and type

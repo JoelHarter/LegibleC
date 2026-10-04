@@ -26,6 +26,45 @@ struct Called{T} <: Function end
 Base.parentmodule(::Called{T}) where {T} = T.name.module
 Base.nameof(::Called{T}) where {T} = nameof(T)
 
+# The callee of `S(args…)` where the method that runs is a constructor the author wrote,
+# `S(n::Int64) = S(Float64(n), n)`, and not the one Julia gives every struct, one argument a
+# field: a function of the author's like any other, where the default is a C compound
+# literal. `canonical!` writes the call as this, so everything after sees a function call.
+struct Made{C} <: Function end
+Base.parentmodule(::Made{C}) where {C} = parentmodule(C)
+Base.nameof(::Made{C}) where {C} = nameof(C)
+
+# Is `m`, a method of a struct type, the constructor Julia gives it: every argument put into
+# the field of its position, converted to the field's type on the way and nothing else done?
+# Read off what the method does, since where it was written says nothing: an inner
+# constructor of the author's sits on the same lines.
+function fieldwise(m::Method)
+    ci = try Base.uncompressed_ast(m) catch; return false end
+    code = ci.code
+    news = [st for st in code if st isa Expr && st.head === :new]
+    length(news) == 1 && length(news[1].args) == m.nargs || return false
+    resolved(g) = (g isa Core.SSAValue && (g = code[g.id]); g isa GlobalRef && isdefined(g.mod, g.name) ? getfield(g.mod, g.name) : g)
+    for st in code
+        ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+        ex isa Expr && ex.head === :call || continue
+        resolved(ex.args[1]) in (Core.fieldtype, Base.convert, Core.apply_type, Core.isa) || return false
+    end
+    # Where a value came from: an argument, perhaps through a variable and a `convert`.
+    origin(a, depth=0) = depth > 8 ? 0 :
+        a isa Core.SlotNumber ? (a.id <= m.nargs ? a.id :
+            (k = findfirst(st -> st isa Expr && st.head === :(=) && st.args[1] == a, code); k === nothing ? 0 : origin(code[k].args[2], depth + 1))) :
+        a isa Core.SSAValue ? origin(code[a.id], depth + 1) :
+        a isa Expr && a.head === :call && resolved(a.args[1]) === Base.convert ? origin(a.args[3], depth + 1) : 0
+    return all(k -> origin(news[1].args[k+1]) == k + 1, 1:m.nargs-1)
+end
+
+# The method instance a call runs: of a function, of a value called as one, of a constructor.
+function instance(f, types)
+    f isa Called && return lookup(types[1], types[2:end])
+    f isa Made && return Base.method_instance(typeof(f).parameters[1], Tuple(types))
+    return exact(Base.method_instance(f, Tuple(types)), Tuple{typeof(f), types...})
+end
+
 # A function written without a name, `x -> …` or a `do` block: Julia names it `#…`.
 islambda(T::Type) = T <: Function && startswith(string(T.name.singletonname), "#")
 
@@ -40,6 +79,15 @@ function resolve(::Called{T}, spec) where {T}
     mi === nothing || return (mi, static)
     regular = [isempty(d) ? E : Array{E, length(d)} for (E, d) in groups]
     mi = lookup(T, regular)
+    return mi === nothing ? (nothing, nothing) : (mi, shapedsig)
+end
+
+function resolve(::Made{C}, spec) where {C}
+    static, shapedsig, groups = spectypes(spec)
+    mi = Base.method_instance(C, Tuple(static))
+    mi === nothing || return (mi, static)
+    regular = [isempty(d) ? E : Array{E, length(d)} for (E, d) in groups]
+    mi = Base.method_instance(C, Tuple(regular))
     return mi === nothing ? (nothing, nothing) : (mi, shapedsig)
 end
 

@@ -261,4 +261,54 @@ end
     @test occursin("typedef struct {\n    double b;\n    double a;\n} tswap_t;", src) && occursin("return (tswap_t){b, a};", src)
     @test occursin("Tuple3xx3 temp1_arrays = arrays(v);", src)
 end
+# A constructor the author wrote is a function of the author's; only the one Julia gives every
+# struct, one argument a field, is the C literal. Each of these was written as the literal
+# before, the arguments dropped into the fields in order: a wrong answer, silently.
+struct Made
+    x::Float64
+    n::Int
+end
+Made(n::Int64) = Made(Float64(n), n)
+Made(x::Float64) = Made(x, 7)
+Made(b::Bool) = Made(b ? 1.0 : -1.0)                    # one constructor calling another
+struct Doubled
+    x::Float64
+    Doubled(x) = new(2x)                                # an inner one, in place of the default
+end
+struct Sorted
+    lo::Float64
+    hi::Float64
+    Sorted(a, b) = a < b ? new(a, b) : new(b, a)
+end
+Pair2(a::T) where {T} = Pair2(a, a)                     # on a struct with a parameter
+struct Ramp
+    v::SVector{3,Float64}
+    s::Float64
+end
+Ramp(s::Float64) = Ramp(SVector(s, 2s, 3s), s)          # filling an array field
+madeint(n::Int) = Made(n)
+madefloat(x::Float64) = Made(x)
+madebool(b::Bool) = Made(b)
+madedefault(x::Float64, n::Int) = Made(x, n)
+madeconverted(n::Int) = Point(n, n)                     # Julia's own converting constructor is the default too
+madeinner(x::Float64) = Doubled(x)
+madesorted(a::Float64, b::Float64) = Sorted(a, b)
+madepair(x::Float64) = Pair2(x)
+madepairint(n::Int) = Pair2(n)
+maderamp(s::Float64) = Ramp(s)
+madeused(n::Int) = Made(n).x + Made(2.5).n + Doubled(1.5).x
+@testset "constructor" begin
+    src = check("constructor", [Case(madeint, 3), Case(madefloat, 2.5), Case(madebool, true), Case(madebool, false), Case(madedefault, 1.5, 2),
+                                Case(madeconverted, 4), Case(madeinner, 1.5), Case(madesorted, 2.0, 1.0), Case(madesorted, 1.0, 2.0),
+                                Case(madepair, 1.5), Case(madepairint, 2), Case(maderamp, 2.0), Case(madeused, 3)])
+    # The author's: a function named for the struct it makes and what it makes it from.
+    @test occursin("return Made_from_I64(n);", src) && occursin("Made Made_from_I64(int64_t n) {", src) && occursin("return (Made){(double)n, n};", src)
+    @test occursin("Made Made_from_B(bool b) {", src) && occursin("return Made_from_F64(b ? 1.0 : -1.0);", src)
+    @test occursin("Doubled Doubled_from_F64(double x) {", src) && occursin("Sorted Sorted_from_F64_F64(double a, double b) {", src)
+    @test occursin("return (Sorted){a, b};", src) && occursin("return (Sorted){b, a};", src)             # `new` is the literal
+    @test occursin("Pair2F64 Pair2F64_from_F64(double a) {", src) && occursin("Pair2I64 Pair2I64_from_I64(int64_t a) {", src)
+    # Julia's: the literal, as it always was.
+    @test occursin("return (Made){x, n};", src) && occursin("return (Point){n, n};", src) && !occursin("Point_from", src)
+end
+
 end

@@ -57,7 +57,8 @@ const helperstems = Set(["add", "sub", "mul", "div", "neg", "dot", "cross", "det
                          "addI", "subI", "rsubI", "all", "any", "count", "argmax", "argmin", "printarray"])
 const unrecognized = Set{String}()      # helpers met that `ishelpername` didn't know: for the tests
 # The few helpers with a name of their own, which a type may follow: `powi`, `moduloF32`.
-const fixedhelpers = Set(["cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp", "minN", "maxN", "shl", "shr", "shru", "factorial"])
+const fixedhelpers = Set(["mantissa", "hypot3", "fld", "cld", "mod1", "fld1", "count_ones", "leading_zeros", "trailing_zeros", "bswap", "bitreverse", "bitrotate",
+                          "binomial", "invmod", "powermod", "nextpow", "prevpow", "cross", "powi", "modulo", "utf8len", "abs2", "printarray", "gcd", "lcm", "isqrt", "sind", "cosd", "tand", "ulp", "minN", "maxN", "shl", "shr", "shru", "factorial"])
 
 """
     helpername(op, types; pointwise=false) -> String
@@ -346,6 +347,139 @@ function integerhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
     return name
 end
 
+# Division that rounds down or up, and the one-based remainder that goes with it: `fld`, `cld`,
+# `mod1`, `fld1`. C's `/` rounds toward zero, so each is that and a correction where the two
+# differ: a remainder that isn't zero, and signs that say which way the quotient was cut.
+function roundedhelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
+    name = string(op) * (E === Int64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t = ctype(E)
+    signed = E <: Signed
+    if op === :fld
+        body = signed ? ["$t q = ($t)(a / b);", "return a % b != 0 && (a < 0) != (b < 0) ? ($t)(q - 1) : q;"] : ["return ($t)(a / b);"]
+        doc = ["a / b rounded down, where C's `/` rounds toward zero", "returns fld(a, b)"]
+    elseif op === :cld
+        body = ["$t q = ($t)(a / b);", signed ? "return a % b != 0 && (a < 0) == (b < 0) ? ($t)(q + 1) : q;" : "return a % b != 0 ? ($t)(q + 1) : q;"]
+        doc = ["a / b rounded up, where C's `/` rounds toward zero", "returns cld(a, b)"]
+    elseif op === :mod1
+        body = vcat(["$t m = ($t)(a % b);"], signed ? ["if (m != 0 && (m < 0) != (b < 0)) {", "    m = ($t)(m + b);", "}"] : String[], ["return m == 0 ? b : m;"])
+        doc = ["a modulo b counted from one: in 1 to b, where `mod` gives 0 to b - 1", "returns mod1(a, b)"]
+    else
+        # Julia's own definition for integers: the quotient, and one more where the signs agree and it didn't go evenly.
+        body = ["$t q = ($t)(a / b);", signed ? "return (a < 0) == (b < 0) && ($t)(q * b) != a ? ($t)(q + 1) : q;" : "return ($t)(q * b) != a ? ($t)(q + 1) : q;"]
+        doc = ["the quotient that goes with mod1: a == (fld1(a, b) - 1) * b + mod1(a, b)", "returns fld1(a, b)"]
+    end
+    helpers[name] = definition(t, name, ["$t a", "$t b"], body; doc)
+    return name
+end
+
+# What Julia does to the bits of an integer and C99 has no word for: `count_ones`,
+# `leading_zeros`, `trailing_zeros`, `bswap`, `bitreverse`, `bitrotate`. C23 has them in
+# `<stdbit.h>`, which few compilers ship, and the builtins differ from compiler to compiler,
+# so each is a few lines on the unsigned type of the same width.
+function bithelper!(helpers::Dict{String, String}, op::Symbol, E::Type)
+    name = string(op) * (E === Int64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t, u, bits = ctype(E), ctype(unsigned(E)), 8 * sizeof(E)
+    if op === :count_ones
+        r, params = "int64_t", ["$t x"]
+        body = ["$u v = ($u)x;", "int64_t n = 0;", "while (v != 0) {", "    v &= ($u)(v - 1);       // clears the lowest bit that is set", "    n++;", "}", "return n;"]
+        doc = ["how many bits of x are 1", "returns count_ones(x)"]
+    elseif op === :leading_zeros
+        r, params = "int64_t", ["$t x"]
+        body = ["$u v = ($u)x;", "int64_t n = $bits;", "while (v != 0) {", "    v >>= 1;", "    n--;", "}", "return n;"]
+        doc = ["how many zero bits x has above its highest 1: $bits for zero", "returns leading_zeros(x)"]
+    elseif op === :trailing_zeros
+        r, params = "int64_t", ["$t x"]
+        body = ["$u v = ($u)x;", "if (v == 0) {", "    return $bits;", "}", "int64_t n = 0;", "while ((v & 1) == 0) {", "    v >>= 1;", "    n++;", "}", "return n;"]
+        doc = ["how many zero bits x has below its lowest 1: $bits for zero", "returns trailing_zeros(x)"]
+    elseif op === :bswap
+        r, params = t, ["$t x"]
+        body = sizeof(E) == 1 ? ["return x;"] :
+               ["$u v = ($u)x;", "$u r = 0;", "for (int k = 0; k < $(sizeof(E)); k++) {", "    r = ($u)((r << 8) | (v & 0xff));", "    v >>= 8;", "}", "return ($t)r;"]
+        doc = ["x with its bytes in the opposite order", "returns bswap(x)"]
+    elseif op === :bitreverse
+        r, params = t, ["$t x"]
+        body = ["$u v = ($u)x;", "$u r = 0;", "for (int k = 0; k < $bits; k++) {", "    r = ($u)((r << 1) | (v & 1));", "    v >>= 1;", "}", "return ($t)r;"]
+        doc = ["x with its bits in the opposite order", "returns bitreverse(x)"]
+    else
+        r, params = t, ["$t x", "int64_t k"]
+        body = ["$u v = ($u)x;", "int64_t s = k % $bits;", "if (s < 0) {", "    s += $bits;", "}", "return s == 0 ? x : ($t)(($u)(v << s) | ($u)(v >> ($bits - s)));"]
+        doc = ["x with its bits moved k places up, the ones that fall off the top coming back in at the bottom; down for a negative k", "returns bitrotate(x, k)"]
+    end
+    helpers[name] = definition(r, name, params, body; doc)
+    return name
+end
+
+# Whole-number functions that are a loop of their own, in 64 bits: `binomial`, `invmod`,
+# `powermod`, `nextpow`, `prevpow`. Where Julia throws, an overflow or a number with no
+# inverse, the C stops with the same words.
+function numberhelper!(helpers::Dict{String, String}, op::Symbol)
+    name = string(op)
+    haskey(helpers, name) && return name
+    stop(what) = ["    fprintf(stderr, \"$what\\n\");", "    abort();"]
+    if op === :binomial
+        g = integerhelper!(helpers, :gcd, Int64)
+        params = ["int64_t n", "int64_t k"]
+        body = vcat(["if (k < 0) {", "    return 0;", "}", "int64_t sign = 1;",
+                     "if (n < 0) {", "    n = -n + k - 1;", "    sign = k % 2 != 0 ? -1 : 1;", "}",
+                     "if (k > n) {", "    return 0;", "}",
+                     "if (k > n / 2) {", "    k = n - k;", "}",
+                     "int64_t x = 1;",
+                     "for (int64_t r = 1; r <= k; r++) {",
+                     "    int64_t m = n - k + r;",
+                     "    int64_t d = $g(m, r);          // x * m / r, dividing first so that only the answer can overflow",
+                     "    x /= r / d;",
+                     "    m /= d;",
+                     "    if (x > INT64_MAX / m) {"], "    " .* stop("OverflowError: binomial doesn't fit 64 bits"), ["    }", "    x *= m;", "}", "return sign * x;"])
+        doc = ["how many ways to choose k of n, by the product n * (n - 1) * ... / k!, dividing as it goes", "returns binomial(n, k)"]
+    elseif op === :invmod
+        params = ["int64_t n", "int64_t m"]
+        body = vcat(["if (m == 0) {"], stop("DomainError: invmod with a modulus of zero"), ["}",
+                     "int64_t a = n % m;", "int64_t b = m;", "int64_t x = 1;", "int64_t y = 0;",
+                     "while (b != 0) {", "    int64_t q = a / b;", "    int64_t r = a - q * b;", "    a = b;", "    b = r;",
+                     "    r = x - q * y;", "    x = y;", "    y = r;", "}",
+                     "if (a != 1 && a != -1) {"], stop("DomainError: invmod of a number that shares a factor with the modulus"), ["}",
+                     "if (a < 0) {", "    x = -x;", "}",
+                     "x %= m;", "return x != 0 && (x < 0) != (m < 0) ? x + m : x;"])
+        doc = ["the inverse of n modulo m, by Euclid's algorithm: n * invmod(n, m) is 1 modulo m", "returns invmod(n, m)"]
+    elseif op === :powermod
+        inv = numberhelper!(helpers, :invmod)
+        params = ["int64_t x", "int64_t p", "int64_t m"]
+        body = vcat(["if (m == 0) {"], stop("DivideError: powermod with a modulus of zero"), ["}",
+                     "uint64_t M = m < 0 ? -(uint64_t)m : (uint64_t)m;",
+                     "if (p < 0) {", "    x = $inv(x, m);", "}",
+                     "uint64_t e = p < 0 ? -(uint64_t)p : (uint64_t)p;",
+                     "int64_t s = (int64_t)(x % (int64_t)M);         // M fits unless m is the most negative number, where x is its own remainder",
+                     "uint64_t b = M > (uint64_t)INT64_MAX ? (uint64_t)x % M : (uint64_t)(s < 0 ? s + (int64_t)M : s);",
+                     "uint64_t r = 1 % M;",
+                     "while (e > 0) {",
+                     "    for (int pass = (e & 1) ? 0 : 1; pass < 2; pass++) {",
+                     "        // r = r * b on the first pass, b = b * b on the second, modulo M, by doubling: no product is ever formed",
+                     "        uint64_t u = pass == 0 ? r : b;", "        uint64_t v = b;", "        uint64_t acc = 0;",
+                     "        while (v != 0) {",
+                     "            if (v & 1) {", "                acc = acc >= M - u ? acc - (M - u) : acc + u;", "            }",
+                     "            u = u >= M - u ? u - (M - u) : u + u;", "            v >>= 1;", "        }",
+                     "        if (pass == 0) {", "            r = acc;", "        } else {", "            b = acc;", "        }",
+                     "    }",
+                     "    e >>= 1;", "}",
+                     "return r != 0 && m < 0 ? (int64_t)(r - M) : (int64_t)r;"])
+        doc = ["x to the power p modulo m, by squaring; the products are made by doubling, since they don't fit 64 bits", "returns powermod(x, p, m)"]
+    elseif op === :nextpow
+        params = ["int64_t a", "int64_t x"]
+        body = vcat(["if (a <= 1 || x <= 0) {"], stop("DomainError: nextpow needs a base above 1 and a positive number"), ["}",
+                     "int64_t p = 1;", "while (p < x) {", "    if (p > INT64_MAX / a) {"], "    " .* stop("OverflowError: nextpow doesn't fit 64 bits"), ["    }", "    p *= a;", "}", "return p;"])
+        doc = ["the smallest power of a that is not less than x", "returns nextpow(a, x)"]
+    else
+        params = ["int64_t a", "int64_t x"]
+        body = vcat(["if (a <= 1 || x < 1) {"], stop("DomainError: prevpow needs a base above 1 and a number of at least 1"), ["}",
+                     "int64_t p = 1;", "while (p <= x / a) {", "    p *= a;", "}", "return p;"])
+        doc = ["the largest power of a that is not greater than x", "returns prevpow(a, x)"]
+    end
+    helpers[name] = definition("int64_t", name, params, body; doc)
+    return name
+end
+
 # `factorial(n)`: a table, as Julia's is, since 20! is the last that fits 64 bits. Outside the
 # table Julia throws, a `DomainError` below zero and an `OverflowError` above 20, and the C stops
 # with the same words, where an index past the table would have read whatever lies there. The
@@ -410,6 +544,35 @@ function ulphelper!(helpers::Dict{String, String}, E::Type)
     body = ["$t a = fabs$f(x);", "if (!isfinite(a)) {", "    return NAN;", "}",
             "return a >= $(P)_MIN ? ldexp$f($(P)_EPSILON, ilogb$f(a)) : nextafter$f($(E === Float32 ? "0.0f, 1.0f" : "0.0, 1.0"));"]
     helpers[name] = definition(t, name, ["$t x"], body; doc=["distance from |x| to the next larger $(E === Float32 ? "float" : "double"), as Julia's eps(x)", "returns eps(x)"])
+    return name
+end
+
+# `significand(x)`: the number with its power of two taken off, in [1, 2), a zero, a NaN and
+# an infinity being themselves. C's `frexp` gives it in [0.5, 1), so it is doubled. The C
+# library has a `significand` of its own on some systems, so the helper isn't called that.
+function mantissahelper!(helpers::Dict{String, String}, E::Type)
+    name = "mantissa" * (E === Float64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t, f = ctype(E), E === Float32 ? "f" : ""
+    helpers[name] = definition(t, name, ["$t x"], ["int e;", "return 2 * frexp$f(x, &e);"];
+                               doc=["x with its power of two taken off: in [1, 2) for a finite x that isn't zero, as Julia's significand(x)", "returns significand(x)"])
+    return name
+end
+
+# `hypot(x, y, z)`: scaled by the largest so that nothing overflows on the way, as Julia does
+# it. An infinity among them is the answer even beside a NaN.
+function hypothelper!(helpers::Dict{String, String}, E::Type)
+    name = "hypot3" * (E === Float64 ? "" : abbrev(E))
+    haskey(helpers, name) && return name
+    t, f = ctype(E), E === Float32 ? "f" : ""
+    body = ["if (isinf(x) || isinf(y) || isinf(z)) {", "    return INFINITY;", "}",
+            "if (isnan(x) || isnan(y) || isnan(z)) {", "    return NAN;", "}",
+            "$t m = fmax$f(fmax$f(fabs$f(x), fabs$f(y)), fabs$f(z));",
+            "if (m == 0) {", "    return m;", "}",
+            "x /= m;", "y /= m;", "z /= m;",
+            "return m * sqrt$f(x * x + y * y + z * z);"]
+    helpers[name] = definition(t, name, ["$t x", "$t y", "$t z"], body;
+                               doc=["length of (x, y, z), scaled by the largest so that nothing overflows on the way", "returns hypot(x, y, z)"])
     return name
 end
 

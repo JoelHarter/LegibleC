@@ -725,7 +725,7 @@ const standard = (
     ("stdio.h", r"\b(printf|fprintf|snprintf|fputs|fputc|putchar|puts|fflush|fopen|fclose|FILE|stdout|stderr)\b"),
     ("float.h", r"\b(DBL|FLT)_(EPSILON|MAX|MIN)\b"),
     ("complex.h", r"\b(creal|cimag|conj|cabs|carg|csqrt|cexp|clog|cpow|csin|ccos|ctan|casin|cacos|catan|csinh|ccosh|ctanh|cproj)f?\(|\bCMPLXF?\(|\b(double|float) complex\b|\bI\b"),
-    ("math.h", r"\b(sqrt|cbrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|exp2|expm1|log|log2|log10|log1p|floor|ceil|trunc|rint|round|hypot|copysign|fabs|fmax|fmin|fmod|pow|ldexp|tgamma|lgamma|erf|erfc|isnan|isinf|isfinite|signbit)f?\(|\b(M_PI|M_E|INFINITY|NAN)\b"),
+    ("math.h", r"\b(sqrt|cbrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|exp2|expm1|log|log2|log10|log1p|floor|ceil|trunc|rint|round|hypot|copysign|fabs|fmax|fmin|fmod|remainder|fma|nextafter|ilogb|frexp|modf|pow|ldexp|tgamma|lgamma|erf|erfc|isnan|isinf|isfinite|signbit)f?\(|\b(M_PI|M_E|INFINITY|NAN)\b"),
 )
 
 # The helpers in the order they can be defined: alphabetical, except that one that calls

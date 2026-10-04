@@ -218,11 +218,11 @@ end
 end
 # Every refusal leaves the same way: what it is, then the function, the file and line, and
 # the Julia line itself. A statement's number, which is the transpiler's, never shows.
-nocode(x::Float64, k::Int64) = x * trailing_zeros(k)
+nocode(x::Float64, k::Int64) = x * exp10(k)
 @testset "refusal" begin
     msg = sprint(showerror, try csource("nocode", nocode) catch e; e end)
-    @test occursin("`trailing_zeros(::Int64)` has no C yet", msg) && !occursin("statement", msg)
-    @test occursin("in `nocode`, scalar.jl:", msg) && occursin("nocode(x::Float64, k::Int64) = x * trailing_zeros(k)", msg)
+    @test occursin("`exp10(::Int64)` has no C yet", msg) && !occursin("statement", msg)
+    @test occursin("in `nocode`, scalar.jl:", msg) && occursin("nocode(x::Float64, k::Int64) = x * exp10(k)", msg)
     # A mistake of the transpiler's own says so, names where it was, and keeps the error underneath.
     mi = Base.method_instance(nocode, (Float64, Int64))
     fault = LegibleC.explained(KeyError(:gone), mi, nothing)
@@ -525,4 +525,56 @@ litreturn(n::Int64)::Float64 = n + 1
     @test occursin("static const double u[3] = {1.0, 2.0, 3.0};", src) && occursin("    double v[3] = {1.0, 2.0, 3.0};", src) && occursin("    double w[3] = {1.0, x, 3.0};", src)
     @test occursin("return (double)(n + 1);", csource("declaredreturn", litreturn))            # a declared return type: one line too
 end
+# The everyday functions that are one C expression or a few lines: each is a row of the table in
+# `src/idiom.jl`, which the grid tries on every type. Here, how they read, and the ones that
+# take what the grid has no values for: a rounding mode, a type, a tuple, two values at once.
+udivrem(a::Int, b::Int) = ((q, r) = divrem(a, b); 10q + r)
+ufldmod(a::Int, b::Int) = ((q, r) = fldmod(a, b); 10q + r)
+usincosd(x::Float64) = ((s, c) = sincosd(x); s + 2c)
+umodf(x::Float64) = ((f, i) = modf(x); f + 10i)
+umodfof(x::Float64, y::Float64) = ((f, i) = modf(x * y + 1); f - i)
+ufrexp(x::Float64) = ((m, e) = frexp(x); m + e)
+ufrexp32(x::Float32) = ((m, e) = frexp(x); m + e)
+uhorner(x::Float64) = evalpoly(x, (1.0, 2.0, 3.0))
+uhornerof(x::Float64, a::Float64, b::Float64) = evalpoly(x + 1, (a, b - 1, 2.0, a * b))
+utrunc(x::Float64) = unsafe_trunc(Int64, x)
+uorder(a::Int, b::Int) = isless(a, b) + 2 * isequal(a, b)
+urounded(x::Float64) = round(x, RoundUp) + round(x, RoundDown) * 10 + round(x, RoundToZero) * 100 + round(x, RoundNearestTiesAway) * 1000
+ulogbase(x::Float64) = log(2.0, x) + log(10, x)
+ulogfactorial(n::Int) = Main.SpecialFunctions.logfactorial(n)
+uclamp(x::Float64) = clamp(x, 0.0, 1.0)
+uclampint(n::Int) = clamp(n, -3, 3)
+uapprox(x::Float64, y::Float64) = x ≈ y
+usign(x::Float64) = sign(x) + abs2(x)
+uexponent(x::Float64) = exponent(x) + significand(x)
+ubits(n::Int) = count_ones(n) + 100 * leading_zeros(n) + 10000 * trailing_zeros(n)
+unumber(n::Int, k::Int) = binomial(n, k) + powermod(n, k, 1000) + nextpow(2, n) + prevpow(3, n)
+uhyperbolic(x::Float64) = asinh(x) + acosh(x + 2) + atanh(x / 4) + sec(x) + coth(x) + asec(x + 2)
+ufused(x::Float64, y::Float64) = fma(x, y, 1.0) + muladd(x, y, 2.0) + hypot(x, y, 3.0) + ldexp(x, 3) + nextfloat(x) - prevfloat(x)
+udegrees(x::Float64) = asind(x / 40) + atand(x, 2.0) + secd(x)
+ufloor(a::Int, b::Int) = fld(a, b) + 10 * cld(a, b) + 100 * mod1(a, b) + 1000 * fld1(a, b)
+@testset "everyday functions" begin
+    src = check("everyday", [Case(udivrem, 17, 5), Case(udivrem, -17, 5), Case(ufldmod, -17, 5), Case(usincosd, 30.0), Case(umodf, 2.75), Case(umodf, -2.75), Case(umodf, Inf),
+                             Case(umodfof, 1.5, 2.5), Case(ufrexp, 12.0), Case(ufrexp, 0.0), Case(ufrexp, Inf), Case(ufrexp32, 12f0), Case(uhorner, 2.0), Case(uhornerof, 1.5, 2.0, 3.0),
+                             Case(utrunc, -2.7), Case(uorder, 1, 2), Case(uorder, 2, 2), Case(urounded, 2.5), Case(urounded, -2.5), Case(ulogbase, 8.0), Case(ulogfactorial, 10),
+                             Case(uclamp, 1.5), Case(uclamp, -0.5), Case(uclamp, 0.25), Case(uclampint, 7), Case(uapprox, 1.0, 1.0 + 1e-10), Case(uapprox, 1.0, 1.1),
+                             Case(usign, -2.5), Case(uexponent, 12.0), Case(ubits, 40), Case(unumber, 10, 3), Case(uhyperbolic, 0.5), Case(ufused, 1.5, 2.5),
+                             Case(udegrees, 30.0), Case(ufloor, -17, 5), Case(ufloor, 17, -5), Case(ufloor, 15, 5)])
+    # Two values at once: each is written where it is read, from what Julia's own two functions give.
+    @test occursin("int64_t q = (a / b);", src) && occursin("int64_t q = fld(a, b);", src) && occursin("double s = sind(x);\n    double c = cosd(x);", src)
+    @test occursin("double f = copysign(isinf(x) ? 0 : x - trunc(x), x);\n    double i = trunc(x);", src)
+    @test occursin(r"double (temp\d+_x_y) = x \* y \+ 1;\n    double f = copysign\(isinf\(\1\)", src)          # what is read three times is worked out once
+    @test occursin(r"int (temp\d+);\n    double (temp\d+_x) = frexp\(x, &\1\);", src) && occursin("frexpf(x, &", src)
+    # Horner's rule, written out; the point it is evaluated at worked out once.
+    @test occursin("return 1.0 + x * (2.0 + x * 3.0);", src) && occursin(r"return a \+ (temp\d+_x) \* \(b - 1 \+ \1 \* \(2\.0 \+ \1 \* \(a \* b\)\)\);", src)
+    @test occursin("return (int64_t)x;", src) && occursin("return (a < b) + 2 * (a == b);", src)
+    @test occursin("return ceil(x) + floor(x) * 10 + trunc(x) * 100 + round(x) * 1000;", src)
+    @test occursin("return log(x) / log(2.0) + log(x) / log(10);", src) && occursin("return lgamma((double)(n + 1));", src)
+    @test occursin("return x > 1.0 ? 1.0 : x < 0.0 ? 0.0 : x;", src) && occursin("return n > 3 ? 3 : n < -3 ? -3 : n;", src)
+    @test occursin("isfinite(x) && isfinite(y) && fabs(x - y) <= 1.4901161193847656e-8 * fmax(fabs(x), fabs(y))", src)
+    @test occursin("(x > 0 ? 1.0 : x < 0 ? -1.0 : x) + x * x", src) && occursin("return (int64_t)ilogb(x) + mantissa(x);", src)
+    @test occursin("1.0 / cos(x)", src) && occursin("acos(1.0 / (x + 2))", src) && occursin("fma(x, y, 1.0) + (x * y + 2.0) + hypot3(x, y, 3.0)", src) && occursin("ldexp(x, 3)", src)
+    @test occursin("nextafter(x, INFINITY)", src) && occursin("nextafter(x, -INFINITY)", src) && occursin("asin(x / 40) * (180 / LEGIBLEC_PI)", src) && occursin("1.0 / cosd(x)", src)
+end
+
 end

@@ -35,6 +35,7 @@ one_ = [(:neg, :(-a), numbers), (:abs, :(abs(a)), numbers), (:not, :(~a), ints),
         [(f, :($f(a)), floats) for f in (:sqrt, :cbrt, :sin, :cos, :tan, :asin, :acos, :atan, :sinh, :cosh, :tanh, :exp, :exp2, :expm1, :log, :log2, :log10, :log1p,
                                          :floor, :ceil, :trunc, :round)]...,
         [(Symbol(:to, T), :($T(a)), numbers) for T in (:Float64, :Float32, :Int64, :Int32, :UInt8, :UInt64, :Bool)]...,
+        [(Symbol(:round, m), :(round(a, $m)), floats) for m in (:RoundNearest, :RoundUp, :RoundDown, :RoundToZero, :RoundNearestTiesAway)]...,
         (:roundint, :(round(Int64, a)), floats), (:floorint, :(floor(Int64, a)), floats), (:ceilint, :(ceil(Int64, a)), floats), (:truncint, :(trunc(Int64, a)), floats)]
 two = [(:add, :(a + b), numbers, numbers), (:sub, :(a - b), numbers, numbers), (:mul, :(a * b), numbers, numbers), (:div, :(a / b), numbers, numbers),
        (:ldiv, :(a \ b), numbers, numbers), (:idiv, :(div(a, b)), numbers, numbers), (:rem, :(rem(a, b)), numbers, numbers), (:mod, :(mod(a, b)), numbers, numbers),
@@ -43,6 +44,7 @@ two = [(:add, :(a + b), numbers, numbers), (:sub, :(a - b), numbers, numbers), (
        (:and, :(a & b), (Bool, ints...), (Bool, ints...)), (:or, :(a | b), (Bool, ints...), (Bool, ints...)), (:xor, :(xor(a, b)), (Bool, ints...), (Bool, ints...)),
        (:shl, :(a << b), ints, ints), (:shr, :(a >> b), ints, ints), (:lshr, :(a >>> b), ints, ints), (:shl3, :(a << 3), ints, (Bool,)), (:shr3, :(a >> 3), ints, (Bool,)),
        (:one_shl, :(1 << b), (Bool,), ints), (:gcd, :(gcd(a, b)), ints, ints), (:lcm, :(lcm(a, b)), ints, ints),
+       (:remnear, :(rem(a, b, RoundNearest)), floats, floats),
        (:hypot, :(hypot(a, b)), floats, floats), (:copysign, :(copysign(a, b)), floats, floats), (:atan2, :(atan(a, b)), floats, floats), (:pow, :(a^b), floats, floats),
        (:ifelse, :(ifelse(a < b, a, b)), numbers, numbers), (:minmax, :((lo, hi) = minmax(a, b); hi - lo), numbers, numbers),
        (:inside, :((a + b) * 2 > 100), numbers, numbers), (:mixed, :(Float64(a + b) + a * b), numbers, numbers)]
@@ -52,8 +54,11 @@ two = [(:add, :(a + b), numbers, numbers), (:sub, :(a - b), numbers, numbers), (
 # is `Inf - Inf` in Julia and `-Inf` under `-ffp-contract=fast`, which keeps the product exact.
 # And the sign of a zero, which the setting lets go (`-fno-signed-zeros` is part of fast math):
 # GCC answers `signbit(-0.0)` with 0.
+# And a `nextpow` whose answer doesn't fit 64 bits: Julia notices some of those and throws, and
+# for the rest returns a power that has wrapped round. The C stops with the error for all of them.
 allowed(name, combo) = !(startswith(name, "mixed") && any(x -> x isa AbstractFloat && abs(x) == floatmax(typeof(x)), combo)) &&
-                       !(occursin("signbit", name) && iszero(combo[1]))
+                       !(occursin("signbit", name) && iszero(combo[1])) &&
+                       !(startswith(name, "row_nextpow") && combo[2] > 1 && combo[1] > 0 && nextpow(big(combo[2]), big(combo[1])) > typemax(Int64))    # the arguments come last first
 
 # One function of the grid: its Julia, its types, and what Julia answers on every combination of values.
 struct Item
@@ -98,6 +103,7 @@ function items()
     # its author didn't think of.
     for r in LegibleC.idioms
         n = count(p -> occursin(p, r.c), ("{a}", "{b}", "{c}"))
+        occursin("{-", r.c) && continue          # takes an argument that is no number, a rounding mode: tried by name above
         # A row for a package's function, known to the transpiler by name: tried when the package is here.
         f = r.f isa Pair ? (isdefined(Main, r.f[1]) ? getfield(getfield(Main, r.f[1]), r.f[2]) : continue) : r.f
         for A in Iterators.product(fill((numbers..., Char), n)...)

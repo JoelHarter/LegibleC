@@ -180,7 +180,7 @@ function Scope(ci::Core.CodeInfo, mi::Core.MethodInstance, sig, limit::Integer, 
     # A parameter the author gave no name, `one(::Quat)`, is `unused`.
     # The first slot is the function itself, with no name in C, unless it is a value the author
     # named: the struct in `(p::Poly)(x)`.
-    own = string(ci.slotnames[1]) != "#self#"
+    own = !startswith(string(ci.slotnames[1]), "#")
     names = identifiers([isempty(string(s)) ? "#s$i" : string(s) == "#unused#" ? "unused" : string(s) for (i, s) in enumerate(ci.slotnames[(own ? 1 : 2):end])])
     own || pushfirst!(names, "#self#")
     hidden = Set{Int}(i for (i, s) in enumerate(ci.slotnames) if i > 1 && isempty(string(s)))
@@ -381,6 +381,48 @@ function canonical!(ci::Core.CodeInfo)
         T = held(ex.args[1])
         T === nothing || (ex.args = Any[Called{T}(); ex.args])
     end
+    # `S(n)` where the constructor that runs is one the author wrote: the call of `Made`, a
+    # function like any other. The constructor Julia gives a struct stays a call of the type,
+    # which is written as a compound literal.
+    raw(t) = t isa Core.Const ? Core.Typeof(t.val) : t isa Core.PartialStruct ? t.typ : t
+    typeof_(a) = a isa Core.SSAValue ? raw(ci.ssavaluetypes[a.id]) : a isa Core.SlotNumber ? raw(ci.slottypes[a.id]) :
+                 a isa GlobalRef ? (isdefined(a.mod, a.name) ? Core.Typeof(getfield(a.mod, a.name)) : Any) : a isa QuoteNode ? Core.Typeof(a.value) : Core.Typeof(a)
+    for (k, st) in enumerate(code)
+        ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+        ex isa Expr && ex.head === :call || continue
+        c = ex.args[1]
+        t = c isa Core.SSAValue ? ci.ssavaluetypes[c.id] : c isa GlobalRef && isdefined(c.mod, c.name) ? Core.Const(getfield(c.mod, c.name)) : nothing
+        t isa Core.Const && t.val isa Type || continue
+        C = t.val
+        B = Base.unwrap_unionall(C)
+        B isa DataType && isstructtype(B) && !(B <: AbstractArray) && !(B <: Tuple) && !(B <: Function) && !(B <: Type) &&
+            !(nameof(Base.moduleroot(B.name.module)) in known) || continue
+        types = Any[typeof_(a) for a in ex.args[2:end]]
+        all(T -> T isa Type && isconcretetype(T) || T isa Type && T <: Type, types) || continue
+        m = try which(C, Tuple{types...}) catch; continue end
+        fieldwise(m) || (ex.args[1] = Made{C}())
+    end
+    # Between integers `isless` is `<` and `isequal` is `==`: only floats have a NaN and a signed zero to order.
+    for (k, st) in enumerate(code)
+        ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+        ex isa Expr && ex.head === :call && length(ex.args) == 3 || continue
+        c = ex.args[1]
+        t = c isa Core.SSAValue ? ci.ssavaluetypes[c.id] : c isa GlobalRef && isdefined(c.mod, c.name) ? Core.Const(getfield(c.mod, c.name)) : nothing
+        t isa Core.Const && t.val in (Base.isless, Base.isequal) || continue
+        all(a -> (A = typeof_(a); A isa Type && A <: Union{Base.BitInteger64, Bool}), ex.args[2:3]) || continue
+        ex.args[1] = t.val === Base.isless ? Base.:< : Base.:(==)
+    end
+    # `new(…)` in a constructor of the author's is the struct from its fields: the literal.
+    for (k, st) in enumerate(code)
+        ex = st isa Expr && st.head === :(=) ? st.args[2] : st
+        ex isa Expr && ex.head === :new || continue
+        c = ex.args[1]
+        t = c isa Core.SSAValue ? ci.ssavaluetypes[c.id] : c isa Core.SlotNumber ? ci.slottypes[c.id] : Core.Const(c)
+        T = t isa Core.Const ? t.val : nothing
+        T isa DataType && isstruct(T) || continue
+        ex.head = :call
+        ex.args[1] = T
+    end
     return ci
 end
 
@@ -437,7 +479,7 @@ function ready(name, mi::Core.MethodInstance, sig, prog::Program, rettype, templ
         # The first walk names every variable unmistakably, `v5__omega`, so that its text
         # shows, block by block, which variables and which outer names are mentioned.
         for i in 1:length(sc.names)
-            isempty(string(ci.slotnames[i])) || sc.names[i] == "#self#" || (sc.names[i] = "v$(i)__" * sc.names[i])
+            isempty(string(ci.slotnames[i])) || (i == 1 && sc.names[i] == "#self#") || (sc.names[i] = "v$(i)__" * sc.names[i])
         end
     else
         names!(sc, first)
@@ -1190,6 +1232,8 @@ function written!(lines, sc::Scope, i, st)
         A <: AbstractFloat && push!(sc.headers, "math.h")
         A <: AbstractFloat ? pair!(lines, sc, i, st.args[2:3], "$(nanhelper!(sc.helpers, :min, A))($a, $b)", "$(nanhelper!(sc.helpers, :max, A))($a, $b)") :
                              pair!(lines, sc, i, st.args[2:3], "($a < $b ? $a : $b)", "($a > $b ? $a : $b)")
+    elseif st isa Expr && st.head === :call && paired!(lines, sc, i, st)
+        # `q, r = divrem(a, b)`, `f, i = modf(x)`: two values, each written where it is read.
     elseif st isa Expr && st.head === :call && (T === Nothing || T === Any) && userinstance!(sc, callee_or_nothing(ci, st.args[1]), st.args[2:end]) !== nothing
         # A call for its effect, or whose result goes unused (Julia then types it `Any`
         # and the callee's own return type says what C needs).
@@ -1451,10 +1495,10 @@ function pair!(lines, sc::Scope, i, args, first, second)
     end
     foreach(read!, args)
     if changeable[] || any(k -> any(s -> assigns(code[k], s), slots), i+1:length(code))
-        E = ctype(widen(sc.ci.ssavaluetypes[i]).parameters[1])
+        E1, E2 = (ctype(P) for P in widen(sc.ci.ssavaluetypes[i]).parameters)
         names = (temp!(sc, nothing, String[]), temp!(sc, nothing, String[]))
-        emit!(lines, sc, "$E $(names[1]) = $first;")
-        emit!(lines, sc, "$E $(names[2]) = $second;")
+        emit!(lines, sc, "$E1 $(names[1]) = $first;")
+        emit!(lines, sc, "$E2 $(names[2]) = $second;")
         first, second = names
     end
     sc.pair[i] = (first, second)
@@ -2792,6 +2836,18 @@ function rendered(sc::Scope, i, ex::Expr)
         return cast(T, truth(args[2]))
     end
     # One C expression of its arguments: a row of the table (`idiom.jl`).
+    # `evalpoly(x, (a, b, c))`: Horner's rule written out, `a + x * (b + x * c)`.
+    if f === Base.evalpoly && n == 2 && T <: Union{Float32, Float64} && valuetype(sc, args[1]) === T && args[2] isa Core.SSAValue &&
+       callee_or_nothing(ci, ci.code[args[2].id] isa Expr && ci.code[args[2].id].head === :call ? ci.code[args[2].id].args[1] : nothing) === Core.tuple &&
+       all(a -> valuetype(sc, a) === T, ci.code[args[2].id].args[2:end]) && length(ci.code[args[2].id].args) >= 2
+        coefficients = ci.code[args[2].id].args[2:end]
+        x = operand(sc, args[1], MUL)
+        text = string(operand(sc, coefficients[end], length(coefficients) == 1 ? COND : ADD))
+        for c in reverse(coefficients[1:end-1])
+            text = "$(operand(sc, c, ADD)) + $x * " * (occursin(r"^[\w.]+$", text) ? text : "($text)")
+        end
+        return text, length(coefficients) == 1 ? PRIMARY : ADD
+    end
     r = idiom(f, T, [widen(valuetype(sc, a)) for a in args])
     r === nothing || return written(sc, r, T, args)
 
@@ -2849,8 +2905,8 @@ end
 function unknown(sc::Scope, f, args, i)
     (f === Colon() || f === Base.range || f === Base.OneTo) &&
         throw(ArgumentError("a range kept in a variable has no C: ranges are supported as the range of a `for` and as an index, `v[2:4]`. Write the range in the `for` itself (statement $i)"))
-    f in (Base.sincos, Base.minmax) &&
-        throw(ArgumentError("`$(nameof(f))` is only available destructured, `s, c = sincos(x)`, `lo, hi = minmax(a, b)`: C has no pair to keep in a variable (statement $i)"))
+    f in (Base.sincos, Base.minmax, Base.sincosd, Base.divrem, Base.fldmod, Base.modf, Base.frexp) &&
+        throw(ArgumentError("`$(nameof(f))` is only available destructured, `s, c = sincos(x)`, `q, r = divrem(a, b)`: C has no pair to keep in a variable (statement $i)"))
     types = join(("::" * replace(string(widen(valuetype(sc, a))), "StaticArraysCore." => "") for a in args), ", ")
     throw(ArgumentError("`$(f isa Function ? nameof(f) : f)($types)` has no C yet: the transpiler doesn't know this function for these arguments. Write it with what it does know, or as a function of your own (statement $i)"))
 end
@@ -3283,7 +3339,7 @@ function consumed(ci, i)
         st isa Expr && st.head === :(=) && (st = st.args[2])          # `X = [A B; C D]`
         st isa Expr && st.head === :call || return false
         f = callee_or_nothing(ci, st.args[1])
-        (f !== nothing && (isconstruction(f) || f === Base.materialize)) || return false
+        (f !== nothing && (isconstruction(f) || f === Base.materialize || f === Base.evalpoly)) || return false
     end
     return true
 end
@@ -3427,6 +3483,7 @@ function register!(prog::Program, f, spec; bring::Bool=true)
         !any(T -> T isa Type && isstruct(T), spec) && return nothing
     mi, sig = try
         any(x -> x isa Integer, spec) ? resolve(f, spec) :
+        f isa Made ? (m = instance(f, spec); m === nothing ? (nothing, nothing) : (m, argtypes(m))) :
         f isa Called ? (m = lookup(spec[1], spec[2:end]); m === nothing ? (nothing, nothing) : (m, argtypes(m))) : (m = exact(Base.method_instance(f, Tuple(spec)), Tuple{typeof(f), spec...}); m === nothing ? (nothing, nothing) : (m, argtypes(m)))
     catch e
         e isa ArgumentError ? (nothing, nothing) : rethrow()
@@ -3439,6 +3496,13 @@ function register!(prog::Program, f, spec; bring::Bool=true)
     self = mi.specTypes.parameters[1]
     base = islambda(self) ? lambdaname(prog, self) : isstruct(self) ? structname(self) * "_call" : qualified(operatorname(mi.def.name, sig), mi.def.module)
     typed = join([base; filter(!isempty, [describe(T, 2, alldouble(sig)) for T in sig])], "_")
+    # A constructor of the author's can't have the typedef's name: the struct it makes, `from`,
+    # and what it makes it from, always said, since that is all that tells two of them apart.
+    if f isa Made
+        R = returntype(mi)
+        isstruct(R) || throw(ArgumentError("the constructor `$(mi.def.name)` at $(basename(string(mi.def.file))):$(mi.def.line) returns a $R, not the struct it is named for"))
+        base = typed = join([structname(R) * "_from"; filter(!isempty, [describe(T, 2, false) for T in sig])], "_")
+    end
     # Compiled for the functions it was handed, it says which: `newton_f_df`.
     base = join([base; [functionname(T) for T in sig if T <: Function]], "_")
     # A lambda, or a struct called, at a second set of types all `double`: the types are said all the same.

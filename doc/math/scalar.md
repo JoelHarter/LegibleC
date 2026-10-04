@@ -76,6 +76,25 @@ on one side or the other: `Int128` (a compiler extension in C), `Float16`
 | `factorial(n)` of an integer | `factorial(n)`, a small helper that looks it up | a table of 0! to 20!, the last that fits 64 bits, as Julia's is. Outside it Julia throws, and the C stops with the same words |
 | `gamma(x)`, `loggamma(x)`, `erf(x)`, `erfc(x)` from `SpecialFunctions` | `tgamma(x)`, `lgamma(x)`, `erf(x)`, `erfc(x)` from `math.h`; the `f` family on a `Float32` | known by name, the package not being one the transpiler loads |
 | `abs(x)` | `fabs(x)`; `llabs(x)` for `Int64`, `abs(x)` for `Int32` (`stdlib.h`) | |
+| `asinh acosh atanh`, `fma(x, y, z)`, `ldexp(x, n)`, `nextfloat(x)`, `prevfloat(x)` | the same from `math.h`; `nextafter(x, INFINITY)`, `nextafter(x, -INFINITY)` | `ldexp`'s `n` is held to what an `int` takes, where the answer has long been zero or infinity |
+| `muladd(x, y, z)` | `x * y + z` | whether the two are fused is the compiler's to choose, in both languages |
+| `round(x, RoundUp)`, `RoundDown`, `RoundToZero`, `RoundNearestTiesAway`; `rem(x, y, RoundNearest)` | `ceil(x)`, `floor(x)`, `trunc(x)`, `round(x)`; `remainder(x, y)` | C's own `round` takes a tie away from zero |
+| `exponent(x)`, `significand(x)` | `(int64_t)ilogb(x)`, `mantissa(x)`, a small helper over `frexp` | the C library has a `significand` of its own on some systems, so the helper isn't called that |
+| `log(b, x)`, `hypot(x, y, z)`, `fourthroot(x)` | `log(x) / log(b)`, `hypot3(x, y, z)`, `sqrt(sqrt(x))` | Julia's own definitions; `hypot3` scales by the largest so nothing overflows on the way |
+| `sec csc cot sech csch coth`, `asec acsc acot asech acsch acoth` | `1.0 / cos(x)`, …; `acos(1.0 / x)`, … | each is `inv` of the function it is named for |
+| `asind acosd atand`, `atand(y, x)`, `secd cscd cotd` | `asin(x) * (180 / LEGIBLEC_PI)`, …; `1.0 / cosd(x)`, … | |
+| `sign(x)`, `abs2(x)`, `iszero`, `isone`, `isinteger`, `ispow2(n)` | `x > 0 ? 1.0 : x < 0 ? -1.0 : x`, `x * x`, `x == 0`, `x == 1`, `x - trunc(x) == 0`, `n > 0 && (n & (n - 1)) == 0` | the sign of a float keeps a zero's sign and a NaN |
+| `clamp(x, lo, hi)` | `x > hi ? hi : x < lo ? lo : x` | |
+| `flipsign(x, y)`, `copysign(x, y)` on integers | `y < 0 ? -x : x`, `(x < 0) != (y < 0) ? -x : x` | |
+| `cmp(a, b)`, `isless`, `isequal`, `nand`, `nor` on integers | `(int64_t)((a > b) - (a < b))`, `<`, `==`, `~(a & b)`, `~(a \| b)` | on floats `isless` and `isequal` order a NaN and a signed zero, and are not yet |
+| `isapprox(x, y)`, `x ≈ y` | `x == y \|\| (isfinite(x) && isfinite(y) && fabs(x - y) <= 1.49e-8 * fmax(fabs(x), fabs(y)))` | Julia's tolerance when none is given: the square root of the type's epsilon |
+| `fld`, `cld`, `mod1`, `fld1` on integers | `fld(a, b)`, `cld(a, b)`, `mod1(a, b)`, `fld1(a, b)`, a small helper each | C's `/` rounds toward zero; each is that and the correction |
+| `count_ones`, `leading_zeros`, `trailing_zeros`, `bswap`, `bitreverse`, `bitrotate` | a small helper of the same name | C23 has them in `<stdbit.h>`, which few compilers ship, and the builtins differ by compiler |
+| `binomial`, `invmod`, `powermod`, `nextpow`, `prevpow` on `Int64` | a helper of the same name | where Julia throws, an overflow or a number with no inverse, the C stops with the same words. `powermod` makes its products by doubling, since they don't fit 64 bits |
+| `q, r = divrem(a, b)`, `fldmod`, `s, c = sincosd(x)`, `f, i = modf(x)`, `m, e = frexp(x)` | each value written where it is read: `a / b` and `a % b`, …; `frexp(x, &e)` into temps | two values are no value in C: destructured only, as `sincos` |
+| `evalpoly(x, (a, b, c))` | `a + x * (b + x * c)` | Horner's rule written out; `x` worked out once if it is more than a name |
+| `unsafe_trunc(Int64, x)` | `(int64_t)x` | the cast and nothing else |
+| `logfactorial(n)` from `SpecialFunctions` | `lgamma((double)(n + 1))` | |
 | `max`, `min` on floats | `maxN(a, b)`, `minN(a, b)`, a small helper | a NaN is kept, as in Julia; `fmax` and `fmin` drop it |
 | `max`, `min` on integers | `(a > b ? a : b)` | |
 | `round(x)` | `rint(x)` | both round half to even |

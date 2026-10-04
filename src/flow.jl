@@ -1102,6 +1102,7 @@ function duplicates(sc::Scope, u, use::Expr, i)
     f === Base.rem && T <: Signed && return use.args[3] == Core.SSAValue(i)      # the divisor is asked whether it is -1, and then divides
     f in (Base.max, Base.min) && T <: Integer && return true
     f === Base.minmax && return true                  # each argument is written in the minimum and in the maximum
+    f === Base.evalpoly && return use.args[2] == Core.SSAValue(i)        # `x` is written once for each coefficient but the first
     # `A[k]` on a matrix writes `k` once for each dimension (`linear`).
     f === Base.getindex && length(use.args) == 3 && isarray(valuetype(sc, use.args[2])) && ndims(valuetype(sc, use.args[2])) > 1 && return use.args[3] == Core.SSAValue(i)
     f === Base.setindex! && length(use.args) == 4 && isarray(valuetype(sc, use.args[2])) && ndims(valuetype(sc, use.args[2])) > 1 && return use.args[4] == Core.SSAValue(i)
@@ -1206,8 +1207,7 @@ function effects!(prog::Program, mi::Core.MethodInstance)
             f isa Core.Builtin || foreach(T -> isfunction(T) && union!(found, handedeffects!(prog, T)), types)
             continue
         end
-        m = !all(T -> T isa Type && isconcretetype(T), types) ? nothing :
-            f isa Called ? lookup(types[1], types[2:end]) : exact(Base.method_instance(f, Tuple(types)), Tuple{typeof(f), types...})
+        m = !all(T -> T isa Type && isconcretetype(T), types) ? nothing : instance(f, types)
         m === nothing ? push!(found, :unknown) : union!(found, effects!(prog, m))
     end
     prog.effects[mi] = found
